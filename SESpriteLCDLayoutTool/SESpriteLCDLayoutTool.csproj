@@ -1,0 +1,116 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{E48ED4CD-1117-4F03-8A04-E7B165A8C72B}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>SESpriteLCDLayoutTool</RootNamespace>
+    <AssemblyName>SESpriteLCDLayoutTool</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="NLog">
+      <HintPath>..\..\..\..\..\..\..\..\Torch\NLog.dll</HintPath>
+    </Reference>
+    <Reference Include="Sandbox.Common">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\Sandbox.Common.dll</HintPath>
+    </Reference>
+    <Reference Include="Sandbox.Game">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\Sandbox.Game.dll</HintPath>
+    </Reference>
+    <Reference Include="Sandbox.Game.XmlSerializers">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\Sandbox.Game.XmlSerializers.dll</HintPath>
+    </Reference>
+    <Reference Include="SpaceEngineers.Game">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\SpaceEngineers.Game.dll</HintPath>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Xml" />
+    <Reference Include="Torch">
+      <HintPath>..\..\..\..\..\..\..\..\Torch\Torch.dll</HintPath>
+    </Reference>
+    <Reference Include="VRage">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.dll</HintPath>
+    </Reference>
+    <Reference Include="VRage.Game">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Game.dll</HintPath>
+    </Reference>
+    <Reference Include="VRage.Game.XmlSerializers">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Game.XmlSerializers.dll</HintPath>
+    </Reference>
+    <Reference Include="VRage.Library">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Library.dll</HintPath>
+    </Reference>
+    <Reference Include="VRage.Math">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Math.dll</HintPath>
+    </Reference>
+    <Reference Include="VRage.Math.XmlSerializers">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Math.XmlSerializers.dll</HintPath>
+    </Reference>
+    <Reference Include="VRage.Mod.Io">
+      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Mod.Io.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Controls\LcdCanvas.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="Data\AppSettings.cs" />
+    <Compile Include="Data\SpriteCatalog.cs" />
+    <Compile Include="Data\GlyphCatalog.cs" />
+    <Compile Include="Data\UserSpriteCatalog.cs" />
+    <Compile Include="MainForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Models\LcdLayout.cs" />
+    <Compile Include="Models\SpriteEntry.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Services\CodeGenerator.cs" />
+    <Compile Include="Services\CodeParser.cs" />
+    <Compile Include="Services\DdsLoader.cs" />
+    <Compile Include="Services\SpriteTextureCache.cs" />
+    <Compile Include="Services\UndoManager.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="MainForm.resx">
+      <DependentUpon>MainForm.cs</DependentUpon>
+    </EmbeddedResource>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

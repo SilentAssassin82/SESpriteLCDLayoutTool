@@ -1,0 +1,133 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using SESpriteLCDLayoutTool.Models;
+
+namespace SESpriteLCDLayoutTool.Services
+{
+    /// <summary>
+    /// Snapshot-based undo/redo manager for the LCD layout editor.
+    /// Call <see cref="PushUndo"/> before every mutation to capture state.
+    /// </summary>
+    public class UndoManager
+    {
+        private readonly Stack<List<SpriteSnapshot>> _undoStack = new Stack<List<SpriteSnapshot>>();
+        private readonly Stack<List<SpriteSnapshot>> _redoStack = new Stack<List<SpriteSnapshot>>();
+
+        private const int MaxHistory = 80;
+
+        public bool CanUndo => _undoStack.Count > 0;
+        public bool CanRedo => _redoStack.Count > 0;
+
+        /// <summary>
+        /// Captures a snapshot of the current sprite list. Call this BEFORE mutating.
+        /// </summary>
+        public void PushUndo(LcdLayout layout)
+        {
+            if (layout == null) return;
+            _undoStack.Push(Snapshot(layout.Sprites));
+            _redoStack.Clear();
+
+            // Trim oldest entries if we exceed the limit
+            if (_undoStack.Count > MaxHistory)
+            {
+                var temp = _undoStack.ToArray();
+                _undoStack.Clear();
+                for (int i = Math.Min(temp.Length - 1, MaxHistory - 1); i >= 0; i--)
+                    _undoStack.Push(temp[i]);
+            }
+        }
+
+        /// <summary>
+        /// Restores the previous state. Returns the Id of the sprite that was selected
+        /// (if we can infer it), or null.
+        /// </summary>
+        public bool Undo(LcdLayout layout)
+        {
+            if (!CanUndo || layout == null) return false;
+            _redoStack.Push(Snapshot(layout.Sprites));
+            Restore(layout, _undoStack.Pop());
+            return true;
+        }
+
+        public bool Redo(LcdLayout layout)
+        {
+            if (!CanRedo || layout == null) return false;
+            _undoStack.Push(Snapshot(layout.Sprites));
+            Restore(layout, _redoStack.Pop());
+            return true;
+        }
+
+        public void Clear()
+        {
+            _undoStack.Clear();
+            _redoStack.Clear();
+        }
+
+        // ── Snapshot helpers ──────────────────────────────────────────────────────
+        private static List<SpriteSnapshot> Snapshot(List<SpriteEntry> sprites)
+        {
+            return sprites.Select(s => new SpriteSnapshot
+            {
+                Id         = s.Id,
+                Type       = s.Type,
+                SpriteName = s.SpriteName,
+                X          = s.X,
+                Y          = s.Y,
+                Width      = s.Width,
+                Height     = s.Height,
+                ColorR     = s.ColorR,
+                ColorG     = s.ColorG,
+                ColorB     = s.ColorB,
+                ColorA     = s.ColorA,
+                Rotation   = s.Rotation,
+                Text       = s.Text,
+                FontId     = s.FontId,
+                Alignment  = s.Alignment,
+                Scale      = s.Scale,
+            }).ToList();
+        }
+
+        private static void Restore(LcdLayout layout, List<SpriteSnapshot> snapshot)
+        {
+            layout.Sprites.Clear();
+            foreach (var snap in snapshot)
+            {
+                layout.Sprites.Add(new SpriteEntry
+                {
+                    Id         = snap.Id,
+                    Type       = snap.Type,
+                    SpriteName = snap.SpriteName,
+                    X          = snap.X,
+                    Y          = snap.Y,
+                    Width      = snap.Width,
+                    Height     = snap.Height,
+                    ColorR     = snap.ColorR,
+                    ColorG     = snap.ColorG,
+                    ColorB     = snap.ColorB,
+                    ColorA     = snap.ColorA,
+                    Rotation   = snap.Rotation,
+                    Text       = snap.Text,
+                    FontId     = snap.FontId,
+                    Alignment  = snap.Alignment,
+                    Scale      = snap.Scale,
+                });
+            }
+        }
+
+        /// <summary>Internal value-copy of a SpriteEntry for the undo stack.</summary>
+        private struct SpriteSnapshot
+        {
+            public string Id;
+            public SpriteEntryType Type;
+            public string SpriteName;
+            public float X, Y, Width, Height;
+            public int ColorR, ColorG, ColorB, ColorA;
+            public float Rotation;
+            public string Text;
+            public string FontId;
+            public SpriteTextAlignment Alignment;
+            public float Scale;
+        }
+    }
+}

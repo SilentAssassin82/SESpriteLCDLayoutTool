@@ -1,0 +1,742 @@
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Windows.Forms;
+using SESpriteLCDLayoutTool.Models;
+using SESpriteLCDLayoutTool.Services;
+
+namespace SESpriteLCDLayoutTool.Controls
+{
+    /// <summary>
+    /// Interactive canvas that renders the LCD surface and its sprites.
+    /// Handles sprite selection, drag-to-move, and drag-to-resize with 8 handles.
+    /// </summary>
+    public class LcdCanvas : Control
+    {
+        // ── Resize handle ordering (matches GetHandleRects index) ───────────────
+        private enum DragMode
+        {
+            None,
+            Move,
+            ResizeNW, ResizeN, ResizeNE,
+            ResizeE,
+            ResizeSE, ResizeS, ResizeSW,
+            ResizeW,
+        }
+
+        private static readonly DragMode[] HandleModes =
+        {
+            DragMode.ResizeNW, DragMode.ResizeN, DragMode.ResizeNE,
+            DragMode.ResizeE,
+            DragMode.ResizeSE, DragMode.ResizeS, DragMode.ResizeSW,
+            DragMode.ResizeW,
+        };
+
+        // ── Fields ───────────────────────────────────────────────────────────────
+        private LcdLayout _layout;
+        private SpriteEntry _selectedSprite;
+        private SpriteTextureCache _textureCache;
+
+        private DragMode _dragMode = DragMode.None;
+        private PointF _dragStart;
+        private float _dragOrigX, _dragOrigY, _dragOrigW, _dragOrigH;
+
+        // Zoom & pan
+        private float _zoom = 1f;
+        private PointF _panOffset = PointF.Empty;  // screen-pixel offset applied after fit-to-view
+        private bool _isPanning;
+        private PointF _panStart;
+        private PointF _panOrigOffset;
+
+        // Snap-to-grid
+        private bool _snapToGrid;
+        private int _gridSize = 16;
+
+        // ── Events ───────────────────────────────────────────────────────────────
+        public event EventHandler SelectionChanged;
+        public event EventHandler SpriteModified;
+        /// <summary>Fired once before a drag operation begins — push undo snapshot here.</summary>
+        public event EventHandler DragStarting;
+        /// <summary>Fired once when a drag operation ends.</summary>
+        public event EventHandler DragCompleted;
+
+        // ── Properties ───────────────────────────────────────────────────────────
+        public LcdLayout CanvasLayout
+        {
+            get => _layout;
+            set
+            {
+                _layout = value;
+                _selectedSprite = null;
+                Invalidate();
+            }
+        }
+
+        public SpriteEntry SelectedSprite
+        {
+            get => _selectedSprite;
+            set
+            {
+                _selectedSprite = value;
+                Invalidate();
+                SelectionChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public float Zoom
+        {
+            get => _zoom;
+            set { _zoom = Math.Max(0.1f, Math.Min(value, 8f)); Invalidate(); }
+        }
+
+        public bool SnapToGrid
+        {
+            get => _snapToGrid;
+            set { _snapToGrid = value; Invalidate(); }
+        }
+
+        public int GridSize
+        {
+            get => _gridSize;
+            set { _gridSize = Math.Max(4, Math.Min(value, 128)); Invalidate(); }
+        }
+
+        /// <summary>Set the texture cache to enable real-texture rendering.</summary>
+        public SpriteTextureCache TextureCache
+        {
+            get => _textureCache;
+            set { _textureCache = value; Invalidate(); }
+        }
+
+        // ── Constructor ───────────────────────────────────────────────────────────
+        public LcdCanvas()
+        {
+            DoubleBuffered = true;
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.UserPaint |
+                ControlStyles.OptimizedDoubleBuffer,
+                true);
+            BackColor = Color.FromArgb(28, 28, 28);
+            TabStop = true;
+        }
+
+        // ── Coordinate helpers ────────────────────────────────────────────────────
+        private void ComputeTransform(out float scale, out PointF origin)
+        {
+            if (_layout == null) { scale = 1f; origin = new PointF(20f, 20f); return; }
+
+            const int pad = 20;
+            float availW = Math.Max(1, Width  - pad * 2);
+            float availH = Math.Max(1, Height - pad * 2);
+            float baseScale = Math.Min(availW / _layout.SurfaceWidth, availH / _layout.SurfaceHeight);
+            scale = baseScale * _zoom;
+
+            float displayW = _layout.SurfaceWidth  * scale;
+            float displayH = _layout.SurfaceHeight * scale;
+            origin = new PointF(
+                (Width  - displayW) / 2f + _panOffset.X,
+                (Height - displayH) / 2f + _panOffset.Y);
+        }
+
+        private float Snap(float v)
+        {
+            if (!_snapToGrid || _gridSize <= 0) return v;
+            return (float)Math.Round(v / _gridSize) * _gridSize;
+        }
+
+        private RectangleF GetSpriteScreenRect(SpriteEntry sprite, float scale, PointF origin)
+        {
+            float w = sprite.Width  * scale;
+            float h = sprite.Height * scale;
+
+            if (sprite.Type == SpriteEntryType.Text)
+            {
+                // SE text positioning: Y = top edge, X depends on Alignment
+                float x = origin.X + sprite.X * scale;
+                float y = origin.Y + sprite.Y * scale;
+
+                switch (sprite.Alignment)
+                {
+                    case SpriteTextAlignment.Left:
+                        return new RectangleF(x, y, w, h);
+                    case SpriteTextAlignment.Right:
+                        return new RectangleF(x - w, y, w, h);
+                    default: // Center
+                        return new RectangleF(x - w / 2f, y, w, h);
+                }
+            }
+
+            // TEXTURE: Position = center of sprite
+            float cx = origin.X + sprite.X * scale;
+            float cy = origin.Y + sprite.Y * scale;
+            float hw = w / 2f;
+            float hh = h / 2f;
+            return new RectangleF(cx - hw, cy - hh, hw * 2f, hh * 2f);
+        }
+
+        // ── Painting ─────────────────────────────────────────────────────────────
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            if (_layout == null) return;
+
+            ComputeTransform(out float scale, out PointF origin);
+            float dw = _layout.SurfaceWidth  * scale;
+            float dh = _layout.SurfaceHeight * scale;
+
+            // LCD surface background
+            using (var bg = new SolidBrush(Color.FromArgb(12, 18, 30)))
+                g.FillRectangle(bg, origin.X, origin.Y, dw, dh);
+
+            // Surface border
+            using (var border = new Pen(Color.FromArgb(55, 120, 210), 1.5f))
+                g.DrawRectangle(border, origin.X, origin.Y, dw, dh);
+
+            // Centre crosshair guide
+            float cx = origin.X + dw / 2f;
+            float cy = origin.Y + dh / 2f;
+            using (var guide = new Pen(Color.FromArgb(35, 80, 80), 1f) { DashStyle = DashStyle.Dash })
+            {
+                g.DrawLine(guide, cx, origin.Y, cx, origin.Y + dh);
+                g.DrawLine(guide, origin.X, cy, origin.X + dw, cy);
+            }
+
+            // Quarter-grid guide lines
+            using (var qGuide = new Pen(Color.FromArgb(22, 60, 60), 1f) { DashStyle = DashStyle.Dot })
+            {
+                g.DrawLine(qGuide, origin.X + dw * 0.25f, origin.Y, origin.X + dw * 0.25f, origin.Y + dh);
+                g.DrawLine(qGuide, origin.X + dw * 0.75f, origin.Y, origin.X + dw * 0.75f, origin.Y + dh);
+                g.DrawLine(qGuide, origin.X, origin.Y + dh * 0.25f, origin.X + dw, origin.Y + dh * 0.25f);
+                g.DrawLine(qGuide, origin.X, origin.Y + dh * 0.75f, origin.X + dw, origin.Y + dh * 0.75f);
+            }
+
+            // Snap grid
+            if (_snapToGrid && _gridSize > 0)
+            {
+                float gridPx = _gridSize * scale;
+                if (gridPx >= 4f) // only draw when grid cells are large enough to see
+                {
+                    using (var gridPen = new Pen(Color.FromArgb(18, 70, 130, 180), 1f))
+                    {
+                        for (float gx = 0; gx <= _layout.SurfaceWidth; gx += _gridSize)
+                        {
+                            float sx = origin.X + gx * scale;
+                            g.DrawLine(gridPen, sx, origin.Y, sx, origin.Y + dh);
+                        }
+                        for (float gy = 0; gy <= _layout.SurfaceHeight; gy += _gridSize)
+                        {
+                            float sy = origin.Y + gy * scale;
+                            g.DrawLine(gridPen, origin.X, sy, origin.X + dw, sy);
+                        }
+                    }
+                }
+            }
+
+            // Sprites — bottom layer first
+            foreach (var sprite in _layout.Sprites)
+                DrawSprite(g, sprite, sprite == _selectedSprite, scale, origin);
+
+            // Surface size label + zoom
+            string zoomLabel = _zoom >= 0.995f && _zoom <= 1.005f ? "" : $"  Zoom: {_zoom:P0}";
+            using (var lf = new Font("Segoe UI", 8f))
+            using (var lb = new SolidBrush(Color.FromArgb(80, 160, 160)))
+                g.DrawString($"{_layout.SurfaceWidth} × {_layout.SurfaceHeight}{zoomLabel}", lf, lb,
+                    origin.X + 3, origin.Y + dh + 3);
+        }
+
+        private void DrawSprite(Graphics g, SpriteEntry sprite, bool selected, float scale, PointF origin)
+        {
+            var rect = GetSpriteScreenRect(sprite, scale, origin);
+
+            if (sprite.Type == SpriteEntryType.Text)
+                DrawTextSprite(g, sprite, rect, scale);
+            else
+                DrawTextureSprite(g, sprite, rect);
+
+            // Reference layout indicator — dashed border with label
+            if (sprite.IsReferenceLayout)
+            {
+                using (var refPen = new Pen(Color.FromArgb(120, 255, 200, 60), 1f) { DashStyle = DashStyle.Dot })
+                    g.DrawRectangle(refPen, rect.X, rect.Y, rect.Width, rect.Height);
+
+                if (rect.Width > 24 && rect.Height > 10)
+                {
+                    using (var rf = new Font("Segoe UI", 6.5f, FontStyle.Italic, GraphicsUnit.Pixel))
+                    using (var rb = new SolidBrush(Color.FromArgb(140, 255, 200, 60)))
+                        g.DrawString("REF", rf, rb, rect.X + 2, rect.Y + 1);
+                }
+            }
+
+            if (selected)
+            {
+                // Selection border
+                using (var selPen = new Pen(Color.FromArgb(255, 80, 200, 255), 1.5f))
+                    g.DrawRectangle(selPen, rect.X, rect.Y, rect.Width, rect.Height);
+
+                DrawHandles(g, rect);
+            }
+        }
+
+        private void DrawTextSprite(Graphics g, SpriteEntry sprite, RectangleF rect, float viewScale)
+        {
+            var color = sprite.Color;
+
+            // Dashed bounding box (always shown for text)
+            using (var boxPen = new Pen(Color.FromArgb(100, 255, 200, 0), 1f) { DashStyle = DashStyle.Dash })
+                g.DrawRectangle(boxPen, rect.X, rect.Y, rect.Width, rect.Height);
+
+            // SE "White" font renders at ~28.8 surface-px line height at Scale=1.0.
+            // GDI+ em-height ≈ visible height / 1.25 for Segoe UI, so base ≈ 20.
+            // Font size is driven purely by Scale × viewScale — NOT by the bounding box.
+            const float SeBaseFontEm = 20f;
+            float fontSize = Math.Max(6f, sprite.Scale * SeBaseFontEm * viewScale);
+
+            StringAlignment sa;
+            switch (sprite.Alignment)
+            {
+                case SpriteTextAlignment.Left:  sa = StringAlignment.Near;  break;
+                case SpriteTextAlignment.Right: sa = StringAlignment.Far;   break;
+                default:                        sa = StringAlignment.Center; break;
+            }
+
+            // NoClip: SE text overflows the sprite bounding box — don't clip to rect.
+            using (var sf = new StringFormat { Alignment = sa, LineAlignment = StringAlignment.Near, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip })
+            using (var brush = new SolidBrush(color))
+            using (var font = new Font("Segoe UI", Math.Max(6f, fontSize), GraphicsUnit.Pixel))
+                g.DrawString(sprite.Text ?? "", font, brush, rect, sf);
+        }
+
+        private void DrawTextureSprite(Graphics g, SpriteEntry sprite, RectangleF rect)
+        {
+            var color = sprite.Color;
+            var state = g.Save();
+
+            g.TranslateTransform(rect.X + rect.Width  / 2f, rect.Y + rect.Height / 2f);
+            g.RotateTransform(sprite.Rotation * 180f / (float)Math.PI);
+            var r = new RectangleF(-rect.Width / 2f, -rect.Height / 2f, rect.Width, rect.Height);
+
+            // Try real texture first (from SE Content directory)
+            Bitmap tex = _textureCache?.GetTexture(sprite.SpriteName);
+            if (tex != null)
+            {
+                DrawTintedTexture(g, tex, r, color);
+                g.Restore(state);
+                return;
+            }
+
+            using (var brush = new SolidBrush(color))
+            {
+                string key = sprite.SpriteName?.ToLowerInvariant() ?? "";
+                switch (key)
+                {
+                    case "circle":
+                        g.FillEllipse(brush, r);
+                        break;
+
+                    case "semicircle":
+                        g.FillPie(brush, r.X, r.Y, r.Width, r.Height, 180f, 180f);
+                        break;
+
+                    case "triangle":
+                        g.FillPolygon(brush, new[]
+                        {
+                            new PointF(0f,      r.Top),
+                            new PointF(r.Right, r.Bottom),
+                            new PointF(r.Left,  r.Bottom),
+                        });
+                        break;
+
+                    case "righttriangle":
+                        g.FillPolygon(brush, new[]
+                        {
+                            new PointF(r.Left,  r.Top),
+                            new PointF(r.Right, r.Bottom),
+                            new PointF(r.Left,  r.Bottom),
+                        });
+                        break;
+
+                    case "dot":
+                        float d = Math.Min(r.Width, r.Height) * 0.45f;
+                        g.FillEllipse(brush, -d / 2f, -d / 2f, d, d);
+                        break;
+
+                    case "squaresimple":
+                        g.FillRectangle(brush, r);
+                        break;
+
+                    default:
+                        // No texture available — draw filled rect + centred name label
+                        g.FillRectangle(brush, r);
+                        if (r.Width > 18 && r.Height > 12)
+                        {
+                            int lum = (color.R * 299 + color.G * 587 + color.B * 114) / 1000;
+                            var textColor = lum > 128 ? Color.FromArgb(200, 0, 0, 0) : Color.FromArgb(200, 255, 255, 255);
+                            float fs = Math.Max(7f, Math.Min(r.Width * 0.14f, 12f));
+                            using (var lFont = new Font("Segoe UI", fs, FontStyle.Bold, GraphicsUnit.Pixel))
+                            using (var lb = new SolidBrush(textColor))
+                            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                                g.DrawString(sprite.SpriteName ?? "", lFont, lb, r, sf);
+                        }
+                        break;
+                }
+            }
+            g.Restore(state);
+        }
+
+        /// <summary>
+        /// Draws a texture bitmap tinted by the sprite's color using a ColorMatrix.
+        /// SE sprites are typically white textures that get multiplied by the tint color.
+        /// </summary>
+        private static void DrawTintedTexture(Graphics g, Bitmap tex, RectangleF dest, Color tint)
+        {
+            float rm = tint.R / 255f;
+            float gm = tint.G / 255f;
+            float bm = tint.B / 255f;
+            float am = tint.A / 255f;
+
+            var cm = new ColorMatrix(new[]
+            {
+                new[] { rm,  0f,  0f,  0f, 0f },
+                new[] { 0f,  gm,  0f,  0f, 0f },
+                new[] { 0f,  0f,  bm,  0f, 0f },
+                new[] { 0f,  0f,  0f,  am, 0f },
+                new[] { 0f,  0f,  0f,  0f, 1f },
+            });
+
+            using (var ia = new ImageAttributes())
+            {
+                ia.SetColorMatrix(cm, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(tex,
+                    new[] { new PointF(dest.Left, dest.Top), new PointF(dest.Right, dest.Top), new PointF(dest.Left, dest.Bottom) },
+                    new RectangleF(0, 0, tex.Width, tex.Height),
+                    GraphicsUnit.Pixel, ia);
+            }
+        }
+
+        // ── Selection handles ─────────────────────────────────────────────────────
+        private const float HandleSize = 8f;
+        private const float HandleHalf = HandleSize / 2f;
+
+        private RectangleF[] GetHandleRects(RectangleF r)
+        {
+            float cx = r.X + r.Width  / 2f;
+            float cy = r.Y + r.Height / 2f;
+            return new[]
+            {
+                new RectangleF(r.X     - HandleHalf, r.Y      - HandleHalf, HandleSize, HandleSize), // NW
+                new RectangleF(cx      - HandleHalf, r.Y      - HandleHalf, HandleSize, HandleSize), // N
+                new RectangleF(r.Right - HandleHalf, r.Y      - HandleHalf, HandleSize, HandleSize), // NE
+                new RectangleF(r.Right - HandleHalf, cy       - HandleHalf, HandleSize, HandleSize), // E
+                new RectangleF(r.Right - HandleHalf, r.Bottom - HandleHalf, HandleSize, HandleSize), // SE
+                new RectangleF(cx      - HandleHalf, r.Bottom - HandleHalf, HandleSize, HandleSize), // S
+                new RectangleF(r.X     - HandleHalf, r.Bottom - HandleHalf, HandleSize, HandleSize), // SW
+                new RectangleF(r.X     - HandleHalf, cy       - HandleHalf, HandleSize, HandleSize), // W
+            };
+        }
+
+        private void DrawHandles(Graphics g, RectangleF rect)
+        {
+            foreach (var h in GetHandleRects(rect))
+            {
+                g.FillRectangle(Brushes.White, h);
+                using (var p = new Pen(Color.FromArgb(255, 60, 180, 255)))
+                    g.DrawRectangle(p, h.X, h.Y, h.Width, h.Height);
+            }
+        }
+
+        private DragMode HitTestHandle(PointF pt, RectangleF spriteRect)
+        {
+            var rects = GetHandleRects(spriteRect);
+            for (int i = 0; i < rects.Length; i++)
+            {
+                var h = rects[i];
+                h.Inflate(2f, 2f);
+                if (h.Contains(pt)) return HandleModes[i];
+            }
+            return DragMode.None;
+        }
+
+        // ── Mouse interaction ─────────────────────────────────────────────────────
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (_layout == null) return;
+            Focus();
+
+            // Middle-click = pan
+            if (e.Button == MouseButtons.Middle)
+            {
+                _isPanning = true;
+                _panStart = new PointF(e.X, e.Y);
+                _panOrigOffset = _panOffset;
+                Capture = true;
+                Cursor = Cursors.Hand;
+                return;
+            }
+
+            if (e.Button != MouseButtons.Left) return;
+
+            ComputeTransform(out float scale, out PointF origin);
+            var pt = new PointF(e.X, e.Y);
+
+            // Check resize handles on the currently selected sprite first
+            if (_selectedSprite != null)
+            {
+                var selRect = GetSpriteScreenRect(_selectedSprite, scale, origin);
+                var mode = HitTestHandle(pt, selRect);
+                if (mode != DragMode.None) { BeginDrag(mode, pt, _selectedSprite); return; }
+                if (selRect.Contains(pt))  { BeginDrag(DragMode.Move, pt, _selectedSprite); return; }
+            }
+
+            // Hit-test all sprites in reverse (top-layer first)
+            for (int i = _layout.Sprites.Count - 1; i >= 0; i--)
+            {
+                var rect = GetSpriteScreenRect(_layout.Sprites[i], scale, origin);
+                if (rect.Contains(pt))
+                {
+                    SelectedSprite = _layout.Sprites[i];
+                    BeginDrag(DragMode.Move, pt, _selectedSprite);
+                    return;
+                }
+            }
+
+            // Clicked empty — deselect
+            SelectedSprite = null;
+        }
+
+        private void BeginDrag(DragMode mode, PointF screenPt, SpriteEntry sprite)
+        {
+            DragStarting?.Invoke(this, EventArgs.Empty);
+            _dragMode  = mode;
+            _dragStart = screenPt;
+            _dragOrigX = sprite.X;
+            _dragOrigY = sprite.Y;
+            _dragOrigW = sprite.Width;
+            _dragOrigH = sprite.Height;
+            Capture = true;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (_layout == null) return;
+
+            // Handle panning
+            if (_isPanning)
+            {
+                _panOffset = new PointF(
+                    _panOrigOffset.X + e.X - _panStart.X,
+                    _panOrigOffset.Y + e.Y - _panStart.Y);
+                Invalidate();
+                return;
+            }
+
+            ComputeTransform(out float scale, out PointF origin);
+            var pt = new PointF(e.X, e.Y);
+
+            if (_dragMode == DragMode.None || _selectedSprite == null)
+            {
+                UpdateCursor(pt, scale, origin);
+                return;
+            }
+
+            float dx = (pt.X - _dragStart.X) / scale;
+            float dy = (pt.Y - _dragStart.Y) / scale;
+            var s = _selectedSprite;
+
+            switch (_dragMode)
+            {
+                case DragMode.Move:
+                    s.X = Snap(_dragOrigX + dx);
+                    s.Y = Snap(_dragOrigY + dy);
+                    break;
+                case DragMode.ResizeNW:
+                    s.Width  = Math.Max(10f, Snap(_dragOrigW - dx * 2f));
+                    s.Height = Math.Max(10f, Snap(_dragOrigH - dy * 2f));
+                    break;
+                case DragMode.ResizeN:
+                    s.Height = Math.Max(10f, Snap(_dragOrigH - dy * 2f));
+                    break;
+                case DragMode.ResizeNE:
+                    s.Width  = Math.Max(10f, Snap(_dragOrigW + dx * 2f));
+                    s.Height = Math.Max(10f, Snap(_dragOrigH - dy * 2f));
+                    break;
+                case DragMode.ResizeE:
+                    s.Width  = Math.Max(10f, Snap(_dragOrigW + dx * 2f));
+                    break;
+                case DragMode.ResizeSE:
+                    s.Width  = Math.Max(10f, Snap(_dragOrigW + dx * 2f));
+                    s.Height = Math.Max(10f, Snap(_dragOrigH + dy * 2f));
+                    break;
+                case DragMode.ResizeS:
+                    s.Height = Math.Max(10f, Snap(_dragOrigH + dy * 2f));
+                    break;
+                case DragMode.ResizeSW:
+                    s.Width  = Math.Max(10f, Snap(_dragOrigW - dx * 2f));
+                    s.Height = Math.Max(10f, Snap(_dragOrigH + dy * 2f));
+                    break;
+                case DragMode.ResizeW:
+                    s.Width  = Math.Max(10f, Snap(_dragOrigW - dx * 2f));
+                    break;
+            }
+
+            SpriteModified?.Invoke(this, EventArgs.Empty);
+            Invalidate();
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+
+            if (_isPanning)
+            {
+                _isPanning = false;
+                Capture = false;
+                Cursor = Cursors.Default;
+                return;
+            }
+
+            if (_dragMode != DragMode.None)
+            {
+                DragCompleted?.Invoke(this, EventArgs.Empty);
+            }
+            Capture = false;
+            _dragMode = DragMode.None;
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            float factor = e.Delta > 0 ? 1.15f : 1f / 1.15f;
+            Zoom = _zoom * factor;
+        }
+
+        private void UpdateCursor(PointF pt, float scale, PointF origin)
+        {
+            if (_selectedSprite == null) { Cursor = Cursors.Default; return; }
+
+            var rect = GetSpriteScreenRect(_selectedSprite, scale, origin);
+            switch (HitTestHandle(pt, rect))
+            {
+                case DragMode.ResizeNW: case DragMode.ResizeSE: Cursor = Cursors.SizeNWSE;  break;
+                case DragMode.ResizeNE: case DragMode.ResizeSW: Cursor = Cursors.SizeNESW;  break;
+                case DragMode.ResizeN:  case DragMode.ResizeS:  Cursor = Cursors.SizeNS;    break;
+                case DragMode.ResizeE:  case DragMode.ResizeW:  Cursor = Cursors.SizeWE;    break;
+                default: Cursor = rect.Contains(pt) ? Cursors.SizeAll : Cursors.Default;    break;
+            }
+        }
+
+        // ── Public actions ────────────────────────────────────────────────────────
+        public SpriteEntry AddSprite(string name, bool isText)
+        {
+            if (_layout == null) return null;
+
+            var sprite = new SpriteEntry
+            {
+                Type      = isText ? SpriteEntryType.Text : SpriteEntryType.Texture,
+                SpriteName = name,
+                Text      = isText ? "Hello LCD" : name,
+                X         = _layout.SurfaceWidth  / 2f,
+                Y         = _layout.SurfaceHeight / 2f,
+                Width     = isText ? 200f : 100f,
+                Height    = isText ?  40f : 100f,
+            };
+
+            _layout.Sprites.Add(sprite);
+            SelectedSprite = sprite;   // fires SelectionChanged + Invalidate
+            return sprite;
+        }
+
+        public void DeleteSelected()
+        {
+            if (_selectedSprite == null || _layout == null) return;
+            _layout.Sprites.Remove(_selectedSprite);
+            SelectedSprite = null;
+        }
+
+        public SpriteEntry DuplicateSelected()
+        {
+            if (_selectedSprite == null || _layout == null) return null;
+            var src = _selectedSprite;
+            var dup = new SpriteEntry
+            {
+                Type       = src.Type,
+                SpriteName = src.SpriteName,
+                X          = src.X + 20f,
+                Y          = src.Y + 20f,
+                Width      = src.Width,
+                Height     = src.Height,
+                ColorR     = src.ColorR,
+                ColorG     = src.ColorG,
+                ColorB     = src.ColorB,
+                ColorA     = src.ColorA,
+                Rotation   = src.Rotation,
+                Text       = src.Text,
+                FontId     = src.FontId,
+                Alignment  = src.Alignment,
+                Scale      = src.Scale,
+            };
+            _layout.Sprites.Add(dup);
+            SelectedSprite = dup;
+            return dup;
+        }
+
+        public void NudgeSelected(float dx, float dy)
+        {
+            if (_selectedSprite == null) return;
+            _selectedSprite.X = Snap(_selectedSprite.X + dx);
+            _selectedSprite.Y = Snap(_selectedSprite.Y + dy);
+            SpriteModified?.Invoke(this, EventArgs.Empty);
+            Invalidate();
+        }
+
+        public void CenterSelected()
+        {
+            if (_selectedSprite == null || _layout == null) return;
+            _selectedSprite.X = _layout.SurfaceWidth  / 2f;
+            _selectedSprite.Y = _layout.SurfaceHeight / 2f;
+            SpriteModified?.Invoke(this, EventArgs.Empty);
+            Invalidate();
+        }
+
+        public void ResetView()
+        {
+            _zoom = 1f;
+            _panOffset = PointF.Empty;
+            Invalidate();
+        }
+
+        public void MoveSelectedUp()
+        {
+            if (_selectedSprite == null || _layout == null) return;
+            int i = _layout.Sprites.IndexOf(_selectedSprite);
+            if (i < _layout.Sprites.Count - 1)
+            {
+                _layout.Sprites.RemoveAt(i);
+                _layout.Sprites.Insert(i + 1, _selectedSprite);
+                Invalidate();
+            }
+        }
+
+        public void MoveSelectedDown()
+        {
+            if (_selectedSprite == null || _layout == null) return;
+            int i = _layout.Sprites.IndexOf(_selectedSprite);
+            if (i > 0)
+            {
+                _layout.Sprites.RemoveAt(i);
+                _layout.Sprites.Insert(i - 1, _selectedSprite);
+                Invalidate();
+            }
+        }
+
+        protected override void OnResize(EventArgs e) { base.OnResize(e); Invalidate(); }
+    }
+}
