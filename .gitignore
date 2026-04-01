@@ -48,5 +48,8 @@ settings.txt
 *.seld
 err.txt
 
+## Release packaging
+release/
+
 ## Duplicate/stale nested copy (build artifact)
 SESpriteLCDLayoutTool/SESpriteLCDLayoutTool/
