@@ -194,6 +194,7 @@ private string SerializeSnapshot(long entityId)
 - The snapshot file is written to wherever IML's working directory is on the server (same folder as `iml-config.xml` — check the chat response for the exact path)
 - Panel names containing special characters (`:`, `=`, etc.) are sanitized to underscores in the filename
 - If the client and server are on different machines, you'll need to grab the file from the server
+- **Duplicate names:** The snapshot command matches by block name and returns the first match it finds. If you have multiple LCDs with the same name, temporarily rename the one you want to snapshot to something unique before running the command
 
 ---
 
