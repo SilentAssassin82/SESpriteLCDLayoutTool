@@ -1783,6 +1783,7 @@ namespace SESpriteLCDLayoutTool
                 sprite.Text       = glyph.Character.ToString();
                 sprite.FontId     = font;
                 sprite.Scale      = 1.0f;
+                UpdateImportLabel(sprite, "Text");
                 OnSelectionChanged(_canvas, EventArgs.Empty);
                 _canvas.Invalidate();
                 RefreshLayerList();
@@ -1799,11 +1800,24 @@ namespace SESpriteLCDLayoutTool
             sprite.Type       = SpriteEntryType.Texture;
             sprite.SpriteName = name;
             sprite.Text       = name;
+            UpdateImportLabel(sprite, name);
             OnSelectionChanged(_canvas, EventArgs.Empty);
             _canvas.Invalidate();
             RefreshLayerList();
             RefreshCode();
             SetStatus($"Replaced sprite texture with \"{name}\"");
+        }
+
+        /// <summary>
+        /// Updates the ImportLabel for a sprite after replacement, preserving the
+        /// context prefix (e.g. "Header: ") while updating the type hint.
+        /// </summary>
+        private static void UpdateImportLabel(SpriteEntry sprite, string typeHint)
+        {
+            if (sprite.ImportLabel == null) return;
+            int colonIdx = sprite.ImportLabel.IndexOf(": ");
+            string prefix = colonIdx >= 0 ? sprite.ImportLabel.Substring(0, colonIdx + 2) : "";
+            sprite.ImportLabel = prefix + typeHint;
         }
 
         // ── Helper factory methods ────────────────────────────────────────────────

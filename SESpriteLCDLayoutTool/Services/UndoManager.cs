@@ -85,6 +85,11 @@ namespace SESpriteLCDLayoutTool.Services
                 FontId     = s.FontId,
                 Alignment  = s.Alignment,
                 Scale      = s.Scale,
+                IsReferenceLayout = s.IsReferenceLayout,
+                ImportLabel       = s.ImportLabel,
+                SourceStart       = s.SourceStart,
+                SourceEnd         = s.SourceEnd,
+                ImportBaseline    = s.ImportBaseline,
             }).ToList();
         }
 
@@ -111,6 +116,11 @@ namespace SESpriteLCDLayoutTool.Services
                     FontId     = snap.FontId,
                     Alignment  = snap.Alignment,
                     Scale      = snap.Scale,
+                    IsReferenceLayout = snap.IsReferenceLayout,
+                    ImportLabel       = snap.ImportLabel,
+                    SourceStart       = snap.SourceStart,
+                    SourceEnd         = snap.SourceEnd,
+                    ImportBaseline    = snap.ImportBaseline,
                 });
             }
         }
@@ -128,6 +138,11 @@ namespace SESpriteLCDLayoutTool.Services
             public string FontId;
             public SpriteTextAlignment Alignment;
             public float Scale;
+            public bool IsReferenceLayout;
+            public string ImportLabel;
+            public int SourceStart;
+            public int SourceEnd;
+            public SpriteEntry ImportBaseline;
         }
     }
 }
