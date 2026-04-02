@@ -44,6 +44,20 @@ namespace SESpriteLCDLayoutTool.Models
         /// </summary>
         public bool IsReferenceLayout { get; set; }
 
+        // ── Source tracking (for per-sprite round-trip patching) ──────────────
+
+        /// <summary>Character offset in OriginalSourceCode where this sprite definition starts (-1 = not tracked).</summary>
+        [XmlIgnore] public int SourceStart { get; set; } = -1;
+
+        /// <summary>Character offset (exclusive) in OriginalSourceCode where this sprite definition ends (-1 = not tracked).</summary>
+        [XmlIgnore] public int SourceEnd { get; set; } = -1;
+
+        /// <summary>Contextual label from surrounding code (e.g. "Header: Text", "Item: Triangle"). Overrides DisplayName when set.</summary>
+        [XmlIgnore] public string ImportLabel { get; set; }
+
+        /// <summary>Snapshot of property values at import time, used for diffing in per-sprite round-trip.</summary>
+        [XmlIgnore] public SpriteEntry ImportBaseline { get; set; }
+
         [XmlIgnore]
         public Color Color
         {
@@ -51,9 +65,21 @@ namespace SESpriteLCDLayoutTool.Models
             set { ColorR = value.R; ColorG = value.G; ColorB = value.B; ColorA = value.A; }
         }
 
-        public string DisplayName =>
-            Type == SpriteEntryType.Text
-                ? $"TEXT \"{(Text != null && Text.Length > 12 ? Text.Substring(0, 9) + "..." : Text)}\""
-                : SpriteName;
+        public string DisplayName
+        {
+            get
+            {
+                if (ImportLabel != null) return ImportLabel;
+                return Type == SpriteEntryType.Text
+                    ? $"TEXT \"{(Text != null && Text.Length > 12 ? Text.Substring(0, 9) + "..." : Text)}\""
+                    : SpriteName;
+            }
+        }
+
+        /// <summary>Creates a shallow clone of property values for baseline comparison.</summary>
+        public SpriteEntry CloneValues()
+        {
+            return (SpriteEntry)MemberwiseClone();
+        }
     }
 }

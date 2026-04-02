@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using System.Text.RegularExpressions;
 using SESpriteLCDLayoutTool.Models;
 
 namespace SESpriteLCDLayoutTool.Services
@@ -323,6 +324,374 @@ namespace SESpriteLCDLayoutTool.Services
                     sb.Append(c);
             }
             return sb.ToString();
+        }
+
+        // ── Per-sprite dynamic round-trip ─────────────────────────────────────
+
+        /// <summary>
+        /// Per-sprite property patching for dynamic code (loops, switch/case, expressions).
+        /// Compares each sprite's current values against its ImportBaseline and surgically
+        /// replaces only the literal values (colors, textures, fonts) that changed,
+        /// preserving all dynamic expressions and surrounding code.
+        /// Returns null if per-sprite patching is not applicable.
+        /// </summary>
+        public static string PatchOriginalSource(LcdLayout layout)
+        {
+            string original = layout.OriginalSourceCode;
+            if (string.IsNullOrWhiteSpace(original)) return null;
+
+            // Collect sprites that have source tracking and a baseline
+            var patchable = new System.Collections.Generic.List<SpriteEntry>();
+            foreach (var sp in layout.Sprites)
+            {
+                if (sp.IsReferenceLayout) continue;
+                if (sp.SourceStart < 0 || sp.SourceEnd < 0 || sp.ImportBaseline == null) continue;
+                patchable.Add(sp);
+            }
+
+            if (patchable.Count == 0) return null;
+
+            // Sort by SourceStart descending so we patch from end-to-start (preserves offsets)
+            patchable.Sort((a, b) => b.SourceStart.CompareTo(a.SourceStart));
+
+            var result = new StringBuilder(original);
+
+            foreach (var sp in patchable)
+            {
+                var bl = sp.ImportBaseline;
+                if (sp.SourceStart >= result.Length || sp.SourceEnd > result.Length) continue;
+
+                string chunk = result.ToString(sp.SourceStart, sp.SourceEnd - sp.SourceStart);
+                string patched = chunk;
+
+                // Patch texture/sprite name (string literal)
+                if (sp.Type == SpriteEntryType.Texture &&
+                    bl.SpriteName != sp.SpriteName &&
+                    bl.SpriteName != null && sp.SpriteName != null)
+                {
+                    patched = ReplaceStringLiteral(patched, bl.SpriteName, sp.SpriteName);
+                }
+
+                // Patch text content (string literal)
+                if (sp.Type == SpriteEntryType.Text &&
+                    bl.Text != sp.Text &&
+                    bl.Text != null && sp.Text != null)
+                {
+                    patched = ReplaceStringLiteral(patched, bl.Text, sp.Text);
+                }
+
+                // Patch font name (string literal)
+                if (bl.FontId != sp.FontId &&
+                    bl.FontId != null && sp.FontId != null)
+                {
+                    patched = ReplaceStringLiteral(patched, bl.FontId, sp.FontId);
+                }
+
+                // Patch color (new Color(...) literals or named colors like Color.White)
+                if (bl.ColorR != sp.ColorR || bl.ColorG != sp.ColorG ||
+                    bl.ColorB != sp.ColorB || bl.ColorA != sp.ColorA)
+                {
+                    patched = PatchColorLiteral(patched, bl, sp);
+                }
+
+                // Only substitute if something actually changed
+                if (patched != chunk)
+                {
+                    result.Remove(sp.SourceStart, sp.SourceEnd - sp.SourceStart);
+                    result.Insert(sp.SourceStart, patched);
+                }
+            }
+
+            string final = result.ToString();
+            // Return the (possibly unchanged) original — null only when patching is not applicable
+            return final;
+        }
+
+        /// <summary>Replaces a quoted string literal in the source text.</summary>
+        private static string ReplaceStringLiteral(string text, string oldValue, string newValue)
+        {
+            string escapedOld = $"\"{Esc(oldValue)}\"";
+            string escapedNew = $"\"{Esc(newValue)}\"";
+            int idx = text.IndexOf(escapedOld, StringComparison.Ordinal);
+            if (idx < 0) return text;
+            return text.Substring(0, idx) + escapedNew + text.Substring(idx + escapedOld.Length);
+        }
+
+        /// <summary>
+        /// Patches a color literal in the source text. Handles new Color(R,G,B),
+        /// new Color(R,G,B,A), and named colors like Color.White.
+        /// </summary>
+        private static string PatchColorLiteral(string text, SpriteEntry baseline, SpriteEntry current)
+        {
+            string newColor = current.ColorA != 255
+                ? $"new Color({current.ColorR}, {current.ColorG}, {current.ColorB}, {current.ColorA})"
+                : $"new Color({current.ColorR}, {current.ColorG}, {current.ColorB})";
+
+            // Try matching "new Color(R, G, B)" or "new Color(R, G, B, A)"
+            var colorPattern = new Regex(
+                @"new\s+Color\s*\(\s*" + baseline.ColorR + @"\s*,\s*" + baseline.ColorG +
+                @"\s*,\s*" + baseline.ColorB + @"(?:\s*,\s*\d+)?\s*\)");
+
+            if (colorPattern.IsMatch(text))
+                return colorPattern.Replace(text, newColor, 1);
+
+            // Try named colors: Color.White → (255,255,255), Color.Red → (255,0,0), etc.
+            string namedColor = MatchNamedColor(baseline);
+            if (namedColor != null)
+            {
+                int idx = text.IndexOf(namedColor, StringComparison.Ordinal);
+                if (idx >= 0)
+                    return text.Substring(0, idx) + newColor + text.Substring(idx + namedColor.Length);
+            }
+
+            return text; // color is an expression — can't patch
+        }
+
+        /// <summary>Returns the C# named color expression that matches the baseline values, or null.</summary>
+        private static string MatchNamedColor(SpriteEntry bl)
+        {
+            if (bl.ColorA == 255)
+            {
+                if (bl.ColorR == 255 && bl.ColorG == 255 && bl.ColorB == 255) return "Color.White";
+                if (bl.ColorR == 0   && bl.ColorG == 0   && bl.ColorB == 0)   return "Color.Black";
+                if (bl.ColorR == 255 && bl.ColorG == 0   && bl.ColorB == 0)   return "Color.Red";
+                if (bl.ColorR == 0   && bl.ColorG == 255 && bl.ColorB == 0)   return "Color.Green";
+                if (bl.ColorR == 0   && bl.ColorG == 0   && bl.ColorB == 255) return "Color.Blue";
+                if (bl.ColorR == 255 && bl.ColorG == 255 && bl.ColorB == 0)   return "Color.Yellow";
+            }
+            if (bl.ColorR == 0 && bl.ColorG == 0 && bl.ColorB == 0 && bl.ColorA == 0)
+                return "Color.Transparent";
+            return null;
+        }
+
+        /// <summary>
+        /// Detects the surrounding code context for a sprite at a given position.
+        /// Looks backwards for case labels, method names, or region comments.
+        /// Returns a label like "Header", "Item", "Footer" or null.
+        /// </summary>
+        public static string DetectSpriteContext(string code, int position)
+        {
+            if (code == null || position <= 0) return null;
+
+            string before = code.Substring(0, Math.Min(position, code.Length));
+
+            // Look for nearest "case ...:Kind.XYZ:" or "case ...XYZ:" pattern
+            var caseMatch = Regex.Match(before,
+                @"case\s+(?:\w+\.)*(\w+)\s*:", RegexOptions.RightToLeft);
+            if (caseMatch.Success)
+                return caseMatch.Groups[1].Value;
+
+            return null;
+        }
+
+        // ── Region-based round-trip (static layouts) ──────────────────────────
+
+        /// <summary>
+        /// When OriginalSourceCode is set, splices updated sprite definitions back
+        /// into the original pasted code so the user can paste straight back into
+        /// their project. Returns null if round-trip is not possible.
+        /// </summary>
+        public static string GenerateRoundTrip(LcdLayout layout)
+        {
+            string original = layout.OriginalSourceCode;
+            if (string.IsNullOrWhiteSpace(original) || layout.Sprites.Count == 0)
+                return null;
+
+            // Find all MySprite definitions in the original code.
+            // Match: new MySprite { ... }, new MySprite(...), MySprite.CreateText(...), MySprite.CreateSprite(...)
+            var spritePattern = new Regex(
+                @"(new\s+MySprite\s*[\({])|(MySprite\s*\.\s*Create(?:Text|Sprite)\s*\()",
+                RegexOptions.Compiled);
+
+            var matches = spritePattern.Matches(original);
+            if (matches.Count == 0) return null;
+
+            // Region start: beginning of the LINE containing the first MySprite match.
+            // This ensures we capture "frame.Add(" or similar prefixes on the same line.
+            // Also absorb any preceding comment/blank lines (like "// [1] SquareSimple").
+            int firstMatchPos = matches[0].Index;
+            int regionStart = FindLineStart(original, firstMatchPos);
+            regionStart = AbsorbPrecedingComments(original, regionStart);
+
+            // Region end: after the last MySprite block's closing punctuation
+            int regionEnd = -1;
+            for (int i = matches.Count - 1; i >= 0; i--)
+            {
+                string matchText = matches[i].Value;
+                char lastChar = matchText[matchText.Length - 1];
+
+                if (lastChar == '{')
+                {
+                    int braceEnd = FindMatchingBrace(original, matches[i].Index + matchText.Length - 1);
+                    if (braceEnd >= 0)
+                        regionEnd = SkipTrailingPunctuation(original, braceEnd + 1);
+                }
+                else // '(' — constructor or factory method
+                {
+                    int parenEnd = FindMatchingParen(original, matches[i].Index + matchText.Length - 1);
+                    if (parenEnd >= 0)
+                        regionEnd = SkipTrailingPunctuation(original, parenEnd + 1);
+                }
+
+                if (regionEnd > 0) break;
+            }
+
+            if (regionEnd <= regionStart) return null;
+
+            // Detect indentation from the line containing the first MySprite match
+            string indent = DetectIndent(original, firstMatchPos);
+
+            // Generate just the sprite definitions with the detected indentation
+            var sb = new StringBuilder();
+            int actualCount = 0;
+            for (int i = 0; i < layout.Sprites.Count; i++)
+            {
+                var sp = layout.Sprites[i];
+                if (sp.IsReferenceLayout) continue;
+
+                if (actualCount > 0) sb.AppendLine();
+
+                sb.AppendLine($"{indent}// [{actualCount + 1}] {sp.DisplayName}");
+                sb.AppendLine($"{indent}frame.Add(new MySprite");
+                sb.AppendLine($"{indent}{{");
+
+                if (sp.Type == SpriteEntryType.Text)
+                {
+                    sb.AppendLine($"{indent}    Type           = SpriteType.TEXT,");
+                    sb.AppendLine($"{indent}    Data           = {Q(sp.Text)},");
+                    sb.AppendLine($"{indent}    Position       = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
+                    sb.AppendLine($"{indent}    Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+                    sb.AppendLine($"{indent}    FontId         = {Q(sp.FontId)},");
+                    sb.AppendLine($"{indent}    Alignment      = TextAlignment.{sp.Alignment.ToString().ToUpperInvariant()},");
+                    sb.AppendLine($"{indent}    RotationOrScale = {sp.Scale:F2}f,");
+                }
+                else
+                {
+                    sb.AppendLine($"{indent}    Type           = SpriteType.TEXTURE,");
+                    sb.AppendLine($"{indent}    Data           = {Q(sp.SpriteName)},");
+                    sb.AppendLine($"{indent}    Position       = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
+                    sb.AppendLine($"{indent}    Size           = new Vector2({sp.Width:F1}f, {sp.Height:F1}f),");
+                    sb.AppendLine($"{indent}    Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+                    sb.AppendLine($"{indent}    Alignment      = TextAlignment.CENTER,");
+                    sb.AppendLine($"{indent}    RotationOrScale = {sp.Rotation:F4}f,");
+                }
+
+                sb.Append($"{indent}}});");
+                actualCount++;
+            }
+
+            if (actualCount == 0) return null;
+
+            // Ensure the splice ends with a newline
+            sb.AppendLine();
+
+            // Splice: original[0..regionStart) + generated + original[regionEnd..)
+            string before = original.Substring(0, regionStart);
+            string after  = original.Substring(regionEnd);
+
+            return before + sb.ToString() + after;
+        }
+
+        /// <summary>Finds the position of the start of the line containing <paramref name="position"/>.</summary>
+        private static int FindLineStart(string code, int position)
+        {
+            int i = position;
+            while (i > 0 && code[i - 1] != '\n')
+                i--;
+            return i;
+        }
+
+        /// <summary>
+        /// From a line start position, walks backwards to absorb any preceding
+        /// comment lines or blank lines that are part of the sprite block.
+        /// </summary>
+        private static int AbsorbPrecedingComments(string code, int lineStart)
+        {
+            int pos = lineStart;
+            while (pos > 0)
+            {
+                // Find the start of the preceding line
+                int prevEnd = pos - 1; // char before current '\n'
+                if (prevEnd >= 0 && code[prevEnd] == '\n') prevEnd--; // skip \n
+                if (prevEnd >= 0 && code[prevEnd] == '\r') prevEnd--; // skip \r
+
+                int prevStart = prevEnd;
+                while (prevStart > 0 && code[prevStart - 1] != '\n')
+                    prevStart--;
+                if (prevStart < 0) prevStart = 0;
+
+                // Get the trimmed content of the preceding line
+                string prevLine = code.Substring(prevStart, prevEnd - prevStart + 1).Trim();
+
+                // Absorb comment lines and blank lines
+                if (prevLine.Length == 0 || prevLine.StartsWith("//"))
+                    pos = prevStart;
+                else
+                    break;
+            }
+            return pos;
+        }
+
+        private static string DetectIndent(string code, int position)
+        {
+            // Walk backwards from position to find the start of the line
+            int lineStart = position;
+            while (lineStart > 0 && code[lineStart - 1] != '\n')
+                lineStart--;
+
+            // Extract leading whitespace
+            var indent = new StringBuilder();
+            for (int i = lineStart; i < position && i < code.Length; i++)
+            {
+                if (code[i] == ' ' || code[i] == '\t')
+                    indent.Append(code[i]);
+                else
+                    break;
+            }
+            return indent.ToString();
+        }
+
+        private static int SkipTrailingPunctuation(string code, int pos)
+        {
+            // Skip whitespace, ");", ",", or ";" after a closing brace/paren
+            while (pos < code.Length)
+            {
+                char c = code[pos];
+                if (c == ')' || c == ';' || c == ',' || c == ' ' || c == '\t')
+                    pos++;
+                else if (c == '\r' || c == '\n')
+                {
+                    pos++;
+                    break;
+                }
+                else
+                    break;
+            }
+            // Consume trailing newline
+            if (pos < code.Length && code[pos] == '\n') pos++;
+            return pos;
+        }
+
+        private static int FindMatchingBrace(string code, int openPos)
+        {
+            int depth = 1;
+            for (int i = openPos + 1; i < code.Length; i++)
+            {
+                if (code[i] == '{') depth++;
+                else if (code[i] == '}') { depth--; if (depth == 0) return i; }
+            }
+            return -1;
+        }
+
+        private static int FindMatchingParen(string code, int openPos)
+        {
+            int depth = 1;
+            for (int i = openPos + 1; i < code.Length; i++)
+            {
+                if (code[i] == '(') depth++;
+                else if (code[i] == ')') { depth--; if (depth == 0) return i; }
+            }
+            return -1;
         }
     }
 }

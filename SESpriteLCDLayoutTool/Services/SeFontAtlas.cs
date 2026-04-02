@@ -150,8 +150,18 @@ namespace SESpriteLCDLayoutTool.Services
             switch (fontName.ToLowerInvariant())
             {
                 case "monospace": return "monospace";
-                // White, Red, Green, Blue, DarkBlue, UrlFont all use the "white" font atlas
-                default: return "white";
+
+                // All SE colour fonts share the same "white" glyph atlas;
+                // tinting is applied at render time by the game / our canvas.
+                case "white":
+                case "red":
+                case "green":
+                case "blue":
+                case "darkblue":
+                case "urlfont":
+                    return "white";
+
+                default: return "white"; // unknown font — best-effort
             }
         }
 

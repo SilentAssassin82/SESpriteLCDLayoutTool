@@ -42,6 +42,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
   - **Mod** — `Sandbox.ModAPI` (public method)
   - **Plugin / Torch** — `Sandbox.ModAPI` with `IMyTextSurfaceProvider` hints
 - Smart **code parser** supporting many C# styles (object initializers, constructors, factory methods, assignments, fully-qualified enums)
+- **Code round-trip** — paste your existing source code, edit visually, and get your original code back with only the changed properties patched in (colors, textures, fonts). Works with both static layouts and dynamic code (loops, switch/case, expressions)
 - One-click **Copy to clipboard**
 
 ### 📸 LCD Snapshot Capture (Plugin Helper)
@@ -270,6 +271,16 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v1.2.0
+- **Code Round-Trip** — Paste your full source code, edit sprites visually, and get your original code back with only changed values patched in
+  - **Region-based round-trip** for static layouts with literal positions — splices the updated sprite block back into your original code
+  - **Per-sprite dynamic round-trip** for code with loops, `switch`/`case`, computed positions — surgically patches individual color, texture, and font string literals while preserving all expressions and control flow
+  - Tracks source ranges and baseline values per sprite during import
+  - Handles `new Color(R,G,B)`, `Color.White`, and quoted string literals
+  - Context detection labels sprites from surrounding `case` statements for easy identification
+- **Layer List Context Menu** — Right-click the layer list (bottom-right) for Move Up, Move Down, Duplicate, and Delete
+- **Sprite Catalog Replace** — Right-click a sprite in the catalog (left panel) to replace the currently selected sprite's texture or glyph, keeping position, size, color, and all other properties
 
 ### v1.1.0
 - **SE Font Atlas Rendering** — PUA glyphs (controller icons, color swatches, etc.) now render using the actual SE DDS font atlas textures instead of system font fallback

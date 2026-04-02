@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
@@ -267,6 +268,12 @@ namespace SESpriteLCDLayoutTool
                 ShowLines   = true,
             };
             _spriteTree.NodeMouseDoubleClick += (s, e) => AddSelectedTreeSprite();
+            _spriteTree.NodeMouseClick += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right)
+                    _spriteTree.SelectedNode = e.Node;
+            };
+            _spriteTree.ContextMenuStrip = BuildSpriteTreeContextMenu();
 
             // Bottom toolbar — 4 rows, all with explicit heights, Dock=Fill inside cell
             var bottomTable = new TableLayoutPanel
@@ -367,6 +374,15 @@ namespace SESpriteLCDLayoutTool
                 Font        = new Font("Segoe UI", 8.5f),
             };
             _lstLayers.SelectedIndexChanged += OnLayerListSelectionChanged;
+            _lstLayers.MouseDown += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right)
+                {
+                    int idx = _lstLayers.IndexFromPoint(e.Location);
+                    if (idx >= 0) _lstLayers.SelectedIndex = idx;
+                }
+            };
+            _lstLayers.ContextMenuStrip = BuildLayerContextMenu();
 
             // Scrollable properties area
             var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.FromArgb(45, 45, 48) };
@@ -537,6 +553,15 @@ namespace SESpriteLCDLayoutTool
             btnRefresh.Size   = new Size(120, 26);
             btnRefresh.Click += (s, e) => RefreshCode();
 
+            var btnResetSource = DarkButton("Reset Source", Color.FromArgb(120, 60, 0));
+            btnResetSource.Size = new Size(95, 26);
+            btnResetSource.Click += (s, e) =>
+            {
+                if (_layout != null) _layout.OriginalSourceCode = null;
+                RefreshCode();
+                SetStatus("Round-trip source cleared — using generated template.");
+            };
+
             _cmbCodeStyle = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
@@ -553,6 +578,7 @@ namespace SESpriteLCDLayoutTool
             toolbar.Controls.Add(lblCode);
             toolbar.Controls.Add(btnCopy);
             toolbar.Controls.Add(btnRefresh);
+            toolbar.Controls.Add(btnResetSource);
             toolbar.Controls.Add(_cmbCodeStyle);
 
             _codeBox = new RichTextBox
@@ -971,6 +997,27 @@ namespace SESpriteLCDLayoutTool
         private void RefreshCode()
         {
             if (_layout == null) { _codeBox.Text = ""; return; }
+
+            // Try round-trip: splice updated sprites back into the original pasted code
+            if (_layout.OriginalSourceCode != null)
+            {
+                // Per-sprite patching (dynamic code — loops, switch/case, expressions)
+                string patched = CodeGenerator.PatchOriginalSource(_layout);
+                if (patched != null)
+                {
+                    _codeBox.Text = patched;
+                    return;
+                }
+
+                // Region-based replacement (static layouts with literal positions)
+                string roundTrip = CodeGenerator.GenerateRoundTrip(_layout);
+                if (roundTrip != null)
+                {
+                    _codeBox.Text = roundTrip;
+                    return;
+                }
+            }
+
             _codeBox.Text = CodeGenerator.Generate(_layout, SelectedCodeStyle);
         }
 
@@ -1271,7 +1318,8 @@ namespace SESpriteLCDLayoutTool
 
                 btnImport.Click += (s, e) =>
                 {
-                    var sprites = CodeParser.Parse(txtCode.Text);
+                    string sourceCode = txtCode.Text;
+                    var sprites = CodeParser.Parse(sourceCode);
                     if (sprites.Count == 0)
                     {
                         MessageBox.Show(
@@ -1292,6 +1340,64 @@ namespace SESpriteLCDLayoutTool
                             sprite.IsReferenceLayout = true;
                     }
 
+                    // ── Per-sprite source tracking for dynamic round-trip ──
+                    if (!isReference)
+                    {
+                        // Detect context labels and store baselines
+                        var contextCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                        bool hasDynamicPositions = false;
+                        foreach (var sprite in sprites)
+                        {
+                            // Context label from surrounding case/method
+                            string ctx = sprite.SourceStart >= 0
+                                ? CodeGenerator.DetectSpriteContext(sourceCode, sprite.SourceStart)
+                                : null;
+
+                            string typeHint = sprite.Type == SpriteEntryType.Text
+                                ? "Text"
+                                : sprite.SpriteName ?? "Texture";
+
+                            string label = ctx != null ? $"{ctx}: {typeHint}" : typeHint;
+
+                            // Disambiguate duplicates within the same context
+                            if (!contextCounts.TryGetValue(label, out int count))
+                                count = 0;
+                            contextCounts[label] = count + 1;
+                            if (count > 0)
+                                label += $".{count + 1}";
+
+                            sprite.ImportLabel = label;
+                            sprite.ImportBaseline = sprite.CloneValues();
+
+                            // Check if positions look like expression-parsed defaults
+                            if (sprite.SourceStart >= 0 &&
+                                sprite.X == 256f && sprite.Y == 256f)
+                                hasDynamicPositions = true;
+                        }
+
+                        // Auto-position sprites with default positions so they're visible/selectable
+                        if (hasDynamicPositions)
+                        {
+                            float centerX = _layout.SurfaceWidth / 2f;
+                            float yPos = 30f;
+                            foreach (var sprite in sprites)
+                            {
+                                if (sprite.X == 256f && sprite.Y == 256f)
+                                {
+                                    sprite.X = centerX;
+                                    sprite.Y = yPos;
+                                    yPos += 28f;
+                                }
+                                if (sprite.Width == 100f && sprite.Height == 100f &&
+                                    sprite.Type == SpriteEntryType.Texture)
+                                {
+                                    sprite.Width = 24f;
+                                    sprite.Height = 24f;
+                                }
+                            }
+                        }
+                    }
+
                     PushUndo();
 
                     if (chkReplace.Checked)
@@ -1299,6 +1405,10 @@ namespace SESpriteLCDLayoutTool
 
                     foreach (var sprite in sprites)
                         _layout.Sprites.Add(sprite);
+
+                    // Store original source for round-trip code generation
+                    if (!isReference)
+                        _layout.OriginalSourceCode = sourceCode;
 
                     _canvas.SelectedSprite = sprites.Count > 0 ? sprites[0] : null;
                     _canvas.Invalidate();
@@ -1594,6 +1704,106 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add("Reset View\tCtrl+0",       null, (s, e) => _canvas.ResetView());
 
             return ctx;
+        }
+
+        // ── Layer list context menu ──────────────────────────────────────────────
+        private ContextMenuStrip BuildLayerContextMenu()
+        {
+            var ctx = new ContextMenuStrip { BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.FromArgb(220, 220, 220) };
+            ctx.Renderer = new DarkMenuRenderer();
+
+            var moveUp   = ctx.Items.Add("Move Up",    null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); RefreshCode(); });
+            var moveDown = ctx.Items.Add("Move Down",  null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); RefreshCode(); });
+            ctx.Items.Add(new ToolStripSeparator());
+            ctx.Items.Add("Duplicate",  null, (s, e) => DuplicateSelected());
+            ctx.Items.Add("Delete",     null, (s, e) => DeleteSelected());
+
+            ctx.Opening += (s, e) =>
+            {
+                if (_layout == null || _canvas.SelectedSprite == null)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+                int idx = _layout.Sprites.IndexOf(_canvas.SelectedSprite);
+                moveUp.Enabled   = idx < _layout.Sprites.Count - 1;
+                moveDown.Enabled = idx > 0;
+            };
+
+            return ctx;
+        }
+
+        // ── Sprite tree context menu ─────────────────────────────────────────────
+        private ContextMenuStrip BuildSpriteTreeContextMenu()
+        {
+            var ctx = new ContextMenuStrip { BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.FromArgb(220, 220, 220) };
+            ctx.Renderer = new DarkMenuRenderer();
+
+            ctx.Items.Add("Add to Layout",                null, (s, e) => AddSelectedTreeSprite());
+            ctx.Items.Add("Replace Selected Sprite",      null, (s, e) => ReplaceSelectedSprite());
+
+            ctx.Opening += (s, e) =>
+            {
+                var node = _spriteTree.SelectedNode;
+                bool isLeaf = node?.Parent != null
+                    && !(node.Tag is string t && (t == "header" || t == "info" || t.StartsWith("glyphcat:")));
+
+                // "Add" always available on leaf nodes
+                ctx.Items[0].Enabled = isLeaf;
+
+                // "Replace" only when a sprite is selected on the canvas AND a leaf is right-clicked
+                bool hasSelection = _canvas.SelectedSprite != null;
+                ctx.Items[1].Enabled = isLeaf && hasSelection;
+                ctx.Items[1].Text = hasSelection
+                    ? $"Replace \"{_canvas.SelectedSprite.DisplayName}\""
+                    : "Replace Selected Sprite";
+
+                if (!isLeaf)
+                    e.Cancel = true;
+            };
+
+            return ctx;
+        }
+
+        private void ReplaceSelectedSprite()
+        {
+            var sprite = _canvas.SelectedSprite;
+            if (sprite == null) return;
+
+            var node = _spriteTree.SelectedNode;
+            if (node == null || node.Parent == null) return;
+
+            // Glyph replacement — switch to text sprite with the glyph character
+            if (node.Tag is GlyphEntry glyph)
+            {
+                PushUndo();
+                string font = _cmbFont.SelectedItem?.ToString() ?? "White";
+                sprite.Type       = SpriteEntryType.Text;
+                sprite.SpriteName = null;
+                sprite.Text       = glyph.Character.ToString();
+                sprite.FontId     = font;
+                sprite.Scale      = 1.0f;
+                OnSelectionChanged(_canvas, EventArgs.Empty);
+                _canvas.Invalidate();
+                RefreshLayerList();
+                RefreshCode();
+                SetStatus($"Replaced with glyph U+{(int)glyph.Character:X4}");
+                return;
+            }
+
+            // Texture replacement
+            string name = node.Text;
+            if (string.IsNullOrWhiteSpace(name)) return;
+
+            PushUndo();
+            sprite.Type       = SpriteEntryType.Texture;
+            sprite.SpriteName = name;
+            sprite.Text       = name;
+            OnSelectionChanged(_canvas, EventArgs.Empty);
+            _canvas.Invalidate();
+            RefreshLayerList();
+            RefreshCode();
+            SetStatus($"Replaced sprite texture with \"{name}\"");
         }
 
         // ── Helper factory methods ────────────────────────────────────────────────

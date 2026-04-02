@@ -50,12 +50,14 @@ namespace SESpriteLCDLayoutTool.Services
                     if (braceEnd >= 0)
                     {
                         string body = code.Substring(braceStart + 1, braceEnd - braceStart - 1);
-                        var sprite = ParseInitializerBody(body);
-                        if (sprite != null)
-                        {
-                            results.Add(sprite);
-                            consumed.Add(new[] { idx, braceEnd });
-                        }
+                            var sprite = ParseInitializerBody(body);
+                            if (sprite != null)
+                            {
+                                sprite.SourceStart = idx;
+                                sprite.SourceEnd = braceEnd + 1;
+                                results.Add(sprite);
+                                consumed.Add(new[] { idx, braceEnd });
+                            }
                         searchFrom = braceEnd + 1;
                         continue;
                     }
@@ -80,6 +82,8 @@ namespace SESpriteLCDLayoutTool.Services
                 var sprite = ParseConstructorArgs(args);
                 if (sprite != null)
                 {
+                    sprite.SourceStart = m.Index;
+                    sprite.SourceEnd = parenEnd + 1;
                     results.Add(sprite);
                     consumed.Add(new[] { m.Index, parenEnd });
                 }
@@ -103,6 +107,8 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     // Check for subsequent .Position assignment on the same variable
                     ApplyTrailingAssignments(code, m.Index, parenEnd, sprite);
+                    sprite.SourceStart = m.Index;
+                    sprite.SourceEnd = parenEnd + 1;
                     results.Add(sprite);
                     consumed.Add(new[] { m.Index, parenEnd });
                 }
@@ -125,6 +131,8 @@ namespace SESpriteLCDLayoutTool.Services
                 if (sprite != null)
                 {
                     ApplyTrailingAssignments(code, m.Index, parenEnd, sprite);
+                    sprite.SourceStart = m.Index;
+                    sprite.SourceEnd = parenEnd + 1;
                     results.Add(sprite);
                     consumed.Add(new[] { m.Index, parenEnd });
                 }
