@@ -97,6 +97,8 @@ Copy the Custom Data, then in the tool: **Edit → Import Sprite Names** and pas
 
 ## 📸 Adding Snapshot Support to Your Plugin
 
+> **Note:** This section is completely optional. The layout tool works standalone — you do **not** need any plugin, mod, or the Inventory Manager to use it. This is just an example showing how you *could* wire up a live snapshot export in your own plugin, so you have real sprite data to import and compare against.
+
 The tool can import live snapshots from any plugin that implements a simple helper.
 
 ### Example Helper Snippet
