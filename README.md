@@ -99,6 +99,8 @@ Copy the Custom Data, then in the tool: **Edit → Import Sprite Names** and pas
 
 > **Note:** This section is completely optional. The layout tool works standalone — you do **not** need any plugin, mod, or the Inventory Manager to use it. This is just an example showing how you *could* wire up a live snapshot export in your own plugin, so you have real sprite data to import and compare against.
 
+> **Important:** The snapshot helper snippet must be added **inside the plugin or mod that actually renders the LCD** you want to capture. Sprites are drawn by that plugin's own code, so a separate script or programmable block cannot read them — you can only capture what the owning plugin writes to the surface. Add the snippet to whichever plugin's LCD you wish to edit.
+
 The tool can import live snapshots from any plugin that implements a simple helper.
 
 ### Example Helper Snippet
