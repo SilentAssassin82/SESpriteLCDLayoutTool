@@ -140,6 +140,71 @@ private void CaptureLcdSnapshot(IMyTextSurface surface, string panelName)
 
 Once implemented, the generated `.cs` file can be imported directly into the layout tool.
 
+<details>
+<summary>📄 Example snapshot output (60 sprites from an IML Ingots panel) — click to expand</summary>
+
+```csharp
+// Snapshot: 60 sprite(s)
+// Captured: 2026-04-01 21:26:41Z
+
+var sprites = new List<MySprite>
+{
+    new MySprite
+    {
+        Type = SpriteType.TEXT,
+        Data = "[IML: INGOTS]",
+        Position = new Vector2(10.0f, 10.0f),
+        Color = new Color(0, 200, 255, 255),
+        FontId = "White",
+        RotationOrScale = 0.8500f,
+    },
+    new MySprite
+    {
+        Type = SpriteType.TEXTURE,
+        Data = "SquareSimple",
+        Position = new Vector2(256.0f, 39.6f),
+        Size = new Vector2(492.0f, 2.0f),
+        Color = new Color(55, 55, 60, 255),
+        Alignment = TextAlignment.CENTER,
+        RotationOrScale = 0.0000f,
+    },
+    new MySprite
+    {
+        Type = SpriteType.TEXTURE,
+        Data = "MyObjectBuilder_Ingot/Silicon",
+        Position = new Vector2(22.4f, 59.6f),
+        Size = new Vector2(18.7f, 18.7f),
+        Color = new Color(255, 255, 255, 255),
+        Alignment = TextAlignment.CENTER,
+        RotationOrScale = 0.0000f,
+    },
+    new MySprite
+    {
+        Type = SpriteType.TEXT,
+        Data = "Silicon",
+        Position = new Vector2(35.7f, 48.2f),
+        Color = new Color(255, 255, 255, 255),
+        FontId = "White",
+        RotationOrScale = 0.6800f,
+    },
+    new MySprite
+    {
+        Type = SpriteType.TEXTURE,
+        Data = "SquareSimple",
+        Position = new Vector2(379.0f, 59.6f),
+        Size = new Vector2(246.0f, 29.9f),
+        Color = new Color(30, 30, 35, 220),
+        Alignment = TextAlignment.CENTER,
+        RotationOrScale = 0.0000f,
+    },
+    // ... 55 more sprites (icons, bar backgrounds, text labels, warning triangles, etc.)
+};
+```
+
+👉 [View the full snapshot file](docs/iml-snapshot-example.cs)
+
+</details>
+
 ---
 
 ## Screenshots
@@ -148,13 +213,13 @@ Once implemented, the generated `.cs` file can be imported directly into the lay
 ![Editor Canvas](docs/editor-canvas.png)
 
 ### Sprite Catalog & Texture Previews
-![Sprite Catalog](docs/sprite-catalog.png)
-![Sprite Catalog](docs/sprite-catalog1.png)
+![Sprite Catalog — Tree View](docs/sprite-catalog.png)
+![Sprite Catalog — Texture Previews](docs/sprite-catalog1.png)
 
 ### Code Generation
-![Code Output](docs/code-generation.png)
-![Code Output](docs/code-generation1.png)
-![Code Output](docs/code-generation2.png)
+![Code Output — In-Game (PB)](docs/code-generation.png)
+![Code Output — Mod](docs/code-generation1.png)
+![Code Output — Plugin / Torch](docs/code-generation2.png)
 
 ### Snapshot Import
 ![Snapshot Import](docs/snapshot-import.png)
@@ -162,9 +227,33 @@ Once implemented, the generated `.cs` file can be imported directly into the lay
 ### In-Game Result
 ![In-Game](docs/in-game-result.png)
 
-### Demo Video
-[![Watch the demo](docs/editor-canvas.png)](https://youtu.be/Hp9KDFYG17o)
-[![Watch the demo](docs/snapshot-import.png)](https://youtu.be/cE2PVtbPqnQ)
+### Demo Videos
+[![▶ Editor walkthrough](docs/editor-canvas.png)](https://youtu.be/Hp9KDFYG17o)
+[![▶ Snapshot import demo](docs/snapshot-import.png)](https://youtu.be/cE2PVtbPqnQ)
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+<details>
+<summary>Click to expand</summary>
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Z` | Undo |
+| `Ctrl+Y` | Redo |
+| `Ctrl+S` | Save layout |
+| `Ctrl+O` | Open layout |
+| `Ctrl+V` | Paste layout code |
+| `Ctrl+C` | Copy generated code |
+| `Ctrl+D` | Duplicate selected sprite |
+| `Delete` | Delete selected sprite |
+| `+` / `-` | Move sprite up/down in layer order |
+| `G` | Toggle snap to grid |
+| Mouse wheel | Zoom canvas |
+| Middle-click drag | Pan canvas |
+
+</details>
 
 ---
 
