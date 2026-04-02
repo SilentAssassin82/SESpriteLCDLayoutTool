@@ -5,7 +5,9 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Xml.Linq;
+using SESpriteLCDLayoutTool.Data;
 
 namespace SESpriteLCDLayoutTool.Services
 {
@@ -214,12 +216,115 @@ namespace SESpriteLCDLayoutTool.Services
                         metricsMap[gm.Value.Code] = gm.Value;
                 }
             }
+
+            // Determine ForceWhite by analysing actual atlas pixel data.
+            // Grayscale pixels (R≈G≈B) = white alpha-mask → tintable.
+            // Coloured pixels = baked RGBA → not tintable.
+            AnalyzeGlyphTints(atlases, metricsMap);
+
             _metrics[fontName] = metricsMap;
 
             // Initialise empty glyph cache (lazy crop on first access)
             _glyphCache[fontName] = new Dictionary<int, Bitmap>();
 
             return metricsMap.Count;
+        }
+
+        /// <summary>
+        /// Analyses each glyph's actual atlas pixels to decide ForceWhite.
+        /// Grayscale pixels (R ≈ G ≈ B within <paramref name="tolerance"/>)
+        /// indicate a white alpha-mask that the game tints at render time.
+        /// Any pixel with visible colour saturation means the glyph is baked
+        /// RGBA and should NOT be tinted.
+        /// </summary>
+        private static void AnalyzeGlyphTints(Bitmap[] atlases, Dictionary<int, GlyphMetrics> metricsMap)
+        {
+            // Pre-extract raw pixel data for each atlas sheet so we lock once
+            // per sheet rather than once per glyph.
+            var sheetPixels = new byte[atlases.Length][];
+            var sheetStrides = new int[atlases.Length];
+            var sheetWidths = new int[atlases.Length];
+            var sheetHeights = new int[atlases.Length];
+
+            for (int i = 0; i < atlases.Length; i++)
+            {
+                Bitmap bmp = atlases[i];
+                if (bmp == null) continue;
+
+                var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+                BitmapData bd = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                try
+                {
+                    int byteCount = bd.Stride * bd.Height;
+                    sheetPixels[i] = new byte[byteCount];
+                    Marshal.Copy(bd.Scan0, sheetPixels[i], 0, byteCount);
+                    sheetStrides[i] = bd.Stride;
+                    sheetWidths[i] = bmp.Width;
+                    sheetHeights[i] = bmp.Height;
+                }
+                finally
+                {
+                    bmp.UnlockBits(bd);
+                }
+            }
+
+            // Analyse every glyph
+            var codes = new List<int>(metricsMap.Keys);
+            foreach (int code in codes)
+            {
+                var gm = metricsMap[code];
+                int sid = gm.BitmapId;
+
+                if (sid < 0 || sid >= atlases.Length || sheetPixels[sid] == null)
+                {
+                    // No atlas available — keep XML flag as-is
+                    continue;
+                }
+
+                gm.ForceWhite = IsGlyphTintable(
+                    sheetPixels[sid], sheetStrides[sid],
+                    sheetWidths[sid], sheetHeights[sid], gm);
+                metricsMap[code] = gm;
+            }
+        }
+
+        /// <summary>
+        /// Returns <c>true</c> if every visible pixel in the glyph region is
+        /// approximately grayscale (max channel − min channel ≤ tolerance),
+        /// meaning the glyph is a white alpha-mask that the game tints.
+        /// </summary>
+        private static bool IsGlyphTintable(byte[] pixels, int stride,
+            int atlasW, int atlasH, GlyphMetrics gm, int tolerance = 20)
+        {
+            int x0 = Math.Max(0, gm.OriginX);
+            int y0 = Math.Max(0, gm.OriginY);
+            int x1 = Math.Min(x0 + gm.Width, atlasW);
+            int y1 = Math.Min(y0 + gm.Height, atlasH);
+            if (x1 <= x0 || y1 <= y0) return true; // empty → default tintable
+
+            // Format32bppArgb memory layout per pixel: B G R A
+            for (int y = y0; y < y1; y++)
+            {
+                int rowOffset = y * stride;
+                for (int x = x0; x < x1; x++)
+                {
+                    int px = rowOffset + x * 4;
+                    int a = pixels[px + 3];
+                    if (a < 8) continue; // nearly transparent — skip
+
+                    int b = pixels[px];
+                    int g = pixels[px + 1];
+                    int r = pixels[px + 2];
+
+                    int max = r > g ? (r > b ? r : b) : (g > b ? g : b);
+                    int min = r < g ? (r < b ? r : b) : (g < b ? g : b);
+
+                    if (max - min > tolerance)
+                        return false; // colour saturation detected → baked RGBA
+                }
+            }
+
+            return true; // all visible pixels are grayscale → tintable
         }
 
         private static GlyphMetrics? ParseGlyph(XElement el)

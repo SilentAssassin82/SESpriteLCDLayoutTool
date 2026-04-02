@@ -792,8 +792,15 @@ namespace SESpriteLCDLayoutTool.Services
         private static float ParseFloat(string s)
         {
             s = s.Trim().TrimEnd('f', 'F');
-            float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out float val);
-            return val;
+            if (float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out float val))
+                return val;
+
+            // Expression like "0.75f * sc * fs" — extract the leading numeric literal
+            var m = Regex.Match(s, @"^-?\d+(?:\.\d+)?");
+            if (m.Success && float.TryParse(m.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out val))
+                return val;
+
+            return 0;
         }
 
         private static int Clamp(int v) => v < 0 ? 0 : v > 255 ? 255 : v;

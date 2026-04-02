@@ -403,5 +403,30 @@ namespace SESpriteLCDLayoutTool.Data
             });
             return list.ToArray();
         }
+
+        // ── Tintable codepoint lookup ─────────────────────────────────────────────
+
+        private static HashSet<int> _tintableCodepoints;
+
+        /// <summary>
+        /// Returns the set of codepoints confirmed tintable via in-game testing.
+        /// Built once from the catalog entries that have Tintable == true.
+        /// </summary>
+        public static HashSet<int> GetVerifiedTintableCodepoints()
+        {
+            if (_tintableCodepoints != null) return _tintableCodepoints;
+            var set = new HashSet<int>();
+            foreach (var cat in Categories)
+            {
+                if (cat.Glyphs == null) continue;
+                foreach (var g in cat.Glyphs)
+                {
+                    if (g.Tintable && g.Character != '\0')
+                        set.Add(g.Character);
+                }
+            }
+            _tintableCodepoints = set;
+            return set;
+        }
     }
 }

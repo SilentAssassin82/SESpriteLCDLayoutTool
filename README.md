@@ -45,11 +45,17 @@ Design your screens with drag & drop, preview real in-game textures, then export
 - **Code round-trip** — paste your existing source code, edit visually, and get your original code back with only the changed properties patched in (colors, textures, fonts). Works with both static layouts and dynamic code (loops, switch/case, expressions)
 - One-click **Copy to clipboard**
 
-### 📸 LCD Snapshot Capture (Plugin Helper)
+### 📸 LCD Snapshot Capture & Merge (Plugin Helper)
 - Includes a **helper code snippet** you can add to **any** Torch or SE plugin
 - Capture live LCD panels (resolved sprites with final positions, sizes, colors, etc.)
 - Export as a `.cs` file that can be imported directly into the layout tool
 - Import as a fully **editable layout** or as a visual **reference overlay** (dotted amber border + [REF] tag)
+- **Snapshot Merge** — paste your original source code *and* a runtime snapshot side-by-side to get the best of both:
+  - **Original code** preserves source tracking, round-trip patching, and all expressions/control flow
+  - **Snapshot** provides the true runtime-resolved positions and sizes
+  - Sprites are matched by **(Type + Data)** in occurrence order, with positional fallback for expression-generated data
+  - Import baselines are refreshed after merging, so the round-trip code generator treats snapshot positions as the new baseline (not as user edits)
+- Standalone **Apply Runtime Snapshot** dialog (**Edit → Apply Runtime Snapshot…**) — apply a snapshot to an already-imported layout at any time
 - Extremely useful for debugging dynamic LCDs or starting from an existing complex display
 
 ### 📁 File Operations
@@ -142,6 +148,23 @@ private void CaptureLcdSnapshot(IMyTextSurface surface, string panelName)
 ```
 
 Once implemented, the generated `.cs` file can be imported directly into the layout tool.
+
+### Merging a Snapshot with Your Source Code
+
+The snapshot helper gives you **exact runtime positions**, but your original source code has **round-trip patching**, expressions, and control flow. The merge workflow combines both:
+
+1. **Edit → Paste Layout Code** opens a split dialog:
+   - **Top pane** — paste your original plugin/PB source code (the code that *creates* the sprites)
+   - **Bottom pane** — paste the snapshot output (the runtime-resolved sprites)
+2. Click **Import Sprites** — the tool parses both, matches sprites by `(Type, Data)` in order, and applies the snapshot's positions/sizes to the code-imported sprites
+3. **Edit visually** — drag, resize, recolor sprites on the canvas with true positions
+4. **Copy Code** — the round-trip generator patches only the properties you changed back into your original source, preserving all loops, `switch`/`case`, expressions, and comments
+
+> **Tip:** If your code uses dynamic/expression-based `Data` values (e.g. string interpolation), the keyed match may not find pairs. In that case the merger falls back to **positional (index) matching** — first sprite in code ↔ first sprite in snapshot, and so on.
+
+#### Applying a Snapshot Later
+
+Already imported your code but forgot the snapshot? Use **Edit → Apply Runtime Snapshot…** to merge a snapshot into the current layout at any time. The merger refreshes import baselines so the positions are treated as the new starting point, not as user edits.
 
 <details>
 <summary>📄 Example snapshot output (60 sprites from an IML Ingots panel) — click to expand</summary>
@@ -271,6 +294,20 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v1.3.0
+- **Snapshot Merge Workflow** — combine your original source code with a runtime snapshot in a single import
+  - Split paste dialog: top pane for source code, bottom pane for snapshot output
+  - Sprites matched by **(Type + Data)** in occurrence order; positional fallback for expression-generated data
+  - Import baselines refreshed after merge so round-trip treats snapshot positions as baseline, not user edits
+  - Standalone **Edit → Apply Runtime Snapshot…** dialog to merge a snapshot into an already-imported layout
+- **Automated Tint Detection** — `ForceWhite` is now determined by analysing actual atlas pixel data instead of relying on the unreliable XML `forcewhite` attribute
+  - Grayscale pixels (R ≈ G ≈ B) → white alpha-mask → tintable by sprite colour
+  - Coloured pixels → baked RGBA → rendered as-is
+  - Tolerance of 20 accounts for DDS compression artefacts
+  - Eliminates the need for manual in-game tint verification
+- **Expression-Aware Code Parsing** — `ParseFloat` now extracts leading numeric literals from expressions like `0.75f * sc * fs` instead of returning 0
+- **Dynamic Position Detection** — positions of `(0, 0)` (from failed expression parsing) are now detected alongside `(256, 256)` and auto-stacked for visibility
 
 ### v1.2.0
 - **Code Round-Trip** — Paste your full source code, edit sprites visually, and get your original code back with only changed values patched in

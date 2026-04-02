@@ -188,6 +188,7 @@ namespace SESpriteLCDLayoutTool
             edit.DropDownItems.Add("Redo\tCtrl+Y",                null, (s, e) => PerformRedo());
             edit.DropDownItems.Add(new ToolStripSeparator());
             edit.DropDownItems.Add("Paste Layout Code…\tCtrl+V",  null, (s, e) => ShowPasteLayoutDialog());
+            edit.DropDownItems.Add("Apply Runtime Snapshot…",      null, (s, e) => ShowApplySnapshotDialog());
             edit.DropDownItems.Add("Duplicate\tCtrl+D",           null, (s, e) => DuplicateSelected());
             edit.DropDownItems.Add("Delete Selected\tDel",        null, (s, e) => DeleteSelected());
             edit.DropDownItems.Add(new ToolStripSeparator());
@@ -1245,7 +1246,7 @@ namespace SESpriteLCDLayoutTool
             using (var dlg = new Form())
             {
                 dlg.Text = "Paste Layout Code";
-                dlg.Size = new Size(700, 560);
+                dlg.Size = new Size(700, 660);
                 dlg.StartPosition = FormStartPosition.CenterParent;
                 dlg.BackColor = Color.FromArgb(30, 30, 30);
                 dlg.ForeColor = Color.FromArgb(220, 220, 220);
@@ -1262,6 +1263,16 @@ namespace SESpriteLCDLayoutTool
                     Padding = new Padding(8, 8, 8, 0),
                 };
 
+                // ── Main code split: top = original code, bottom = snapshot ──
+                var splitCode = new SplitContainer
+                {
+                    Dock = DockStyle.Fill,
+                    Orientation = Orientation.Horizontal,
+                    BackColor = Color.FromArgb(30, 30, 30),
+                    Panel1MinSize = 120,
+                    Panel2MinSize = 60,
+                };
+
                 var txtCode = new TextBox
                 {
                     Multiline = true,
@@ -1273,6 +1284,31 @@ namespace SESpriteLCDLayoutTool
                     ForeColor = Color.FromArgb(212, 212, 212),
                     AcceptsTab = true,
                 };
+
+                var lblSnapshot = new Label
+                {
+                    Text = "Runtime Snapshot (optional) — paste the output from the snapshot helper to apply real positions:",
+                    Dock = DockStyle.Top,
+                    Height = 28,
+                    Padding = new Padding(8, 6, 8, 0),
+                    ForeColor = Color.FromArgb(180, 200, 255),
+                };
+
+                var txtSnapshot = new TextBox
+                {
+                    Multiline = true,
+                    Dock = DockStyle.Fill,
+                    ScrollBars = ScrollBars.Both,
+                    WordWrap = false,
+                    Font = new Font("Consolas", 9f),
+                    BackColor = Color.FromArgb(15, 18, 25),
+                    ForeColor = Color.FromArgb(180, 210, 255),
+                    AcceptsTab = true,
+                };
+
+                splitCode.Panel1.Controls.Add(txtCode);
+                splitCode.Panel2.Controls.Add(txtSnapshot);
+                splitCode.Panel2.Controls.Add(lblSnapshot);
 
                 var chkReplace = new CheckBox
                 {
@@ -1370,9 +1406,24 @@ namespace SESpriteLCDLayoutTool
                             sprite.ImportBaseline = sprite.CloneValues();
 
                             // Check if positions look like expression-parsed defaults
+                            // (256,256) = SpriteEntry default, (0,0) = ParseVector2 failure on expressions
                             if (sprite.SourceStart >= 0 &&
-                                sprite.X == 256f && sprite.Y == 256f)
+                                ((sprite.X == 256f && sprite.Y == 256f) ||
+                                 (sprite.X == 0f && sprite.Y == 0f)))
                                 hasDynamicPositions = true;
+                        }
+
+                        // ── Snapshot merge: apply runtime positions ──
+                        string snapshotCode = txtSnapshot.Text;
+                        if (!string.IsNullOrWhiteSpace(snapshotCode))
+                        {
+                            var snapshotSprites = CodeParser.Parse(snapshotCode);
+                            if (snapshotSprites.Count > 0)
+                            {
+                                var mergeResult = SnapshotMerger.Merge(sprites, snapshotSprites);
+                                SetStatus(mergeResult.Summary);
+                                hasDynamicPositions = false; // snapshot resolved positions
+                            }
                         }
 
                         // Auto-position sprites with default positions so they're visible/selectable
@@ -1382,7 +1433,8 @@ namespace SESpriteLCDLayoutTool
                             float yPos = 30f;
                             foreach (var sprite in sprites)
                             {
-                                if (sprite.X == 256f && sprite.Y == 256f)
+                                if ((sprite.X == 256f && sprite.Y == 256f) ||
+                                    (sprite.X == 0f && sprite.Y == 0f))
                                 {
                                     sprite.X = centerX;
                                     sprite.Y = yPos;
@@ -1424,12 +1476,133 @@ namespace SESpriteLCDLayoutTool
                 btnPanel.Controls.Add(btnCancel);
                 btnPanel.Controls.Add(btnSnapshot);
 
-                dlg.Controls.Add(txtCode);
+                // Set splitter distance after adding to the form so layout is valid
+                dlg.Load += (s, e) =>
+                {
+                    splitCode.SplitterDistance = Math.Max(120, splitCode.Height - 160);
+                };
+
+                dlg.Controls.Add(splitCode);
                 dlg.Controls.Add(lblInstructions);
                 dlg.Controls.Add(chkReference);
                 dlg.Controls.Add(chkReplace);
                 dlg.Controls.Add(btnPanel);
 
+                dlg.ShowDialog(this);
+            }
+        }
+
+        // ── Apply Runtime Snapshot ────────────────────────────────────────────────
+        private void ShowApplySnapshotDialog()
+        {
+            if (_layout == null || _layout.Sprites.Count == 0)
+            {
+                MessageBox.Show(
+                    "Import a layout first (Edit → Paste Layout Code) before applying a snapshot.",
+                    "No Layout", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Check there are non-reference sprites to merge into
+            bool hasEditable = false;
+            foreach (var sp in _layout.Sprites)
+                if (!sp.IsReferenceLayout) { hasEditable = true; break; }
+
+            if (!hasEditable)
+            {
+                MessageBox.Show(
+                    "The current layout only contains reference sprites.\n"
+                    + "Import editable sprites first (uncheck 'Import as reference layout').",
+                    "No Editable Sprites", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (var dlg = new Form())
+            {
+                dlg.Text = "Apply Runtime Snapshot";
+                dlg.Size = new Size(650, 420);
+                dlg.StartPosition = FormStartPosition.CenterParent;
+                dlg.BackColor = Color.FromArgb(30, 30, 30);
+                dlg.ForeColor = Color.FromArgb(220, 220, 220);
+                dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dlg.MaximizeBox = false;
+                dlg.MinimizeBox = false;
+
+                var lblInfo = new Label
+                {
+                    Text = "Paste the runtime snapshot output (from the snapshot helper snippet) below.\n"
+                         + "Positions and sizes will be merged into the current layout sprites.",
+                    Dock = DockStyle.Top,
+                    Height = 44,
+                    Padding = new Padding(8, 8, 8, 0),
+                    ForeColor = Color.FromArgb(180, 200, 255),
+                };
+
+                var txtSnap = new TextBox
+                {
+                    Multiline = true,
+                    Dock = DockStyle.Fill,
+                    ScrollBars = ScrollBars.Both,
+                    WordWrap = false,
+                    Font = new Font("Consolas", 9f),
+                    BackColor = Color.FromArgb(15, 18, 25),
+                    ForeColor = Color.FromArgb(180, 210, 255),
+                    AcceptsTab = true,
+                };
+
+                var btnPanel = new FlowLayoutPanel
+                {
+                    Dock = DockStyle.Bottom,
+                    FlowDirection = FlowDirection.RightToLeft,
+                    Height = 36,
+                    Padding = new Padding(4),
+                };
+
+                var btnApply = DarkButton("Apply Snapshot", Color.FromArgb(0, 90, 140));
+                btnApply.Width = 130;
+                var btnCancel = DarkButton("Cancel", Color.FromArgb(60, 60, 60));
+                btnCancel.Width = 80;
+                btnCancel.Click += (s, e) => dlg.Close();
+
+                btnApply.Click += (s, e) =>
+                {
+                    string snapCode = txtSnap.Text;
+                    if (string.IsNullOrWhiteSpace(snapCode))
+                    {
+                        MessageBox.Show("Paste snapshot code first.", "Empty",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    var snapshotSprites = CodeParser.Parse(snapCode);
+                    if (snapshotSprites.Count == 0)
+                    {
+                        MessageBox.Show(
+                            "No MySprite definitions found in the snapshot text.",
+                            "Nothing Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    // Collect editable sprites from layout
+                    var editable = new List<SpriteEntry>();
+                    foreach (var sp in _layout.Sprites)
+                        if (!sp.IsReferenceLayout) editable.Add(sp);
+
+                    PushUndo();
+                    var result = SnapshotMerger.Merge(editable, snapshotSprites);
+
+                    _canvas.Invalidate();
+                    RefreshCode();
+                    SetStatus(result.Summary);
+                    dlg.Close();
+                };
+
+                btnPanel.Controls.Add(btnApply);
+                btnPanel.Controls.Add(btnCancel);
+
+                dlg.Controls.Add(txtSnap);
+                dlg.Controls.Add(lblInfo);
+                dlg.Controls.Add(btnPanel);
                 dlg.ShowDialog(this);
             }
         }

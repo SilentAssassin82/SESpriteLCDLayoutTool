@@ -102,6 +102,7 @@
     <Compile Include="Services\CodeParser.cs" />
     <Compile Include="Services\DdsLoader.cs" />
     <Compile Include="Services\SeFontAtlas.cs" />
+    <Compile Include="Services\SnapshotMerger.cs" />
     <Compile Include="Services\SpriteTextureCache.cs" />
     <Compile Include="Services\UndoManager.cs" />
   </ItemGroup>
