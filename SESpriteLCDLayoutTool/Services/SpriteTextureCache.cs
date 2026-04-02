@@ -18,12 +18,16 @@ namespace SESpriteLCDLayoutTool.Services
         private readonly Dictionary<string, Bitmap> _cache = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _spriteToPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private string _contentPath;
+        private SeFontAtlas _fontAtlas;
 
         /// <summary>Number of successfully loaded sprite textures.</summary>
         public int LoadedCount => _cache.Count;
 
         /// <summary>Number of sprite→texture mappings discovered in SBC files.</summary>
         public int MappingCount => _spriteToPath.Count;
+
+        /// <summary>The loaded SE font atlas (for glyph rendering). May be null.</summary>
+        public SeFontAtlas FontAtlas => _fontAtlas;
 
         /// <summary>
         /// Returns the cached Bitmap for a given SE sprite name, or null if not loaded.
@@ -163,6 +167,12 @@ namespace SESpriteLCDLayoutTool.Services
             if (failed > 0) msg += $", {failed} decode errors";
             if (notFound > 0) msg += $", {notFound} files missing";
             msg += ").";
+
+            // Phase 3 — load SE font glyph atlases
+            _fontAtlas = new SeFontAtlas();
+            string fontMsg = _fontAtlas.LoadFromContent(gameContentPath);
+            msg += "  " + fontMsg;
+
             return msg;
         }
 
@@ -174,6 +184,8 @@ namespace SESpriteLCDLayoutTool.Services
             _cache.Clear();
             _spriteToPath.Clear();
             _contentPath = null;
+            _fontAtlas?.Dispose();
+            _fontAtlas = null;
         }
 
         public void Dispose() => Unload();

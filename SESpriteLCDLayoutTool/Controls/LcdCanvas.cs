@@ -291,9 +291,137 @@ namespace SESpriteLCDLayoutTool.Controls
             using (var boxPen = new Pen(Color.FromArgb(100, 255, 200, 0), 1f) { DashStyle = DashStyle.Dash })
                 g.DrawRectangle(boxPen, rect.X, rect.Y, rect.Width, rect.Height);
 
-            // SE "White" font renders at ~28.8 surface-px line height at Scale=1.0.
-            // GDI+ em-height ≈ visible height / 1.25 for Segoe UI, so base ≈ 20.
-            // Font size is driven purely by Scale × viewScale — NOT by the bounding box.
+            string text = sprite.Text ?? "";
+            if (text.Length == 0) return;
+
+            // Try atlas-based glyph rendering first
+            var fontAtlas = _textureCache?.FontAtlas;
+            if (fontAtlas != null && TryDrawAtlasText(g, fontAtlas, sprite, text, rect, viewScale))
+                return;
+
+            // Fallback: GDI+ DrawString (for standard ASCII/Unicode when no atlas loaded)
+            DrawGdiFallbackText(g, sprite, text, rect, viewScale);
+        }
+
+        /// <summary>
+        /// Attempts to render text using SE font atlas glyph bitmaps.
+        /// Returns true if at least one character was resolved from the atlas.
+        /// For mixed strings (some atlas, some not), renders atlas glyphs as bitmaps
+        /// and falls back to GDI+ for unresolved characters.
+        /// </summary>
+        private bool TryDrawAtlasText(Graphics g, SeFontAtlas fontAtlas, SpriteEntry sprite,
+                                      string text, RectangleF rect, float viewScale)
+        {
+            string fontId = sprite.FontId ?? "White";
+
+            // Check if ANY character in this string has atlas data
+            bool hasAnyAtlasGlyph = false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (fontAtlas.GetMetrics(fontId, text[i]) != null)
+                {
+                    hasAnyAtlasGlyph = true;
+                    break;
+                }
+            }
+            if (!hasAnyAtlasGlyph) return false;
+
+            // SE font base line height is ~28.8 surface-px at Scale=1.0.
+            // The atlas glyphs have a native height (typically 45px for the white font).
+            // We scale from native glyph size to the desired display size.
+            float desiredLineHeight = sprite.Scale * 28.8f * viewScale;
+
+            // Determine native line height from a reference glyph (space or first available)
+            GlyphMetrics? refMetrics = fontAtlas.GetMetrics(fontId, ' ')
+                                    ?? fontAtlas.GetMetrics(fontId, 'A');
+            float nativeLineHeight = refMetrics.HasValue ? refMetrics.Value.Height : 45f;
+            float glyphScale = desiredLineHeight / nativeLineHeight;
+
+            // Calculate total advance width to handle alignment
+            float totalAdvance = 0f;
+            for (int i = 0; i < text.Length; i++)
+            {
+                GlyphMetrics? gm = fontAtlas.GetMetrics(fontId, text[i]);
+                if (gm.HasValue)
+                    totalAdvance += gm.Value.AdvanceWidth * glyphScale;
+                else
+                    totalAdvance += desiredLineHeight * 0.5f; // estimate for non-atlas chars
+            }
+
+            // Horizontal start position based on alignment
+            float startX;
+            switch (sprite.Alignment)
+            {
+                case SpriteTextAlignment.Right:
+                    startX = rect.Right - totalAdvance;
+                    break;
+                case SpriteTextAlignment.Center:
+                    startX = rect.X + (rect.Width - totalAdvance) / 2f;
+                    break;
+                default: // Left
+                    startX = rect.X;
+                    break;
+            }
+
+            float cursorX = startX;
+            float cursorY = rect.Y;
+            var color = sprite.Color;
+            var prevMode = g.InterpolationMode;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+
+            for (int i = 0; i < text.Length; i++)
+            {
+                int codepoint = text[i];
+                GlyphMetrics? gm = fontAtlas.GetMetrics(fontId, codepoint);
+
+                if (gm.HasValue)
+                {
+                    Bitmap glyphBmp = fontAtlas.GetGlyph(fontId, codepoint);
+                    if (glyphBmp != null)
+                    {
+                        float drawW = gm.Value.Width * glyphScale;
+                        float drawH = gm.Value.Height * glyphScale;
+                        float drawX = cursorX + gm.Value.LeftSideBearing * glyphScale;
+                        float drawY = cursorY;
+
+                        var destRect = new RectangleF(drawX, drawY, drawW, drawH);
+
+                        // ForceWhite glyphs are alpha-masks — tint with sprite color.
+                        // Baked glyphs (swatches etc.) render as-is.
+                        if (gm.Value.ForceWhite)
+                            DrawTintedTexture(g, glyphBmp, destRect, color);
+                        else
+                            DrawTintedTexture(g, glyphBmp, destRect, Color.White);
+                    }
+                    cursorX += gm.Value.AdvanceWidth * glyphScale;
+                }
+                else
+                {
+                    // Non-atlas character: render with GDI+ inline
+                    float fontSize = Math.Max(6f, desiredLineHeight * 0.7f);
+                    using (var font = new Font("Segoe UI", fontSize, GraphicsUnit.Pixel))
+                    using (var brush = new SolidBrush(color))
+                    {
+                        string ch = text[i].ToString();
+                        g.DrawString(ch, font, brush, cursorX, cursorY);
+                        var sz = g.MeasureString(ch, font);
+                        cursorX += sz.Width * 0.75f; // approximate to avoid GDI+ padding
+                    }
+                }
+            }
+
+            g.InterpolationMode = prevMode;
+            return true;
+        }
+
+        /// <summary>
+        /// Fallback text rendering using GDI+ DrawString (when no font atlas is loaded).
+        /// </summary>
+        private static void DrawGdiFallbackText(Graphics g, SpriteEntry sprite, string text,
+                                                RectangleF rect, float viewScale)
+        {
+            var color = sprite.Color;
+
             const float SeBaseFontEm = 20f;
             float fontSize = Math.Max(6f, sprite.Scale * SeBaseFontEm * viewScale);
 
@@ -305,11 +433,10 @@ namespace SESpriteLCDLayoutTool.Controls
                 default:                        sa = StringAlignment.Center; break;
             }
 
-            // NoClip: SE text overflows the sprite bounding box — don't clip to rect.
             using (var sf = new StringFormat { Alignment = sa, LineAlignment = StringAlignment.Near, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip })
             using (var brush = new SolidBrush(color))
             using (var font = new Font("Segoe UI", Math.Max(6f, fontSize), GraphicsUnit.Pixel))
-                g.DrawString(sprite.Text ?? "", font, brush, rect, sf);
+                g.DrawString(text, font, brush, rect, sf);
         }
 
         private void DrawTextureSprite(Graphics g, SpriteEntry sprite, RectangleF rect)

@@ -312,7 +312,13 @@ namespace SESpriteLCDLayoutTool
             _btnAddText = DarkButton("Add Text Sprite", Color.FromArgb(80, 80, 0));
             _btnAddText.Dock   = DockStyle.Fill;
             _btnAddText.Margin = Padding.Empty;
-            _btnAddText.Click += (s, e) => { PushUndo(); _canvas.AddSprite("Text", isText: true); RefreshLayerList(); RefreshCode(); };
+            _btnAddText.Click += (s, e) => {
+                string font = _cmbFont.SelectedItem?.ToString() ?? "White";
+                PushUndo();
+                var sp = _canvas.AddSprite("Text", isText: true);
+                if (sp != null) { sp.FontId = font; OnSelectionChanged(_canvas, EventArgs.Empty); }
+                RefreshLayerList(); RefreshCode();
+            };
 
             bottomTable.Controls.Add(lblCustom,      0, 0);
             bottomTable.Controls.Add(_txtCustomName,  0, 1);
@@ -464,7 +470,7 @@ namespace SESpriteLCDLayoutTool
             _cmbFont = new ComboBox { Width = 110, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.White };
             _cmbFont.Items.AddRange(SpriteCatalog.Fonts);
             _cmbFont.SelectedIndex = 0;
-            _cmbFont.SelectedIndexChanged += OnPropChanged;
+            _cmbFont.SelectedIndexChanged += OnFontChanged;
             fontRow.Controls.Add(_cmbFont);
 
             var alignRow = new FlowLayoutPanel { Width = 210, Height = 26, BackColor = Color.Transparent, FlowDirection = FlowDirection.LeftToRight };
@@ -612,7 +618,7 @@ namespace SESpriteLCDLayoutTool
                 }
             }
 
-            // ── Font glyphs (PUA codepoints confirmed by SEGlyphScanner) ──────────
+            // ── Font glyphs (PUA + standard Unicode confirmed by SEGlyphScanner) ─
             var glyphHeader = new TreeNode("── FONT GLYPHS (double-click to add as text sprite) ──")
             {
                 ForeColor = Color.FromArgb(100, 180, 255),
@@ -726,12 +732,16 @@ namespace SESpriteLCDLayoutTool
 
         private void AddGlyphSprite(GlyphEntry glyph)
         {
+            string font = _cmbFont.SelectedItem?.ToString() ?? "White";
             PushUndo();
             var sprite = _canvas.AddSprite(glyph.Character.ToString(), isText: true);
             if (sprite == null) return;
             sprite.Text   = glyph.Character.ToString();
-            sprite.FontId = glyph.FontHint == "Monospace" ? "Monospace" : "White";
+            sprite.FontId = font;
             sprite.Scale  = 1.0f;
+            // Re-fire selection so the property panel picks up the correct font/text
+            OnSelectionChanged(_canvas, EventArgs.Empty);
+            _canvas.Invalidate();
             RefreshLayerList();
             RefreshCode();
             SetStatus($"Added glyph U+{(int)glyph.Character:X4} — font: {sprite.FontId}  {(glyph.Tintable ? "(tintable)" : "(baked/not tintable)")}");
@@ -829,6 +839,37 @@ namespace SESpriteLCDLayoutTool
 
             RefreshCode();
             UpdateStatus();
+        }
+
+        private void OnFontChanged(object sender, EventArgs e)
+        {
+            if (_updatingProps) return;
+
+            string newFont = _cmbFont.SelectedItem?.ToString() ?? "White";
+            bool newIsMono = newFont == "Monospace";
+
+            // Warn if switching font families and existing text sprites use the other family
+            if (_layout != null)
+            {
+                bool hasConflict = false;
+                foreach (var s in _layout.Sprites)
+                {
+                    if (s.Type != SpriteEntryType.Text) continue;
+                    if (s == _canvas?.SelectedSprite) continue;
+                    bool isMono = s.FontId == "Monospace";
+                    if (isMono != newIsMono) { hasConflict = true; break; }
+                }
+                if (hasConflict)
+                {
+                    MessageBox.Show(
+                        $"Other text sprites on this surface use {(newIsMono ? "White" : "Monospace")} font.\n" +
+                        "SE does not allow mixing White and Monospace fonts on the same LCD surface.",
+                        "Font Mixing Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+
+            // Apply via normal property handler
+            OnPropChanged(sender, e);
         }
 
         private void OnPropChanged(object sender, EventArgs e)
@@ -1520,6 +1561,21 @@ namespace SESpriteLCDLayoutTool
             SetStatus("Centered on surface");
         }
 
+        private void StretchToSurface()
+        {
+            if (_canvas.SelectedSprite == null) { SetStatus("Nothing selected to stretch."); return; }
+            PushUndo();
+            var sp = _canvas.SelectedSprite;
+            sp.Width  = _layout.SurfaceWidth;
+            sp.Height = _layout.SurfaceHeight;
+            sp.X = _layout.SurfaceWidth  / 2f;
+            sp.Y = _layout.SurfaceHeight / 2f;
+            _canvas.Invalidate();
+            OnSelectionChanged(_canvas, EventArgs.Empty);
+            RefreshCode();
+            SetStatus("Stretched to surface");
+        }
+
         // ── Canvas context menu ───────────────────────────────────────────────────
         private ContextMenuStrip BuildCanvasContextMenu()
         {
@@ -1530,6 +1586,7 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add("Delete\tDel",              null, (s, e) => DeleteSelected());
             ctx.Items.Add(new ToolStripSeparator());
             ctx.Items.Add("Center on Surface",        null, (s, e) => CenterSelectedOnSurface());
+            ctx.Items.Add("Stretch to Surface",       null, (s, e) => StretchToSurface());
             ctx.Items.Add(new ToolStripSeparator());
             ctx.Items.Add("Layer Up\tCtrl+]",         null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); RefreshCode(); });
             ctx.Items.Add("Layer Down\tCtrl+[",       null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); RefreshCode(); });

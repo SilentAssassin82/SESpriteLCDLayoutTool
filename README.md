@@ -269,5 +269,31 @@ MIT License
 
 ---
 
+## 📝 Changelog
+
+### v1.1.0
+- **SE Font Atlas Rendering** — PUA glyphs (controller icons, color swatches, etc.) now render using the actual SE DDS font atlas textures instead of system font fallback
+  - Parses `FontDataPA.xml` for White and Monospace fonts
+  - Loads and crops glyphs from 1024×1024 DDS atlas sheets (BC7)
+  - ForceWhite glyphs are tinted with sprite color; baked glyphs render as-is
+  - Falls back to GDI+ for characters without atlas data
+- **Expanded Glyph Catalog** — Added 10 standard Unicode glyph categories (123+ characters): Density Ramp, Box Drawing, Block Elements, Geometric Shapes, Arrows, Math & Technical, Misc Symbols, Vulgar Fractions, Letterlike & Currency
+- **Font Selection Persistence** — Selected font (White/Monospace) now sticks when adding new text or glyph sprites
+- **Font Mixing Warning** — Warns when switching between White and Monospace fonts if the canvas already has text sprites using the other font family (SE enforces one font per LCD surface)
+- **Stretch to Surface** — Right-click context menu option to stretch a sprite to fill the entire LCD surface
+- **Color Swatch Labels** — PUA color swatch glyphs (E100–E2FF) now labelled "(in-game only)" with info node explaining they only render as colored squares in SE
+- **Glyph Add Fix** — Double-clicking a glyph from the catalog now correctly applies the glyph's character and font instead of showing default "Hello LCD" with White font
+
+### v1.0.0
+- Initial release
+- WYSIWYG canvas with drag, resize, rotate, zoom, pan, grid snap
+- Real SE texture loading (DDS BC1/BC3/BC7, PNG, JPG) from Content + mods
+- Code generation for In-Game (PB), Mod, and Plugin/Torch targets
+- Smart code parser for importing existing sprite layouts
+- LCD snapshot capture helper for Torch/SE plugins
+- Undo/Redo, layer ordering, dark theme UI
+
+---
+
 Made for the Space Engineers community ❤️
 Happy building!
