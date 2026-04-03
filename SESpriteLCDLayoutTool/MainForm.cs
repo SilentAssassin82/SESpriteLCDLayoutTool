@@ -1004,10 +1004,14 @@ namespace SESpriteLCDLayoutTool
             string code = _codeBox.Text;
             int targetPos = -1;
 
-            // Count non-ref sprites before this one (for round-trip ordinal)
+            // Count non-ref, source-tracked sprites before this one (for round-trip ordinal)
             int nonRefOrdinal = 0;
             for (int i = 0; i < listIdx; i++)
-                if (!_layout.Sprites[i].IsReferenceLayout) nonRefOrdinal++;
+                if (!_layout.Sprites[i].IsReferenceLayout && _layout.Sprites[i].SourceStart >= 0)
+                    nonRefOrdinal++;
+
+            // Orphan sprites (SourceStart < 0) have no source position to navigate to
+            if (sprite.SourceStart < 0 && !sprite.IsReferenceLayout) return;
 
             // Strategy 1: GenerateRoundTrip comment marker  // [nonRefOrd+1] DisplayName
             if (!sprite.IsReferenceLayout)
@@ -1024,7 +1028,7 @@ namespace SESpriteLCDLayoutTool
             }
 
             // Strategy 3: Nth "new MySprite" occurrence (PatchOriginalSource / no markers)
-            if (targetPos < 0 && !sprite.IsReferenceLayout)
+            if (targetPos < 0 && !sprite.IsReferenceLayout && sprite.SourceStart >= 0)
             {
                 int pos = -1;
                 for (int n = 0; n <= nonRefOrdinal; n++)
@@ -1781,14 +1785,15 @@ namespace SESpriteLCDLayoutTool
                     ForeColor = Color.FromArgb(160, 220, 255),
                     BorderStyle = BorderStyle.FixedSingle,
                 };
-                var pnlExec = new Panel { Dock = DockStyle.Top, Height = 30 };
+                var pnlExec = new Panel { Dock = DockStyle.Bottom, Height = 30 };
                 pnlExec.Controls.Add(txtCallExpr);
                 pnlExec.Controls.Add(lblExecResult);
                 pnlExec.Controls.Add(lblCallPrefix);
 
-                splitCode.Panel1.Controls.Add(txtCode);
-                splitCode.Panel2.Controls.Add(txtSnapshot);
-                splitCode.Panel2.Controls.Add(lblSnapshot);
+                // Snapshot on top (paste first), code editor below with exec bar underneath
+                splitCode.Panel1.Controls.Add(txtSnapshot);
+                splitCode.Panel1.Controls.Add(lblSnapshot);
+                splitCode.Panel2.Controls.Add(txtCode);
                 splitCode.Panel2.Controls.Add(pnlExec);
 
                 var chkReplace = new CheckBox
@@ -1837,7 +1842,9 @@ namespace SESpriteLCDLayoutTool
                 List<SpriteEntry> executedSprites = null;
 
                 var btnExec = DarkButton("▶ Execute Code", Color.FromArgb(20, 80, 160));
-                btnExec.Width = 140;
+                btnExec.Dock = DockStyle.Right;
+                btnExec.Width = 120;
+                pnlExec.Controls.Add(btnExec); // sits directly under the code editor
                 btnExec.Click += (s, e) =>
                 {
                     string call = txtCallExpr.Text.Trim();
@@ -2028,12 +2035,11 @@ namespace SESpriteLCDLayoutTool
                 btnPanel.Controls.Add(btnImport);
                 btnPanel.Controls.Add(btnCancel);
                 btnPanel.Controls.Add(btnSnapshot);
-                btnPanel.Controls.Add(btnExec);
 
                 // Set splitter distance after adding to the form so layout is valid
                 dlg.Load += (s, e) =>
                 {
-                    splitCode.SplitterDistance = Math.Max(120, splitCode.Height - 190);
+                    splitCode.SplitterDistance = Math.Max(80, splitCode.Height / 3);
                 };
 
                 dlg.Controls.Add(splitCode);
