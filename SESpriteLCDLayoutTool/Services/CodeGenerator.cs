@@ -674,6 +674,14 @@ namespace SESpriteLCDLayoutTool.Services
             var matches = spritePattern.Matches(original);
             if (matches.Count == 0) return null;
 
+            // Safety guard: if the number of non-reference sprites in the layout
+            // doesn't match the number of MySprite definitions in the original source,
+            // round-trip would produce bloated or incorrect output — fall back to Generate().
+            int nonRefCount = 0;
+            foreach (var sp in layout.Sprites)
+                if (!sp.IsReferenceLayout) nonRefCount++;
+            if (nonRefCount != matches.Count) return null;
+
             // Region start: beginning of the LINE containing the first MySprite match.
             // This ensures we capture "frame.Add(" or similar prefixes on the same line.
             // Also absorb any preceding comment/blank lines (like "// [1] SquareSimple").

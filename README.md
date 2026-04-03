@@ -545,7 +545,16 @@ MIT License
 
 ## 📝 Changelog
 
-### v1.3.1
+### v1.3.3
+- **Live streaming round-trip** — live frames now merge into code sprites in-place instead of replacing them, so `SourceStart`/`SourceEnd`/`ImportBaseline` survive every frame
+  - Snapshot `Data` values identify which `if`/`switch` branch the plugin executed, matching back to the correct source pattern
+  - Positions **and colours** from the live frame are applied to the code sprites; the import baseline is updated to match so only user-intentional edits register as diffs in the round-trip patcher
+  - Pause the stream → `PatchOriginalSource` runs immediately, showing the patched source with only your edits spliced in (not the full 2000-line loop-expanded output)
+  - Without imported code, live frames still replace sprites as before (full visual preview)
+- **`IsActivelyStreaming` pause-aware** — paused state is now excluded, so the code panel updates freely while paused; resumes freezing when the stream is resumed
+- **`RefreshCode` on pause toggle** — code panel updates instantly when pausing or resuming instead of waiting for the next user action
+
+### v1.3.2
 - **Plugin snippet: FindPanel two-pass search** — `CustomName` is now searched in a complete first pass before falling back to `CustomData`, preventing false positives where an unrelated block name partially matches the tag
 - **Plugin snippet: file-based streaming docs** — `StartLcdFileStream()` / `StreamFrameToFile()` usage documented; the layout tool watches the output file via **Edit → Watch Snapshot File…**
 - **Snapshot file extension** — `SnapshotLcd()` now writes `.cs` instead of `.txt` (file content has always been C# code)

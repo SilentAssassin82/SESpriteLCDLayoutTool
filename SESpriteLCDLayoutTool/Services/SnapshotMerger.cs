@@ -30,12 +30,14 @@ namespace SESpriteLCDLayoutTool.Services
         /// occurrence order, so the first TEXTURE "SquareSimple" in the code is
         /// matched to the first TEXTURE "SquareSimple" in the snapshot, etc.
         /// 
-        /// Only position and size are transferred from the snapshot; colour,
-        /// font, text content, rotation/scale, source tracking, and baselines
-        /// are left untouched on the code sprites.
+        /// Position and size are always transferred from the snapshot.  When
+        /// <paramref name="applyColors"/> is true, colour components are also
+        /// transferred and the import baseline is updated accordingly so the
+        /// round-trip diff treats the live colour as the new baseline.
         /// </summary>
         public static MergeResult Merge(List<SpriteEntry> codeSprites,
-                                        List<SpriteEntry> snapshotSprites)
+                                        List<SpriteEntry> snapshotSprites,
+                                        bool applyColors = false)
         {
             var result = new MergeResult();
             if (codeSprites == null || snapshotSprites == null ||
@@ -71,7 +73,7 @@ namespace SESpriteLCDLayoutTool.Services
                 if (pool.TryGetValue(key, out var queue) && queue.Count > 0)
                 {
                     var snap = queue.Dequeue();
-                    ApplyPosition(code, snap);
+                    ApplyPosition(code, snap, applyColors);
                     matched++;
                 }
                 else
@@ -88,7 +90,7 @@ namespace SESpriteLCDLayoutTool.Services
                 for (int i = 0; i < count; i++)
                 {
                     if (codeSprites[i].IsReferenceLayout) continue;
-                    ApplyPosition(codeSprites[i], snapshotSprites[i]);
+                    ApplyPosition(codeSprites[i], snapshotSprites[i], applyColors);
                     matched++;
                 }
                 unmatched = Math.Max(0, codeSprites.Count - matched);
@@ -104,25 +106,42 @@ namespace SESpriteLCDLayoutTool.Services
         /// <summary>
         /// Applies the position and size from a snapshot sprite to a code sprite,
         /// then refreshes the import baseline so the round-trip diff ignores
-        /// the position change (it came from runtime, not user editing).
+        /// the position change (it came from runtime, not user editing).  When
+        /// <paramref name="applyColors"/> is true, colour components are also
+        /// applied and the baseline is updated — so the diff only fires for
+        /// colours the user explicitly changes via the editor.
         /// </summary>
-        private static void ApplyPosition(SpriteEntry code, SpriteEntry snapshot)
+        private static void ApplyPosition(SpriteEntry code, SpriteEntry snapshot, bool applyColors = false)
         {
             code.X = snapshot.X;
             code.Y = snapshot.Y;
             code.Width = snapshot.Width;
             code.Height = snapshot.Height;
 
+            if (applyColors)
+            {
+                code.ColorR = snapshot.ColorR;
+                code.ColorG = snapshot.ColorG;
+                code.ColorB = snapshot.ColorB;
+                code.ColorA = snapshot.ColorA;
+            }
+
             // Update the import baseline so the round-trip diff does NOT
-            // treat the snapshot positions as user edits.  The baseline
-            // records "what it looked like at import time" — so we update
-            // the position/size fields to match the snapshot values.
+            // treat the snapshot positions (or live colours) as user edits.
             if (code.ImportBaseline != null)
             {
                 code.ImportBaseline.X = snapshot.X;
                 code.ImportBaseline.Y = snapshot.Y;
                 code.ImportBaseline.Width = snapshot.Width;
                 code.ImportBaseline.Height = snapshot.Height;
+
+                if (applyColors)
+                {
+                    code.ImportBaseline.ColorR = snapshot.ColorR;
+                    code.ImportBaseline.ColorG = snapshot.ColorG;
+                    code.ImportBaseline.ColorB = snapshot.ColorB;
+                    code.ImportBaseline.ColorA = snapshot.ColorA;
+                }
             }
         }
 

@@ -1091,9 +1091,20 @@ namespace SESpriteLCDLayoutTool
             }
         }
 
+        private bool IsActivelyStreaming =>
+            (_pipeListener != null && _pipeListener.IsListening && !_pipeListener.IsPaused)
+            || (_fileWatcher != null && _fileWatcher.IsListening && !_fileWatcher.IsPaused)
+            || (_clipboardTimer != null);
+
         private void RefreshCode()
         {
             if (_layout == null) { _codeBox.Text = ""; return; }
+
+            // While any live source is actively streaming, the layout contains
+            // runtime-expanded sprites (loops unrolled, expressions resolved)
+            // that don't match the original source structure.  Freeze the code
+            // panel so the user keeps seeing their compact source code.
+            if (IsActivelyStreaming) return;
 
             // Try round-trip: splice updated sprites back into the original pasted code
             if (_layout.OriginalSourceCode != null)
@@ -1111,6 +1122,19 @@ namespace SESpriteLCDLayoutTool
                 if (roundTrip != null)
                 {
                     _codeBox.Text = roundTrip;
+                    return;
+                }
+
+                // Both round-trip paths failed.  If no sprites have source tracking
+                // (e.g. sprites were replaced by a live stream) keep the original
+                // source instead of producing verbose per-sprite Generate() output.
+                bool hasTracking = false;
+                foreach (var sp in _layout.Sprites)
+                    if (sp.SourceStart >= 0) { hasTracking = true; break; }
+
+                if (!hasTracking)
+                {
+                    _codeBox.Text = _layout.OriginalSourceCode;
                     return;
                 }
             }
@@ -1180,6 +1204,11 @@ namespace SESpriteLCDLayoutTool
             // Reset so the next live frame saves an undo snapshot of the
             // user's paused edits before overwriting the canvas.
             _liveUndoPushed = false;
+
+            // Update the code panel immediately — during pause IsActivelyStreaming
+            // returns false, so RefreshCode will run PatchOriginalSource and show
+            // the round-trip patched code based on the frozen live frame.
+            RefreshCode();
         }
 
         private void ToggleFileWatching()
@@ -1291,12 +1320,32 @@ namespace SESpriteLCDLayoutTool
                     _liveUndoPushed = true;
                 }
 
-                // Replace layout with the live frame
-                _layout.Sprites.Clear();
-                _layout.Sprites.AddRange(sprites);
-                _canvas.CanvasLayout = _layout;
-                RefreshLayerList();
-                SetStatus($"Live frame: {sprites.Count} sprites");
+                // When code with source tracking is loaded, merge live frame
+                // positions/colors into the existing code sprites in-place.
+                // This preserves SourceStart/SourceEnd/ImportBaseline so the
+                // round-trip patcher can still diff only what the user changes.
+                // The snapshot Data values tell us which if/switch branch the
+                // plugin executed, so we match back to the correct source pattern.
+                bool hasTracking = _layout.OriginalSourceCode != null
+                    && _layout.Sprites.Exists(sp => !sp.IsReferenceLayout && sp.SourceStart >= 0);
+
+                if (hasTracking)
+                {
+                    var editable = new List<SpriteEntry>();
+                    foreach (var sp in _layout.Sprites)
+                        if (!sp.IsReferenceLayout) editable.Add(sp);
+                    SnapshotMerger.Merge(editable, sprites, applyColors: true);
+                    _canvas.Invalidate();
+                    SetStatus($"Live frame: {sprites.Count} sprites merged into {editable.Count} code sprites");
+                }
+                else
+                {
+                    _layout.Sprites.Clear();
+                    _layout.Sprites.AddRange(sprites);
+                    _canvas.CanvasLayout = _layout;
+                    RefreshLayerList();
+                    SetStatus($"Live frame: {sprites.Count} sprites");
+                }
             }));
         }
 
