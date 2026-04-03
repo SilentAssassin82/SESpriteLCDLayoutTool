@@ -53,6 +53,15 @@ namespace SESpriteLCDLayoutTool
         private readonly UndoManager _undo = new UndoManager();
         private SpriteTextureCache _textureCache;
 
+        // ── Live stream ──────────────────────────────────────────────────────────
+        private LivePipeListener _pipeListener;
+        private ToolStripMenuItem _mnuListenToggle;
+        private ToolStripMenuItem _mnuPauseToggle;
+
+        // ── File-based live stream ───────────────────────────────────────────────
+        private LiveFileWatcher _fileWatcher;
+        private ToolStripMenuItem _mnuFileWatchToggle;
+
         // ─────────────────────────────────────────────────────────────────────────
         public MainForm()
         {
@@ -189,6 +198,14 @@ namespace SESpriteLCDLayoutTool
             edit.DropDownItems.Add(new ToolStripSeparator());
             edit.DropDownItems.Add("Paste Layout Code…\tCtrl+V",  null, (s, e) => ShowPasteLayoutDialog());
             edit.DropDownItems.Add("Apply Runtime Snapshot…",      null, (s, e) => ShowApplySnapshotDialog());
+            edit.DropDownItems.Add(new ToolStripSeparator());
+            _mnuListenToggle = new ToolStripMenuItem("Start Live Listening", null, (s, e) => ToggleLiveListening());
+            edit.DropDownItems.Add(_mnuListenToggle);
+            _mnuPauseToggle = new ToolStripMenuItem("Pause Live Stream", null, (s, e) => ToggleLivePause()) { Enabled = false };
+            edit.DropDownItems.Add(_mnuPauseToggle);
+            _mnuFileWatchToggle = new ToolStripMenuItem("Watch Snapshot File…", null, (s, e) => ToggleFileWatching());
+            edit.DropDownItems.Add(_mnuFileWatchToggle);
+            edit.DropDownItems.Add(new ToolStripSeparator());
             edit.DropDownItems.Add("Duplicate\tCtrl+D",           null, (s, e) => DuplicateSelected());
             edit.DropDownItems.Add("Delete Selected\tDel",        null, (s, e) => DeleteSelected());
             edit.DropDownItems.Add(new ToolStripSeparator());
@@ -1027,6 +1044,121 @@ namespace SESpriteLCDLayoutTool
             Text = _currentFile != null
                 ? $"SE Sprite LCD Layout Tool — {Path.GetFileName(_currentFile)}"
                 : "SE Sprite LCD Layout Tool — New Layout";
+        }
+
+        // ── Live LCD Stream ───────────────────────────────────────────────────────
+
+        private void ToggleLiveListening()
+        {
+            if (_pipeListener != null && _pipeListener.IsListening)
+            {
+                _pipeListener.Stop();
+                _pipeListener.Dispose();
+                _pipeListener = null;
+                _mnuListenToggle.Text = "Start Live Listening";
+                _mnuPauseToggle.Enabled = false;
+                _mnuPauseToggle.Text = "Pause Live Stream";
+                SetStatus("Live listening stopped");
+                return;
+            }
+
+            _pipeListener = new LivePipeListener();
+            _pipeListener.FrameReceived += OnLiveFrameReceived;
+            _pipeListener.Connected += () => BeginInvoke((Action)(() =>
+            {
+                SetStatus("Live stream connected");
+                _mnuPauseToggle.Enabled = true;
+            }));
+            _pipeListener.Disconnected += () => BeginInvoke((Action)(() =>
+            {
+                SetStatus("Live stream disconnected — waiting for reconnect…");
+                _mnuPauseToggle.Enabled = false;
+                _mnuPauseToggle.Text = "Pause Live Stream";
+            }));
+            _pipeListener.Start();
+            _mnuListenToggle.Text = "Stop Live Listening";
+            SetStatus("Live listening — waiting for plugin connection on pipe…");
+        }
+
+        private void ToggleLivePause()
+        {
+            if (_pipeListener == null && _fileWatcher == null) return;
+            if (_pipeListener != null)
+            {
+                _pipeListener.IsPaused = !_pipeListener.IsPaused;
+                _mnuPauseToggle.Text = _pipeListener.IsPaused ? "Resume Live Stream" : "Pause Live Stream";
+                SetStatus(_pipeListener.IsPaused ? "Live stream paused — editing freely" : "Live stream resumed");
+            }
+            if (_fileWatcher != null)
+            {
+                _fileWatcher.IsPaused = !_fileWatcher.IsPaused;
+                _mnuPauseToggle.Text = _fileWatcher.IsPaused ? "Resume Live Stream" : "Pause Live Stream";
+                SetStatus(_fileWatcher.IsPaused ? "Live stream paused — editing freely" : "Live stream resumed");
+            }
+        }
+
+        private void ToggleFileWatching()
+        {
+            if (_fileWatcher != null && _fileWatcher.IsListening)
+            {
+                _fileWatcher.Stop();
+                _fileWatcher.Dispose();
+                _fileWatcher = null;
+                _mnuFileWatchToggle.Text = "Watch Snapshot File…";
+                _mnuPauseToggle.Enabled = _pipeListener != null && _pipeListener.IsListening;
+                SetStatus("File watching stopped");
+                return;
+            }
+
+            using (var dlg = new System.Windows.Forms.OpenFileDialog
+            {
+                Title = "Select snapshot file to watch",
+                Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                CheckFileExists = false, // file may not exist yet
+            })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                _fileWatcher = new LiveFileWatcher();
+                _fileWatcher.FrameReceived += OnLiveFrameReceived;
+                _fileWatcher.Connected += () => BeginInvoke((Action)(() =>
+                {
+                    SetStatus($"Watching: {_fileWatcher?.FilePath}");
+                    _mnuPauseToggle.Enabled = true;
+                }));
+                _fileWatcher.Disconnected += () => BeginInvoke((Action)(() =>
+                {
+                    SetStatus("File watching stopped");
+                    if (_pipeListener == null || !_pipeListener.IsListening)
+                    {
+                        _mnuPauseToggle.Enabled = false;
+                        _mnuPauseToggle.Text = "Pause Live Stream";
+                    }
+                }));
+                _fileWatcher.Start(dlg.FileName);
+                _mnuFileWatchToggle.Text = "Stop Watching File";
+                _mnuPauseToggle.Enabled = true;
+                SetStatus($"Watching: {dlg.FileName}");
+            }
+        }
+
+        private void OnLiveFrameReceived(string frame)
+        {
+            // Called on background thread — marshal to UI
+            BeginInvoke((Action)(() =>
+            {
+                var sprites = CodeParser.Parse(frame);
+                if (sprites.Count == 0) return;
+
+                // Replace layout with the live frame
+                PushUndo();
+                _layout.Sprites.Clear();
+                _layout.Sprites.AddRange(sprites);
+                _canvas.CanvasLayout = _layout;
+                RefreshLayerList();
+                RefreshCode();
+                SetStatus($"Live frame: {sprites.Count} sprites");
+            }));
         }
 
         private void SetStatus(string msg) => _statusLabel.Text = msg;
@@ -2076,7 +2208,11 @@ namespace SESpriteLCDLayoutTool
         protected override void Dispose(bool disposing)
         {
             if (disposing)
+            {
+                _pipeListener?.Dispose();
+                _fileWatcher?.Dispose();
                 _textureCache?.Dispose();
+            }
             base.Dispose(disposing);
         }
 

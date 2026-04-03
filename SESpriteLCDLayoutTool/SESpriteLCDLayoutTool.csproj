@@ -101,6 +101,8 @@
     <Compile Include="Services\CodeGenerator.cs" />
     <Compile Include="Services\CodeParser.cs" />
     <Compile Include="Services\DdsLoader.cs" />
+    <Compile Include="Services\LiveFileWatcher.cs" />
+    <Compile Include="Services\LivePipeListener.cs" />
     <Compile Include="Services\SeFontAtlas.cs" />
     <Compile Include="Services\SnapshotMerger.cs" />
     <Compile Include="Services\SpriteTextureCache.cs" />
