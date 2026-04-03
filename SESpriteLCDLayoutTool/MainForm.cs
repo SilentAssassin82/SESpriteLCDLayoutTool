@@ -1137,7 +1137,7 @@ namespace SESpriteLCDLayoutTool
                 // source instead of producing verbose per-sprite Generate() output.
                 bool hasTracking = false;
                 foreach (var sp in _layout.Sprites)
-                    if (sp.SourceStart >= 0) { hasTracking = true; break; }
+                    if (sp.SourceStart >= 0 && sp.ImportBaseline != null) { hasTracking = true; break; }
 
                 if (!hasTracking)
                 {
@@ -1355,7 +1355,7 @@ namespace SESpriteLCDLayoutTool
             // them — the visual is already correct and removing them would make
             // loop-generated sprites disappear.
             bool showingCodeSprites = _layout.Sprites.Exists(
-                sp => !sp.IsReferenceLayout && sp.SourceStart >= 0);
+                sp => !sp.IsReferenceLayout && sp.SourceStart >= 0 && sp.ImportBaseline != null);
 
             if (showingCodeSprites && _lastLiveFrame != null)
             {
