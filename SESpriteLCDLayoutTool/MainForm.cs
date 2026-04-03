@@ -1216,6 +1216,8 @@ namespace SESpriteLCDLayoutTool
             // When transitioning to paused: swap in the code-tracked sprites
             // (merged with the last live frame's positions and colours) so the
             // user can select and edit them with PatchOriginalSource working.
+            // Loop-generated sprites that have no code counterpart are kept as
+            // untracked entries so the canvas still looks like the live frame.
             if (nowPaused && _preLiveCodeSprites != null && _lastLiveFrame != null)
             {
                 _layout.Sprites.Clear();
@@ -1226,7 +1228,16 @@ namespace SESpriteLCDLayoutTool
                 var editable = new List<SpriteEntry>();
                 foreach (var sp in _layout.Sprites)
                     if (!sp.IsReferenceLayout) editable.Add(sp);
-                SnapshotMerger.Merge(editable, _lastLiveFrame, applyColors: true);
+                var mergeResult = SnapshotMerger.Merge(editable, _lastLiveFrame, applyColors: true);
+
+                // Add loop-generated sprites that have no code counterpart so the
+                // paused visual matches the live frame.
+                foreach (var orphan in mergeResult.UnmatchedSnapshots)
+                {
+                    orphan.SourceStart = -1;
+                    orphan.SourceEnd   = -1;
+                    _layout.Sprites.Add(orphan);
+                }
 
                 _canvas.CanvasLayout = _layout;
                 RefreshLayerList();
