@@ -546,13 +546,10 @@ MIT License
 ## 📝 Changelog
 
 ### v1.3.1
-- **IML (InventoryManagerLight) Integration** — documented three integration modes with the IML Torch plugin
-  - Mode 1: `!iml snapshot <tag>` → timestamped `.cs` file, paste into layout tool
-  - Mode 2: `!iml watch <tag>` → fixed-name `.cs` overwritten each game tick; watch with **Edit → Watch Snapshot File…**
-  - Mode 3: named pipe (`SELcdSnapshot`) — same protocol as existing live streaming
-  - `MakeSafeName` tag-to-filename conversion documented (`IML:LCD=MISC` → `IML_LCD_MISC`)
-- **FindPanel two-pass search** — generated Plugin snippet now searches `CustomName` in a complete first pass before falling back to `CustomData`, preventing false positives where an unrelated block name partially matches the tag
+- **Plugin snippet: FindPanel two-pass search** — `CustomName` is now searched in a complete first pass before falling back to `CustomData`, preventing false positives where an unrelated block name partially matches the tag
+- **Plugin snippet: file-based streaming docs** — `StartLcdFileStream()` / `StreamFrameToFile()` usage documented; the layout tool watches the output file via **Edit → Watch Snapshot File…**
 - **Snapshot file extension** — `SnapshotLcd()` now writes `.cs` instead of `.txt` (file content has always been C# code)
+- **Docs: Pulsar / client-side plugins** — the Mod snippet works unchanged in Pulsar; `MyAPIGateway.Utilities.ShowMissionScreen` or a direct `File.WriteAllText` to AppData are both valid output routes
 
 ### v1.3.0
 - **Live LCD Streaming** — stream frames in real time from a running Torch plugin to the layout tool over a named pipe
