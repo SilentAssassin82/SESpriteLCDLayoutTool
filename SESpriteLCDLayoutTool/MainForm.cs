@@ -1330,37 +1330,46 @@ namespace SESpriteLCDLayoutTool
         }
 
         /// <summary>
-        /// When all streaming sources have stopped, restores the code-tracked sprites
-        /// (saved before the first live replace) with merged positions and colours from
-        /// the last received live frame.  Clears the saved state afterwards.
+        /// Called when all streaming sources have stopped.  If the user paused
+        /// before stopping the canvas already shows the 27 code-tracked sprites —
+        /// just merge the last live frame to finalise positions and we're done.
+        /// If the user stopped without pausing the canvas still holds the full
+        /// live-frame sprite list (correct visual) — leave it there so nothing
+        /// disappears; OriginalSourceCode is preserved so the code panel falls
+        /// back to the compact original source.
         /// </summary>
         private void RestoreCodeSpritesIfStreamingEnded()
         {
             if (_preLiveCodeSprites == null) return;
 
-            // Only restore once every source is gone (another source may still be running).
+            // Only act once every source is gone.
             bool anyActive = (_pipeListener != null && _pipeListener.IsListening)
                 || (_fileWatcher != null && _fileWatcher.IsListening)
                 || (_clipboardTimer != null);
             if (anyActive) return;
 
-            _layout.Sprites.Clear();
-            foreach (var sp in _preLiveCodeSprites)
-                _layout.Sprites.Add(sp);
+            // Detect which mode the canvas is currently in.
+            // If code sprites are showing (user paused before stopping) finalise
+            // the merge and leave them in place for round-trip editing.
+            // If live sprites are showing (user stopped without pausing) keep
+            // them — the visual is already correct and removing them would make
+            // loop-generated sprites disappear.
+            bool showingCodeSprites = _layout.Sprites.Exists(
+                sp => !sp.IsReferenceLayout && sp.SourceStart >= 0);
 
-            if (_lastLiveFrame != null)
+            if (showingCodeSprites && _lastLiveFrame != null)
             {
                 var editable = new List<SpriteEntry>();
                 foreach (var sp in _layout.Sprites)
                     if (!sp.IsReferenceLayout) editable.Add(sp);
                 SnapshotMerger.Merge(editable, _lastLiveFrame, applyColors: true);
+                _canvas.CanvasLayout = _layout;
+                RefreshLayerList();
             }
+            // else: live sprites already on canvas — nothing to change visually.
 
             _preLiveCodeSprites = null;
             _lastLiveFrame = null;
-
-            _canvas.CanvasLayout = _layout;
-            RefreshLayerList();
         }
 
         private void OnLiveFrameReceived(string frame)
