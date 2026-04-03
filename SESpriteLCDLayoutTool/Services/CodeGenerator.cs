@@ -257,8 +257,8 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("/// Finds the first IMyTextSurfaceProvider block whose name or CustomData contains");
             sb.AppendLine("/// <paramref name=\"tag\"/> using a two-pass search that avoids grid-iteration false");
             sb.AppendLine("/// positives. Pass 1 checks CustomName only; Pass 2 checks CustomData only.");
-            sb.AppendLine("/// This ensures a block named '1iml' is never returned ahead of the correct");
-            sb.AppendLine("/// panel tagged 'IML:LCD' in its CustomData just because it appears first in");
+            sb.AppendLine("/// This ensures a block named 'mylcd' is never returned ahead of the correct");
+            sb.AppendLine("/// panel tagged 'SCREEN:Main' in its CustomData just because it appears first in");
             sb.AppendLine("/// the grid's block list.");
             sb.AppendLine("/// </summary>");
             sb.AppendLine("/// <param name=\"allBlocks\">All terminal blocks to search. Fetch once with");
