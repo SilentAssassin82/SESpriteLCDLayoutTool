@@ -247,7 +247,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("    string output = SerializeSnapshot();");
             sb.AppendLine("    string path = Path.Combine(");
             sb.AppendLine("        StoragePath ?? Directory.GetCurrentDirectory(),");
-            sb.AppendLine("        $\"{label}_{DateTime.Now:yyyyMMdd_HHmmss}.cs\");")
+            sb.AppendLine("        $\"{label}_{DateTime.Now:yyyyMMdd_HHmmss}.cs\");");
             sb.AppendLine();
             sb.AppendLine("    File.WriteAllText(path, output);");
             sb.AppendLine("    Log.Info($\"LCD snapshot saved: {path}  ({_snapshotSprites.Count} sprites)\");");
