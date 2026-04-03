@@ -113,8 +113,8 @@ namespace SESpriteLCDLayoutTool
                 _mainSplit.FixedPanel       = FixedPanel.Panel1;   // sprite palette stays fixed width
 
                 _workSplit.Panel1MinSize    = 200;
-                _workSplit.Panel2MinSize    = 120;
-                _workSplit.SplitterDistance = Math.Max(200, Math.Min(_workSplit.Height - 120 - _workSplit.SplitterWidth, 560));
+                _workSplit.Panel2MinSize    = 180;
+                _workSplit.SplitterDistance = Math.Max(200, Math.Min(_workSplit.Height - 180 - _workSplit.SplitterWidth, 560));
                 _workSplit.FixedPanel       = FixedPanel.Panel2;   // code panel stays fixed height
 
                 _topSplit.Panel1MinSize     = 200;
