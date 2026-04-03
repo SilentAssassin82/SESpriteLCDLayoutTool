@@ -1241,6 +1241,9 @@ namespace SESpriteLCDLayoutTool
 
                 _canvas.CanvasLayout = _layout;
                 RefreshLayerList();
+                // Give the layer list focus so the first double-click
+                // jumps to code immediately without needing a focus click first.
+                _lstLayers.Focus();
             }
 
             // Reset so the next live frame saves an undo snapshot of the
