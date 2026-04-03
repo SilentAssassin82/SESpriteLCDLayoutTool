@@ -39,6 +39,8 @@ namespace SESpriteLCDLayoutTool
         // ── Code panel ────────────────────────────────────────────────────────────
         private RichTextBox _codeBox;
         private ComboBox    _cmbCodeStyle;
+        private TextBox     _execCallBox;
+        private Label       _execResultLabel;
 
         // ── Split containers (distances set on Load) ──────────────────────────────
         private SplitContainer _mainSplit, _workSplit, _topSplit;
@@ -559,6 +561,59 @@ namespace SESpriteLCDLayoutTool
         }
 
         // ── Code output panel ─────────────────────────────────────────────────────
+        private void OnExecCodeClick(object sender, EventArgs e)
+        {
+            if (_layout == null) { SetStatus("No layout loaded."); return; }
+
+            string code = _codeBox.Text;
+            if (string.IsNullOrWhiteSpace(code)) { SetStatus("Code panel is empty."); return; }
+
+            // Use stored call expression, or auto-detect from the code
+            string call = _execCallBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(call))
+            {
+                call = CodeExecutor.DetectCallExpression(code);
+                if (call == null)
+                {
+                    MessageBox.Show(
+                        "Could not auto-detect a render method with a List<MySprite> parameter.\n\n"
+                        + "Type the call expression in the '▶ Call:' box below, e.g.:\n"
+                        + "  RenderPanel(sprites, 512f, 10f, 1f)",
+                        "No Method Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    _execCallBox.Focus();
+                    return;
+                }
+                _execCallBox.Text = call;
+            }
+
+            _execResultLabel.Text      = "Running…";
+            _execResultLabel.ForeColor = Color.FromArgb(200, 180, 60);
+            Refresh();
+
+            var result = CodeExecutor.Execute(code, call);
+            if (!result.Success)
+            {
+                _execResultLabel.Text      = "✗ Error";
+                _execResultLabel.ForeColor = Color.FromArgb(220, 80, 80);
+                MessageBox.Show(result.Error, "Execution Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            _execResultLabel.Text      = "✔ " + result.Sprites.Count;
+            _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
+
+            PushUndo();
+            _layout.Sprites.Clear();
+            foreach (var sp in result.Sprites)
+                _layout.Sprites.Add(sp);
+
+            _canvas.SelectedSprite = result.Sprites.Count > 0 ? result.Sprites[0] : null;
+            _canvas.Invalidate();
+            RefreshLayerList();
+            SetStatus($"Executed — {result.Sprites.Count} sprite(s) captured.");
+        }
+
         private Panel BuildCodePanel()
         {
             var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(20, 20, 20), Padding = new Padding(3) };
@@ -630,6 +685,53 @@ namespace SESpriteLCDLayoutTool
 
             panel.Controls.Add(_codeBox);
             panel.Controls.Add(toolbar);
+
+            // ── Execute-code bar (bottom of code panel) ───────────────────────────
+            var lblExecPrefix = new Label
+            {
+                Text      = "▶ Call:",
+                Dock      = DockStyle.Left,
+                AutoSize  = false,
+                Width     = 58,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding   = new Padding(6, 0, 0, 0),
+                ForeColor = Color.FromArgb(130, 200, 255),
+            };
+            _execResultLabel = new Label
+            {
+                Text      = "–",
+                Dock      = DockStyle.Right,
+                AutoSize  = false,
+                Width     = 90,
+                TextAlign = ContentAlignment.MiddleRight,
+                Padding   = new Padding(0, 0, 6, 0),
+                ForeColor = Color.FromArgb(130, 130, 130),
+            };
+            _execCallBox = new TextBox
+            {
+                Dock        = DockStyle.Fill,
+                Font        = new Font("Consolas", 9f),
+                BackColor   = Color.FromArgb(18, 24, 38),
+                ForeColor   = Color.FromArgb(160, 220, 255),
+                BorderStyle = BorderStyle.FixedSingle,
+            };
+            var btnExecCode = DarkButton("▶ Execute Code", Color.FromArgb(20, 80, 160));
+            btnExecCode.Dock  = DockStyle.Right;
+            btnExecCode.Width = 110;
+            btnExecCode.Click += OnExecCodeClick;
+
+            var execBar = new Panel
+            {
+                Dock      = DockStyle.Bottom,
+                Height    = 30,
+                BackColor = Color.FromArgb(22, 22, 32),
+            };
+            execBar.Controls.Add(_execCallBox);
+            execBar.Controls.Add(_execResultLabel);
+            execBar.Controls.Add(btnExecCode);
+            execBar.Controls.Add(lblExecPrefix);
+            panel.Controls.Add(execBar);
+
             return panel;
         }
 
