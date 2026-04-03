@@ -1752,9 +1752,44 @@ namespace SESpriteLCDLayoutTool
                     AcceptsTab = true,
                 };
 
+                // ── Code-execution panel (sits above the snapshot box) ────────────────
+                var lblCallPrefix = new Label
+                {
+                    Text = "▶ Execute call:",
+                    Dock = DockStyle.Left,
+                    AutoSize = false,
+                    Width = 108,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Padding = new Padding(6, 0, 0, 0),
+                    ForeColor = Color.FromArgb(130, 200, 255),
+                };
+                var lblExecResult = new Label
+                {
+                    Text = "–",
+                    Dock = DockStyle.Right,
+                    AutoSize = false,
+                    Width = 130,
+                    TextAlign = ContentAlignment.MiddleRight,
+                    Padding = new Padding(0, 0, 6, 0),
+                    ForeColor = Color.FromArgb(130, 130, 130),
+                };
+                var txtCallExpr = new TextBox
+                {
+                    Dock = DockStyle.Fill,
+                    Font = new Font("Consolas", 9f),
+                    BackColor = Color.FromArgb(18, 24, 38),
+                    ForeColor = Color.FromArgb(160, 220, 255),
+                    BorderStyle = BorderStyle.FixedSingle,
+                };
+                var pnlExec = new Panel { Dock = DockStyle.Top, Height = 30 };
+                pnlExec.Controls.Add(txtCallExpr);
+                pnlExec.Controls.Add(lblExecResult);
+                pnlExec.Controls.Add(lblCallPrefix);
+
                 splitCode.Panel1.Controls.Add(txtCode);
                 splitCode.Panel2.Controls.Add(txtSnapshot);
                 splitCode.Panel2.Controls.Add(lblSnapshot);
+                splitCode.Panel2.Controls.Add(pnlExec);
 
                 var chkReplace = new CheckBox
                 {
@@ -1796,6 +1831,59 @@ namespace SESpriteLCDLayoutTool
                 {
                     Clipboard.SetText(CodeGenerator.GenerateSnapshotHelper(SelectedCodeStyle));
                     SetStatus("Snapshot helper script copied to clipboard!");
+                };
+
+                // ── Execution state (shared between Execute button and Import button) ──
+                List<SpriteEntry> executedSprites = null;
+
+                var btnExec = DarkButton("▶ Execute Code", Color.FromArgb(20, 80, 160));
+                btnExec.Width = 140;
+                btnExec.Click += (s, e) =>
+                {
+                    string call = txtCallExpr.Text.Trim();
+                    if (string.IsNullOrWhiteSpace(call))
+                    {
+                        call = CodeExecutor.DetectCallExpression(txtCode.Text);
+                        if (call == null)
+                        {
+                            MessageBox.Show(
+                                "Could not detect a render method with a List<MySprite> parameter.\n\n"
+                                + "Enter the call expression manually in the 'Execute call' box, e.g.:\n"
+                                + "  RenderPanel(sprites, 512f, 10f, 1f)",
+                                "No Method Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
+                        txtCallExpr.Text = call;
+                    }
+
+                    lblExecResult.Text = "Running…";
+                    lblExecResult.ForeColor = Color.FromArgb(200, 180, 60);
+                    dlg.Refresh();
+
+                    var execResult = CodeExecutor.Execute(txtCode.Text, call);
+                    if (!execResult.Success)
+                    {
+                        executedSprites = null;
+                        lblExecResult.Text = "✗ Error";
+                        lblExecResult.ForeColor = Color.FromArgb(220, 80, 80);
+                        MessageBox.Show(execResult.Error, "Execution Error",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    executedSprites = execResult.Sprites;
+                    lblExecResult.Text = "✔ " + executedSprites.Count + " sprites";
+                    lblExecResult.ForeColor = Color.FromArgb(80, 220, 100);
+                };
+
+                // Auto-populate the call expression when the user leaves the code box
+                txtCode.Leave += (s, e) =>
+                {
+                    if (string.IsNullOrWhiteSpace(txtCallExpr.Text))
+                    {
+                        string detected = CodeExecutor.DetectCallExpression(txtCode.Text);
+                        if (detected != null) txtCallExpr.Text = detected;
+                    }
                 };
 
                 btnImport.Click += (s, e) =>
@@ -1860,6 +1948,24 @@ namespace SESpriteLCDLayoutTool
                         }
 
                         // ── Snapshot merge: apply runtime positions ──
+                        // Prefer executed sprites (from ▶ Execute Code) over the manual snapshot box.
+                        // Execution gives real positions for ALL sprites including loop-generated ones.
+                        if (executedSprites != null && executedSprites.Count > 0)
+                        {
+                            var mergeResult = SnapshotMerger.Merge(sprites, executedSprites);
+                            SetStatus(mergeResult.Summary
+                                + (mergeResult.UnmatchedSnapshots.Count > 0
+                                    ? $"  {mergeResult.UnmatchedSnapshots.Count} loop/dynamic sprite(s) added as orphans."
+                                    : ""));
+                            hasDynamicPositions = false;
+
+                            // Orphan sprites are loop- or expression-generated; they have accurate
+                            // runtime positions but no source tracking (SourceStart stays -1).
+                            foreach (var orphan in mergeResult.UnmatchedSnapshots)
+                                sprites.Add(orphan);
+                        }
+                        else
+                        {
                         string snapshotCode = txtSnapshot.Text;
                         if (!string.IsNullOrWhiteSpace(snapshotCode))
                         {
@@ -1870,6 +1976,7 @@ namespace SESpriteLCDLayoutTool
                                 SetStatus(mergeResult.Summary);
                                 hasDynamicPositions = false; // snapshot resolved positions
                             }
+                        }
                         }
 
                         // Auto-position sprites with default positions so they're visible/selectable
@@ -1921,11 +2028,12 @@ namespace SESpriteLCDLayoutTool
                 btnPanel.Controls.Add(btnImport);
                 btnPanel.Controls.Add(btnCancel);
                 btnPanel.Controls.Add(btnSnapshot);
+                btnPanel.Controls.Add(btnExec);
 
                 // Set splitter distance after adding to the form so layout is valid
                 dlg.Load += (s, e) =>
                 {
-                    splitCode.SplitterDistance = Math.Max(120, splitCode.Height - 160);
+                    splitCode.SplitterDistance = Math.Max(120, splitCode.Height - 190);
                 };
 
                 dlg.Controls.Add(splitCode);
