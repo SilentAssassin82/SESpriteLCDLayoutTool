@@ -108,8 +108,10 @@ namespace SESpriteLCDLayoutTool.Services
         /// then refreshes the import baseline so the round-trip diff ignores
         /// the position change (it came from runtime, not user editing).  When
         /// <paramref name="applyColors"/> is true, colour components are also
-        /// applied and the baseline is updated — so the diff only fires for
-        /// colours the user explicitly changes via the editor.
+        /// applied — but only if the user has not manually changed the colour
+        /// (current colour still matches the baseline).  The baseline colour is
+        /// always advanced to the live frame value so the round-trip diff only
+        /// fires for colours the user explicitly edits.
         /// </summary>
         private static void ApplyPosition(SpriteEntry code, SpriteEntry snapshot, bool applyColors = false)
         {
@@ -120,10 +122,22 @@ namespace SESpriteLCDLayoutTool.Services
 
             if (applyColors)
             {
-                code.ColorR = snapshot.ColorR;
-                code.ColorG = snapshot.ColorG;
-                code.ColorB = snapshot.ColorB;
-                code.ColorA = snapshot.ColorA;
+                // Preserve user-edited colours across pause/resume cycles.
+                // If the current colour still matches the baseline the user hasn't
+                // touched it, so it is safe to apply the live frame colour.
+                bool colourUnchanged = code.ImportBaseline == null
+                    || (code.ColorR == code.ImportBaseline.ColorR
+                        && code.ColorG == code.ImportBaseline.ColorG
+                        && code.ColorB == code.ImportBaseline.ColorB
+                        && code.ColorA == code.ImportBaseline.ColorA);
+
+                if (colourUnchanged)
+                {
+                    code.ColorR = snapshot.ColorR;
+                    code.ColorG = snapshot.ColorG;
+                    code.ColorB = snapshot.ColorB;
+                    code.ColorA = snapshot.ColorA;
+                }
             }
 
             // Update the import baseline so the round-trip diff does NOT
@@ -137,6 +151,8 @@ namespace SESpriteLCDLayoutTool.Services
 
                 if (applyColors)
                 {
+                    // Always advance the baseline colour to match the live frame
+                    // so the diff only fires for colours the user changed.
                     code.ImportBaseline.ColorR = snapshot.ColorR;
                     code.ImportBaseline.ColorG = snapshot.ColorG;
                     code.ImportBaseline.ColorB = snapshot.ColorB;

@@ -545,6 +545,14 @@ MIT License
 
 ## 📝 Changelog
 
+### v1.3.4
+- **Live streaming visual fix** — canvas now shows the full runtime sprite list (correct visual) at all times during streaming, regardless of whether source code is imported
+  - Previously the merge-in-place approach showed only the ~27 code-pattern sprites instead of all ~165 runtime sprites, producing incorrect/incomplete visuals
+  - Code sprites are now saved before the first live replace and restored with merged positions/colours only **on pause** — where the round-trip patcher actually needs them
+  - On resume the live frame immediately restores the correct full visual
+  - Stopping the stream restores code sprites with merged last-frame positions so `PatchOriginalSource` still works
+- **User colour edits survive pause/resume** — `ApplyPosition` now only overwrites a sprite's colour from the live frame if the user has not manually changed it (current colour ≠ baseline); the baseline always advances so the round-trip diff only fires for intentional edits
+
 ### v1.3.3
 - **Live streaming round-trip** — live frames now merge into code sprites in-place instead of replacing them, so `SourceStart`/`SourceEnd`/`ImportBaseline` survive every frame
   - Snapshot `Data` values identify which `if`/`switch` branch the plugin executed, matching back to the correct source pattern

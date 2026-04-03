@@ -68,6 +68,13 @@ namespace SESpriteLCDLayoutTool
         private ToolStripMenuItem _mnuClipboardToggle;
         private bool _liveUndoPushed;
 
+        // ── Live stream state ─────────────────────────────────────────────────────
+        // Code-tracked sprites saved before streaming replaces _layout.Sprites.
+        // Restored on pause (with merged live positions/colours) so the round-trip
+        // patcher can work.  Cleared when streaming stops entirely.
+        private List<SpriteEntry> _preLiveCodeSprites;
+        private List<SpriteEntry> _lastLiveFrame;
+
         // ─────────────────────────────────────────────────────────────────────────
         public MainForm()
         {
@@ -1162,6 +1169,7 @@ namespace SESpriteLCDLayoutTool
                 _mnuPauseToggle.Enabled = false;
                 _mnuPauseToggle.Text = "Pause Live Stream";
                 _liveUndoPushed = false;
+                RestoreCodeSpritesIfStreamingEnded();
                 RefreshCode();
                 SetStatus("Live listening stopped");
                 return;
@@ -1188,17 +1196,40 @@ namespace SESpriteLCDLayoutTool
         private void ToggleLivePause()
         {
             if (_pipeListener == null && _fileWatcher == null) return;
+
+            bool nowPaused = false;
             if (_pipeListener != null)
             {
                 _pipeListener.IsPaused = !_pipeListener.IsPaused;
+                nowPaused = _pipeListener.IsPaused;
                 _mnuPauseToggle.Text = _pipeListener.IsPaused ? "Resume Live Stream" : "Pause Live Stream";
                 SetStatus(_pipeListener.IsPaused ? "Live stream paused — editing freely" : "Live stream resumed");
             }
             if (_fileWatcher != null)
             {
                 _fileWatcher.IsPaused = !_fileWatcher.IsPaused;
+                nowPaused = _fileWatcher.IsPaused;
                 _mnuPauseToggle.Text = _fileWatcher.IsPaused ? "Resume Live Stream" : "Pause Live Stream";
                 SetStatus(_fileWatcher.IsPaused ? "Live stream paused — editing freely" : "Live stream resumed");
+            }
+
+            // When transitioning to paused: swap in the code-tracked sprites
+            // (merged with the last live frame's positions and colours) so the
+            // user can select and edit them with PatchOriginalSource working.
+            if (nowPaused && _preLiveCodeSprites != null && _lastLiveFrame != null)
+            {
+                _layout.Sprites.Clear();
+                foreach (var sp in _preLiveCodeSprites)
+                    _layout.Sprites.Add(sp);
+
+                // Merge last live frame — preserve user-edited colours.
+                var editable = new List<SpriteEntry>();
+                foreach (var sp in _layout.Sprites)
+                    if (!sp.IsReferenceLayout) editable.Add(sp);
+                SnapshotMerger.Merge(editable, _lastLiveFrame, applyColors: true);
+
+                _canvas.CanvasLayout = _layout;
+                RefreshLayerList();
             }
 
             // Reset so the next live frame saves an undo snapshot of the
@@ -1221,6 +1252,7 @@ namespace SESpriteLCDLayoutTool
                 _mnuFileWatchToggle.Text = "Watch Snapshot File…";
                 _mnuPauseToggle.Enabled = _pipeListener != null && _pipeListener.IsListening;
                 _liveUndoPushed = false;
+                RestoreCodeSpritesIfStreamingEnded();
                 RefreshCode();
                 SetStatus("File watching stopped");
                 return;
@@ -1267,6 +1299,7 @@ namespace SESpriteLCDLayoutTool
                 _clipboardTimer = null;
                 _mnuClipboardToggle.Text = "Watch Clipboard (PB)…";
                 _liveUndoPushed = false;
+                RestoreCodeSpritesIfStreamingEnded();
                 RefreshCode();
                 SetStatus("Clipboard watching stopped");
                 return;
@@ -1296,6 +1329,40 @@ namespace SESpriteLCDLayoutTool
             OnLiveFrameReceived(text);
         }
 
+        /// <summary>
+        /// When all streaming sources have stopped, restores the code-tracked sprites
+        /// (saved before the first live replace) with merged positions and colours from
+        /// the last received live frame.  Clears the saved state afterwards.
+        /// </summary>
+        private void RestoreCodeSpritesIfStreamingEnded()
+        {
+            if (_preLiveCodeSprites == null) return;
+
+            // Only restore once every source is gone (another source may still be running).
+            bool anyActive = (_pipeListener != null && _pipeListener.IsListening)
+                || (_fileWatcher != null && _fileWatcher.IsListening)
+                || (_clipboardTimer != null);
+            if (anyActive) return;
+
+            _layout.Sprites.Clear();
+            foreach (var sp in _preLiveCodeSprites)
+                _layout.Sprites.Add(sp);
+
+            if (_lastLiveFrame != null)
+            {
+                var editable = new List<SpriteEntry>();
+                foreach (var sp in _layout.Sprites)
+                    if (!sp.IsReferenceLayout) editable.Add(sp);
+                SnapshotMerger.Merge(editable, _lastLiveFrame, applyColors: true);
+            }
+
+            _preLiveCodeSprites = null;
+            _lastLiveFrame = null;
+
+            _canvas.CanvasLayout = _layout;
+            RefreshLayerList();
+        }
+
         private void OnLiveFrameReceived(string frame)
         {
             // Called on background/timer thread — always marshal to UI thread
@@ -1320,32 +1387,33 @@ namespace SESpriteLCDLayoutTool
                     _liveUndoPushed = true;
                 }
 
-                // When code with source tracking is loaded, merge live frame
-                // positions/colors into the existing code sprites in-place.
-                // This preserves SourceStart/SourceEnd/ImportBaseline so the
-                // round-trip patcher can still diff only what the user changes.
-                // The snapshot Data values tell us which if/switch branch the
-                // plugin executed, so we match back to the correct source pattern.
+                // When code with source tracking is loaded, save the code sprites
+                // before the first live replace so we can restore them on pause.
+                // The canvas always shows the full live frame (correct visual),
+                // and the merge into code sprites happens only on pause — where
+                // the round-trip patcher actually needs them.
                 bool hasTracking = _layout.OriginalSourceCode != null
                     && _layout.Sprites.Exists(sp => !sp.IsReferenceLayout && sp.SourceStart >= 0);
 
-                if (hasTracking)
+                if (hasTracking && _preLiveCodeSprites == null)
                 {
-                    var editable = new List<SpriteEntry>();
+                    // Save references to the code-tracked sprite objects before
+                    // we replace _layout.Sprites.  Same object references survive
+                    // the Clear/AddRange below, kept alive by this list.
+                    _preLiveCodeSprites = new List<SpriteEntry>();
                     foreach (var sp in _layout.Sprites)
-                        if (!sp.IsReferenceLayout) editable.Add(sp);
-                    SnapshotMerger.Merge(editable, sprites, applyColors: true);
-                    _canvas.Invalidate();
-                    SetStatus($"Live frame: {sprites.Count} sprites merged into {editable.Count} code sprites");
+                        if (!sp.IsReferenceLayout) _preLiveCodeSprites.Add(sp);
                 }
-                else
-                {
-                    _layout.Sprites.Clear();
-                    _layout.Sprites.AddRange(sprites);
-                    _canvas.CanvasLayout = _layout;
-                    RefreshLayerList();
-                    SetStatus($"Live frame: {sprites.Count} sprites");
-                }
+
+                if (hasTracking) _lastLiveFrame = sprites;
+
+                // Always replace for a correct full-resolution visual.
+                // (The merge into code sprites happens in ToggleLivePause.)
+                _layout.Sprites.Clear();
+                _layout.Sprites.AddRange(sprites);
+                _canvas.CanvasLayout = _layout;
+                RefreshLayerList();
+                SetStatus($"Live frame: {sprites.Count} sprites");
             }));
         }
 
