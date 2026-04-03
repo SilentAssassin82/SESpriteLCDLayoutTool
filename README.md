@@ -443,70 +443,43 @@ var sprites = new List<MySprite>
 
 ---
 
-## Real-World Example: IML Plugin Integration
+The snippet above drops into **any** Torch plugin, mod, or PB unchanged — just wire `SnapshotCollect()`, `SnapshotLcd()`, `StartLcdStream()`, or `StartLcdFileStream()` to whatever trigger makes sense for your project (chat command, hotkey, timer, etc.).
 
-The snapshot snippet above is **universal** — it works in any Torch plugin, mod, or PB. To show how it slots into a real project, here's how the **IML** (InventoryManagerLight) Torch plugin wires it up.
+<details>
+<summary>📋 Worked integration example — IML (InventoryManagerLight) Torch plugin</summary>
 
-> **You do not need to use IML to use this tool.** The pattern is the same for any plugin: call `SnapshotCollect()` before flushing your sprite list to a frame, then expose `SnapshotLcd()`, `StartLcdStream()`, or `StartLcdFileStream()` via a chat command or hotkey. The IML example below is just a concrete reference.
+The snippets are demonstrated here using **[IML (InventoryManagerLight)](https://github.com/SilentAssassin82/InventoryManagerLight)** — an open-source Torch plugin by the same author. IML is used purely as a concrete reference because its source is publicly available and fully verified. You do not need IML or any specific plugin to use this tool.
 
-### IML Chat Commands
+### How the snippet maps to IML's chat commands
 
-IML exposes the three output modes as in-game chat commands, mapping directly to the three snapshot methods in the generated snippet:
+IML wires each of the three output methods to an in-game chat command:
 
-| Command | Output file | Description |
+| IML command | Calls | Output |
 |---|---|---|
-| `!iml snapshot <tag>` | `iml-snapshot-{name}-{timestamp}.cs` | One-shot capture → new timestamped file |
-| `!iml watch <tag> [seconds]` | `iml-live-{name}.cs` | Live feed → same file overwritten each tick (~16 ms) |
-| `!iml watchstop <tag>` | — | Stops the live feed |
+| `!iml snapshot <tag>` | `SnapshotLcd(surface, label)` | `iml-snapshot-{name}-{timestamp}.cs` — new file each time |
+| `!iml watch <tag> [seconds]` | `StartLcdFileStream(path, seconds)` | `iml-live-{name}.cs` — overwritten each game tick (~16 ms) |
+| `!iml watchstop <tag>` | `StopLcdFileStream()` | Stops the live feed |
 
-`<tag>` is the **IML LCD tag** in the panel's `CustomData` (e.g. `IML:LCD`, `IML:LCD=MISC`).
+`<tag>` is a CustomData tag on the LCD panel (e.g. `IML:LCD`, `IML:LCD=MISC`). IML converts it to a filename-safe string by replacing ` : \ / * ? " < > |` with `_` — so `IML:LCD=MISC` → `iml-live-IML_LCD_MISC.cs`. Your plugin can use any naming convention.
 
-`{name}` is derived by replacing ` : \ / * ? " < > |` with `_`:
-- `IML:LCD` → `IML_LCD`
-- `IML:LCD=MISC` → `IML_LCD_MISC`
+### Connecting to the layout tool
 
-Files are written to the IML plugin directory (e.g. `C:\Torch\Plugins\IML\`).
+**One-shot (`SnapshotLcd`):** Run the command → open the written `.cs` file → paste into **Edit → Paste Layout Code**.
 
-### How IML Connects to the Layout Tool
+**Live feed (`StartLcdFileStream`):** Run the watch command → in the layout tool use **Edit → Watch Snapshot File…** → browse to the `iml-live-*.cs` file. Canvas updates ~every 150 ms while the plugin writes each game tick.
 
-IML maps each chat command to one of the three output methods in the universal snippet. Your own plugin can do the same thing — just wire the methods to whatever trigger makes sense for you.
+**Named pipe (`StartLcdStream`):** Open **Edit → Start Live Listening** in the layout tool *first* (2-second connect timeout), then trigger `StartLcdStream()` in-game.
 
-**Mode 1 — `SnapshotLcd()` (one-shot file)**
+### FindPanel — two-pass tag search
 
-IML command: `!iml snapshot IML:LCD`
-→ calls `SnapshotLcd()` internally → writes `iml-snapshot-IML_LCD-20260101_120000.cs`
-
-In the layout tool: open the file and paste into **Edit → Paste Layout Code**.
-
-**Mode 2 — `StartLcdFileStream()` (live feed file)**
-
-IML command: `!iml watch IML:LCD 120`
-→ calls `StartLcdFileStream(path, 120)` → overwrites `iml-live-IML_LCD.cs` each game tick
-
-In the layout tool: **Edit → Watch Snapshot File…** → browse to that file. The canvas updates ~every 150 ms.
-
-Stop with `!iml watchstop IML:LCD` or let the timer expire.
-
-> IML derives the filename with `MakeSafeName(tag)` (replaces ` : \ / * ? " < > |` with `_`), so `IML:LCD=MISC` → `iml-live-IML_LCD_MISC.cs`. Your own plugin can use whatever naming convention you like.
-
-**Mode 3 — `StartLcdStream()` (named pipe)**
-
-IML command: triggers `StartLcdStream()` via a chat handler
-→ connects to the `SELcdSnapshot` pipe → pushes frames in real time
-
-In the layout tool: **Edit → Start Live Listening** first *(2-second connect timeout — the tool must be listening before the plugin calls Connect)*.
-
-### FindPanel — Two-Pass Block Search
-
-The generated Plugin snippet includes a `FindPanel` helper. It works for any tag-based panel discovery — IML just happens to use `IML:LCD` as its tag convention:
+The generated snippet's `FindPanel` helper avoids a common false-positive: a single `||` search returns the first block whose name *or* data contains the tag, which can be the wrong block if an unrelated block's name happens to match first. The two-pass approach scans `CustomName` in a complete first pass, then falls back to `CustomData` — so the tag always wins over coincidental name matches.
 
 ```csharp
-// Pass 1: CustomName only  — block name always takes priority over data tags
-// Pass 2: CustomData only  — tag-based discovery fallback
-IMyTextSurfaceProvider panel = FindPanel(allBlocks, "IML:LCD", out string name);
+// Your tag can be anything — "MyLCD", "CARGO_DISPLAY", etc.
+IMyTextSurfaceProvider panel = FindPanel(allBlocks, "MyTag", out string foundName);
 ```
 
-A single-pass `||` search can return the wrong block — for example, a block named `"1iml"` appears before the correct `IML:LCD`-tagged panel because it comes first in the grid's block list. The two-pass approach eliminates this by completing a full `CustomName`-only scan before falling back to `CustomData`. Use any tag string that suits your own plugin's convention.
+</details>
 
 ---
 
