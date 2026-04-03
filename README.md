@@ -352,7 +352,7 @@ StartLcdStream(60);   // streams for 60 seconds then auto-disarms
 
 **File-based live streaming (alternative — same machine only)**
 
-1. Pass the IML live-feed file path to `StartLcdFileStream()` in your plugin code (e.g. `iml-live-IML_LCD.cs`)
+1. Pass any file path to `StartLcdFileStream()` in your plugin code
 2. In the layout tool, use **Edit → Watch Snapshot File…** and browse to that file
 3. The canvas updates roughly every 150 ms (debounced) as the plugin overwrites the file each game tick
 4. Use **Edit → Stop Watching File** when done
@@ -443,11 +443,15 @@ var sprites = new List<MySprite>
 
 ---
 
-## IML (InventoryManagerLight) Integration
+## Real-World Example: IML Plugin Integration
 
-If you use the **IML** Torch plugin, it has built-in LCD snapshot and streaming support that works directly with this tool — no changes to the layout tool or to your plugin code are required beyond calling `SnapshotCollect()` in your render loop.
+The snapshot snippet above is **universal** — it works in any Torch plugin, mod, or PB. To show how it slots into a real project, here's how the **IML** (InventoryManagerLight) Torch plugin wires it up.
+
+> **You do not need to use IML to use this tool.** The pattern is the same for any plugin: call `SnapshotCollect()` before flushing your sprite list to a frame, then expose `SnapshotLcd()`, `StartLcdStream()`, or `StartLcdFileStream()` via a chat command or hotkey. The IML example below is just a concrete reference.
 
 ### IML Chat Commands
+
+IML exposes the three output modes as in-game chat commands, mapping directly to the three snapshot methods in the generated snippet:
 
 | Command | Output file | Description |
 |---|---|---|
@@ -463,39 +467,38 @@ If you use the **IML** Torch plugin, it has built-in LCD snapshot and streaming 
 
 Files are written to the IML plugin directory (e.g. `C:\Torch\Plugins\IML\`).
 
-### Connecting the Layout Tool to IML
+### How IML Connects to the Layout Tool
 
-**Mode 1 — One-shot snapshot (simplest)**
+IML maps each chat command to one of the three output methods in the universal snippet. Your own plugin can do the same thing — just wire the methods to whatever trigger makes sense for you.
 
-1. In-game: `!iml snapshot IML:LCD`
-2. IML writes `iml-snapshot-IML_LCD-20260101_120000.cs` to the plugin folder
-3. Open the file and paste its contents into **Edit → Paste Layout Code**
+**Mode 1 — `SnapshotLcd()` (one-shot file)**
 
-**Mode 2 — Live feed via Watch Snapshot File (recommended for iterative design)**
+IML command: `!iml snapshot IML:LCD`
+→ calls `SnapshotLcd()` internally → writes `iml-snapshot-IML_LCD-20260101_120000.cs`
 
-1. In-game: `!iml watch IML:LCD 120` (streams for 120 seconds)
-2. In the layout tool: **Edit → Watch Snapshot File…** → browse to:
-   ```
-   C:\Torch\Plugins\IML\iml-live-IML_LCD.cs
-   ```
-3. The canvas updates ~every 150 ms while IML rewrites the file each game tick
-4. In-game: `!iml watchstop IML:LCD` to stop, or wait for the auto-disarm timeout
+In the layout tool: open the file and paste into **Edit → Paste Layout Code**.
 
-> **Tip:** Use `GetLiveFeedPath(pluginDir, tag)` from the `ImlLcdReceiver` helper class to derive the path programmatically:
-> ```csharp
-> string feedFile = ImlLcdReceiver.GetLiveFeedPath(@"C:\Torch\Plugins\IML", "IML:LCD=MISC");
-> // → "C:\Torch\Plugins\IML\iml-live-IML_LCD_MISC.cs"
-> ```
+**Mode 2 — `StartLcdFileStream()` (live feed file)**
 
-**Mode 3 — Named pipe (lowest latency)**
+IML command: `!iml watch IML:LCD 120`
+→ calls `StartLcdFileStream(path, 120)` → overwrites `iml-live-IML_LCD.cs` each game tick
 
-1. In the layout tool: **Edit → Start Live Listening** *(must be done first — 2-second connect timeout)*
-2. In-game: trigger `StartLcdStream()` via your plugin's chat command
-3. Frames arrive over the `SELcdSnapshot` pipe in real time
+In the layout tool: **Edit → Watch Snapshot File…** → browse to that file. The canvas updates ~every 150 ms.
+
+Stop with `!iml watchstop IML:LCD` or let the timer expire.
+
+> IML derives the filename with `MakeSafeName(tag)` (replaces ` : \ / * ? " < > |` with `_`), so `IML:LCD=MISC` → `iml-live-IML_LCD_MISC.cs`. Your own plugin can use whatever naming convention you like.
+
+**Mode 3 — `StartLcdStream()` (named pipe)**
+
+IML command: triggers `StartLcdStream()` via a chat handler
+→ connects to the `SELcdSnapshot` pipe → pushes frames in real time
+
+In the layout tool: **Edit → Start Live Listening** first *(2-second connect timeout — the tool must be listening before the plugin calls Connect)*.
 
 ### FindPanel — Two-Pass Block Search
 
-The generated Plugin snippet includes a `FindPanel` helper that prevents false-positive matches when locating your LCD panel by tag:
+The generated Plugin snippet includes a `FindPanel` helper. It works for any tag-based panel discovery — IML just happens to use `IML:LCD` as its tag convention:
 
 ```csharp
 // Pass 1: CustomName only  — block name always takes priority over data tags
@@ -503,7 +506,7 @@ The generated Plugin snippet includes a `FindPanel` helper that prevents false-p
 IMyTextSurfaceProvider panel = FindPanel(allBlocks, "IML:LCD", out string name);
 ```
 
-A single-pass `||` search can return the wrong block — for example, a block named `"1iml"` appears before the correct `IML:LCD`-tagged panel because it comes first in the grid's block list. The two-pass approach eliminates this by completing a full `CustomName`-only scan before falling back to `CustomData`.
+A single-pass `||` search can return the wrong block — for example, a block named `"1iml"` appears before the correct `IML:LCD`-tagged panel because it comes first in the grid's block list. The two-pass approach eliminates this by completing a full `CustomName`-only scan before falling back to `CustomData`. Use any tag string that suits your own plugin's convention.
 
 ---
 
