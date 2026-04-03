@@ -62,6 +62,11 @@ namespace SESpriteLCDLayoutTool
         private LiveFileWatcher _fileWatcher;
         private ToolStripMenuItem _mnuFileWatchToggle;
 
+        // ── Clipboard watcher (PB workflow) ──────────────────────────────────────
+        private System.Windows.Forms.Timer _clipboardTimer;
+        private int _lastClipboardHash;
+        private ToolStripMenuItem _mnuClipboardToggle;
+
         // ─────────────────────────────────────────────────────────────────────────
         public MainForm()
         {
@@ -205,6 +210,8 @@ namespace SESpriteLCDLayoutTool
             edit.DropDownItems.Add(_mnuPauseToggle);
             _mnuFileWatchToggle = new ToolStripMenuItem("Watch Snapshot File…", null, (s, e) => ToggleFileWatching());
             edit.DropDownItems.Add(_mnuFileWatchToggle);
+            _mnuClipboardToggle = new ToolStripMenuItem("Watch Clipboard (PB)…", null, (s, e) => ToggleClipboardWatching());
+            edit.DropDownItems.Add(_mnuClipboardToggle);
             edit.DropDownItems.Add(new ToolStripSeparator());
             edit.DropDownItems.Add("Duplicate\tCtrl+D",           null, (s, e) => DuplicateSelected());
             edit.DropDownItems.Add("Delete Selected\tDel",        null, (s, e) => DeleteSelected());
@@ -1142,13 +1149,56 @@ namespace SESpriteLCDLayoutTool
             }
         }
 
+        private void ToggleClipboardWatching()
+        {
+            if (_clipboardTimer != null)
+            {
+                _clipboardTimer.Stop();
+                _clipboardTimer.Dispose();
+                _clipboardTimer = null;
+                _mnuClipboardToggle.Text = "Watch Clipboard (PB)…";
+                SetStatus("Clipboard watching stopped");
+                return;
+            }
+
+            _lastClipboardHash = 0;
+            _clipboardTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            _clipboardTimer.Tick += OnClipboardTick;
+            _clipboardTimer.Start();
+            _mnuClipboardToggle.Text = "Stop Watching Clipboard";
+            SetStatus("Watching clipboard — copy PB Custom Data to auto-import…");
+        }
+
+        private void OnClipboardTick(object sender, EventArgs e)
+        {
+            string text;
+            try { text = Clipboard.ContainsText() ? Clipboard.GetText() : null; }
+            catch { return; } // clipboard locked by another process — skip tick
+
+            if (string.IsNullOrWhiteSpace(text)) return;
+            if (!text.Contains("frame.Add(new MySprite")) return;
+
+            int hash = text.GetHashCode();
+            if (hash == _lastClipboardHash) return;
+            _lastClipboardHash = hash;
+
+            OnLiveFrameReceived(text);
+        }
+
         private void OnLiveFrameReceived(string frame)
         {
-            // Called on background thread — marshal to UI
+            // Called on background/timer thread — always marshal to UI thread
             BeginInvoke((Action)(() =>
             {
                 var sprites = CodeParser.Parse(frame);
                 if (sprites.Count == 0) return;
+
+                // Create a default layout if none is loaded so live frames always land somewhere
+                if (_layout == null)
+                {
+                    _layout = new LcdLayout();
+                    _canvas.CanvasLayout = _layout;
+                }
 
                 // Replace layout with the live frame
                 PushUndo();
@@ -2211,6 +2261,7 @@ namespace SESpriteLCDLayoutTool
             {
                 _pipeListener?.Dispose();
                 _fileWatcher?.Dispose();
+                _clipboardTimer?.Dispose();
                 _textureCache?.Dispose();
             }
             base.Dispose(disposing);
