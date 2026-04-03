@@ -89,9 +89,13 @@ namespace SESpriteLCDLayoutTool.Services
         private static string BuildSource(string userCode, string callExpression,
                                           int tick, out bool hadClassWrapper)
         {
-            // Strip using-directives and optional class/namespace wrappers
-            string stripped = StripUsings(userCode);
-            stripped = StripClassWrapper(stripped, out hadClassWrapper);
+            // Extract user's using-directives; strip class/namespace wrapper; remove constructors
+            string[] userUsings;
+            string stripped = ExtractUsings(userCode, out userUsings);
+            string className;
+            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className);
+            if (hadClassWrapper && !string.IsNullOrEmpty(className))
+                stripped = StripConstructors(stripped, className);
 
             // Ensure call expression ends with a semicolon
             string callLine = callExpression.TrimEnd();
@@ -103,7 +107,9 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("using System;");
             sb.AppendLine("using System.Collections.Generic;");
             sb.AppendLine("using System.Globalization;");
+            sb.AppendLine("using System.Linq;");
             sb.AppendLine("using System.Text;");
+            sb.AppendLine("using System.Threading;");
             sb.AppendLine();
 
             // ── SE type stubs ─────────────────────────────────────────────────
@@ -111,10 +117,19 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine();
 
             // ── Runner class ──────────────────────────────────────────────────
+            var knownUsings = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "VRage.Game.GUI.TextPanel", "VRageMath", "Sandbox.ModAPI.Ingame",
+                "System", "System.Collections.Generic", "System.Globalization",
+                "System.Linq", "System.Text", "System.Threading"
+            };
             sb.AppendLine("namespace SELcdExec {");
             sb.AppendLine("    using VRage.Game.GUI.TextPanel;");
             sb.AppendLine("    using VRageMath;");
             sb.AppendLine("    using Sandbox.ModAPI.Ingame;");
+            foreach (string u in userUsings)
+                if (!knownUsings.Contains(u))
+                    sb.AppendLine("    using " + u + ";");
             sb.AppendLine();
             sb.AppendLine("    public class LcdRunner {");
 
@@ -130,6 +145,16 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.AppendLine("        public string _status = \"ONLINE\";");
                 sb.AppendLine("        public float _cargo = 0.5f;");
                 sb.AppendLine("        public int _count = 0;");
+                sb.AppendLine();
+            }
+            else
+            {
+                // SE PB inherited members so stripped class body can access them
+                sb.AppendLine("        public IMyRuntime Runtime = null;");
+                sb.AppendLine("        public IMyProgrammableBlock Me = null;");
+                sb.AppendLine("        public IMyGridTerminalSystem GridTerminalSystem = null;");
+                sb.AppendLine("        public string Storage = string.Empty;");
+                sb.AppendLine("        public virtual void Save() { }");
                 sb.AppendLine();
             }
 
@@ -447,34 +472,67 @@ namespace SESpriteLCDLayoutTool.Services
 
         // ── Source pre-processing ─────────────────────────────────────────────
 
-        private static string StripUsings(string code)
+        private static string ExtractUsings(string code, out string[] extractedUsings)
         {
+            var usings = new List<string>();
+            foreach (Match m in Regex.Matches(code,
+                @"^\s*using\s+([\w\.]+)\s*;\s*\r?\n?", RegexOptions.Multiline))
+                usings.Add(m.Groups[1].Value);
+            extractedUsings = usings.ToArray();
             return Regex.Replace(code,
-                @"^\s*using\s+[\w\.]+\s*;\s*\r?\n?",
-                "",
-                RegexOptions.Multiline);
+                @"^\s*using\s+[\w\.]+\s*;\s*\r?\n?", "", RegexOptions.Multiline);
+        }
+
+        private static string StripConstructors(string body, string className)
+        {
+            if (string.IsNullOrEmpty(className)) return body;
+            var ctorRegex = new Regex(
+                @"(?:public|private|protected|internal)\s+" + Regex.Escape(className)
+                + @"\s*\([^)]*\)(?:\s*:[^{]+)?\s*\{",
+                RegexOptions.Singleline);
+            var result = new StringBuilder();
+            int pos = 0;
+            Match m = ctorRegex.Match(body);
+            while (m.Success)
+            {
+                result.Append(body, pos, m.Index - pos);
+                int depth = 1;
+                int scan = m.Index + m.Length;
+                while (scan < body.Length && depth > 0)
+                {
+                    if (body[scan] == '{') depth++;
+                    else if (body[scan] == '}') depth--;
+                    scan++;
+                }
+                pos = scan;
+                m = ctorRegex.Match(body, pos);
+            }
+            result.Append(body, pos, body.Length - pos);
+            return result.ToString();
         }
 
         /// <summary>
         /// If <paramref name="code"/> contains a class definition, extracts its body
         /// (the content between the outermost braces) so the methods can be injected
         /// directly into <c>LcdRunner</c>.  Sets <paramref name="hadWrapper"/> to true
-        /// when a wrapper was stripped.
+        /// and <paramref name="className"/> to the class name when a wrapper was stripped.
         /// </summary>
-        private static string StripClassWrapper(string code, out bool hadWrapper)
+        private static string StripClassWrapper(string code, out bool hadWrapper, out string className)
         {
             var classMatch = Regex.Match(code,
                 @"(?:public|private|internal|protected)?\s*" +
                 @"(?:static|sealed|abstract|partial)?\s*" +
-                @"class\s+\w+[\w\s:,<>]*\{",
+                @"class\s+(\w+)[\w\s:,<>]*\{",
                 RegexOptions.Singleline);
 
             if (!classMatch.Success)
             {
                 hadWrapper = false;
+                className = null;
                 return code;
             }
 
+            className = classMatch.Groups[1].Value;
             int bodyStart = classMatch.Index + classMatch.Length;
             int depth = 1;
             int pos = bodyStart;
@@ -509,6 +567,7 @@ namespace SESpriteLCDLayoutTool.Services
 namespace VRage.Game.GUI.TextPanel
 {
     public enum SpriteType { TEXTURE = 0, TEXT = 1, CLIP_RECT = 2 }
+    public enum ContentType { NONE = 0, TEXT_AND_IMAGE = 1, SCRIPT = 2 }
 }
 
 namespace VRageMath
@@ -554,8 +613,74 @@ namespace VRageMath
 
 namespace Sandbox.ModAPI.Ingame
 {
+    using System;
+    using System.Collections.Generic;
     using VRage.Game.GUI.TextPanel;
     using VRageMath;
+
+    [Flags] public enum UpdateType { None = 0, Once = 128, Update1 = 16, Update10 = 32, Update100 = 64, Terminal = 256, Trigger = 512 }
+    [Flags] public enum UpdateFrequency { None = 0, Update1 = 1, Update10 = 2, Update100 = 4, Once = 8 }
+
+    public interface IMyRuntime
+    {
+        UpdateFrequency UpdateFrequency { get; set; }
+        double TimeSinceLastRun { get; }
+        double LastRunTimeMs { get; }
+        int MaxInstructionCount { get; }
+    }
+
+    public interface IMyTerminalBlock
+    {
+        string CustomName { get; set; }
+        string CustomData { get; set; }
+        bool IsWorking { get; }
+        bool IsFunctional { get; }
+        long EntityId { get; }
+    }
+
+    public interface IMyTextSurface
+    {
+        ContentType ContentType { get; set; }
+        Color FontColor { get; set; }
+        Color BackgroundColor { get; set; }
+        float FontSize { get; set; }
+        string Font { get; set; }
+        float TextPadding { get; set; }
+        Vector2 SurfaceSize { get; }
+        Vector2 TextureSize { get; }
+        void WriteText(string text, bool append = false);
+        string ReadText();
+        MySpriteDrawFrame DrawFrame();
+    }
+
+    public struct MySpriteDrawFrame : IDisposable
+    {
+        public void Add(MySprite sprite) { }
+        public void AddRange(IEnumerable<MySprite> sprites) { }
+        public void Dispose() { }
+    }
+
+    public interface IMyProgrammableBlock : IMyTerminalBlock
+    {
+        IMyTextSurface GetSurface(int index);
+        int SurfaceCount { get; }
+    }
+
+    public interface IMyGridTerminalSystem
+    {
+        void GetBlocksOfType<T>(List<T> blocks, Func<T, bool> collect = null) where T : class;
+        IMyTerminalBlock GetBlockWithId(long id);
+    }
+
+    public class MyGridProgram
+    {
+        public IMyRuntime Runtime { get; protected set; }
+        public IMyProgrammableBlock Me { get; protected set; }
+        public IMyGridTerminalSystem GridTerminalSystem { get; protected set; }
+        public string Storage { get; set; }
+        public void Echo(string text) { }
+        protected virtual void Save() { }
+    }
 
     public struct MySprite
     {
