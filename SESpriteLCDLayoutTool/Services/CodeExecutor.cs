@@ -195,7 +195,7 @@ namespace SESpriteLCDLayoutTool.Services
                     GenerateInMemory = true,
                     GenerateExecutable = false,
                     TreatWarningsAsErrors = false,
-                    CompilerOptions = "/langversion:7.3 /optimize+",
+                    CompilerOptions = "/optimize+",
                 };
                 cp.ReferencedAssemblies.Add("mscorlib.dll");
                 cp.ReferencedAssemblies.Add("System.dll");
