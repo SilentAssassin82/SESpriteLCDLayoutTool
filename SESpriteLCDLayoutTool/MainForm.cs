@@ -66,6 +66,7 @@ namespace SESpriteLCDLayoutTool
         private System.Windows.Forms.Timer _clipboardTimer;
         private int _lastClipboardHash;
         private ToolStripMenuItem _mnuClipboardToggle;
+        private bool _liveUndoPushed;
 
         // ─────────────────────────────────────────────────────────────────────────
         public MainForm()
@@ -399,6 +400,7 @@ namespace SESpriteLCDLayoutTool
                 Font        = new Font("Segoe UI", 8.5f),
             };
             _lstLayers.SelectedIndexChanged += OnLayerListSelectionChanged;
+            _lstLayers.MouseDoubleClick  += OnLayerListDoubleClick;
             _lstLayers.MouseDown += (s, e) =>
             {
                 if (e.Button == MouseButtons.Right)
@@ -608,14 +610,15 @@ namespace SESpriteLCDLayoutTool
 
             _codeBox = new RichTextBox
             {
-                Dock        = DockStyle.Fill,
-                BackColor   = Color.FromArgb(14, 14, 14),
-                ForeColor   = Color.FromArgb(212, 212, 212),
-                Font        = new Font("Consolas", 9f),
-                ReadOnly    = true,
-                BorderStyle = BorderStyle.None,
-                ScrollBars  = RichTextBoxScrollBars.Both,
-                WordWrap    = false,
+                Dock          = DockStyle.Fill,
+                BackColor     = Color.FromArgb(14, 14, 14),
+                ForeColor     = Color.FromArgb(212, 212, 212),
+                Font          = new Font("Consolas", 9f),
+                ReadOnly      = true,
+                BorderStyle   = BorderStyle.None,
+                ScrollBars    = RichTextBoxScrollBars.Both,
+                WordWrap      = false,
+                HideSelection = false,
             };
 
             panel.Controls.Add(_codeBox);
@@ -984,6 +987,75 @@ namespace SESpriteLCDLayoutTool
                 _canvas.SelectedSprite = _layout.Sprites[idx];
         }
 
+        private void OnLayerListDoubleClick(object sender, MouseEventArgs e)
+        {
+            if (_layout == null || _codeBox.TextLength == 0) return;
+            int listIdx = _lstLayers.IndexFromPoint(e.Location);
+            if (listIdx < 0 || listIdx >= _layout.Sprites.Count) return;
+
+            var sprite = _layout.Sprites[listIdx];
+            string code = _codeBox.Text;
+            int targetPos = -1;
+
+            // Count non-ref sprites before this one (for round-trip ordinal)
+            int nonRefOrdinal = 0;
+            for (int i = 0; i < listIdx; i++)
+                if (!_layout.Sprites[i].IsReferenceLayout) nonRefOrdinal++;
+
+            // Strategy 1: GenerateRoundTrip comment marker  // [nonRefOrd+1] DisplayName
+            if (!sprite.IsReferenceLayout)
+            {
+                string marker = $"// [{nonRefOrdinal + 1}] {sprite.DisplayName}";
+                targetPos = code.IndexOf(marker, StringComparison.Ordinal);
+            }
+
+            // Strategy 2: Generate comment marker  // [listIdx+1] DisplayName
+            if (targetPos < 0)
+            {
+                string marker = $"// [{listIdx + 1}] {sprite.DisplayName}";
+                targetPos = code.IndexOf(marker, StringComparison.Ordinal);
+            }
+
+            // Strategy 3: Nth "new MySprite" occurrence (PatchOriginalSource / no markers)
+            if (targetPos < 0 && !sprite.IsReferenceLayout)
+            {
+                int pos = -1;
+                for (int n = 0; n <= nonRefOrdinal; n++)
+                {
+                    pos = code.IndexOf("new MySprite", pos + 1, StringComparison.Ordinal);
+                    if (pos < 0) break;
+                }
+                if (pos >= 0) targetPos = pos;
+            }
+
+            if (targetPos < 0) return;
+
+            // Walk back to line start
+            int lineStart = targetPos;
+            while (lineStart > 0 && code[lineStart - 1] != '\n') lineStart--;
+
+            // Find block end at "});" or next blank line
+            int blockEnd = code.IndexOf("})", targetPos, StringComparison.Ordinal);
+            if (blockEnd >= 0)
+            {
+                blockEnd += 2;
+                // Include trailing semicolon and newline if present
+                if (blockEnd < code.Length && code[blockEnd] == ';') blockEnd++;
+                if (blockEnd < code.Length && code[blockEnd] == '\r') blockEnd++;
+                if (blockEnd < code.Length && code[blockEnd] == '\n') blockEnd++;
+            }
+            else
+            {
+                blockEnd = code.IndexOf('\n', targetPos);
+                if (blockEnd < 0) blockEnd = code.Length;
+                else blockEnd++;
+            }
+
+            _codeBox.Select(lineStart, blockEnd - lineStart);
+            _codeBox.ScrollToCaret();
+            _codeBox.Focus();
+        }
+
         // ── Refresh helpers ───────────────────────────────────────────────────────
         private void RefreshLayerList()
         {
@@ -1065,6 +1137,8 @@ namespace SESpriteLCDLayoutTool
                 _mnuListenToggle.Text = "Start Live Listening";
                 _mnuPauseToggle.Enabled = false;
                 _mnuPauseToggle.Text = "Pause Live Stream";
+                _liveUndoPushed = false;
+                RefreshCode();
                 SetStatus("Live listening stopped");
                 return;
             }
@@ -1102,6 +1176,10 @@ namespace SESpriteLCDLayoutTool
                 _mnuPauseToggle.Text = _fileWatcher.IsPaused ? "Resume Live Stream" : "Pause Live Stream";
                 SetStatus(_fileWatcher.IsPaused ? "Live stream paused — editing freely" : "Live stream resumed");
             }
+
+            // Reset so the next live frame saves an undo snapshot of the
+            // user's paused edits before overwriting the canvas.
+            _liveUndoPushed = false;
         }
 
         private void ToggleFileWatching()
@@ -1113,6 +1191,8 @@ namespace SESpriteLCDLayoutTool
                 _fileWatcher = null;
                 _mnuFileWatchToggle.Text = "Watch Snapshot File…";
                 _mnuPauseToggle.Enabled = _pipeListener != null && _pipeListener.IsListening;
+                _liveUndoPushed = false;
+                RefreshCode();
                 SetStatus("File watching stopped");
                 return;
             }
@@ -1120,7 +1200,7 @@ namespace SESpriteLCDLayoutTool
             using (var dlg = new System.Windows.Forms.OpenFileDialog
             {
                 Title = "Select snapshot file to watch",
-                Filter = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                Filter = "C# files (*.cs)|*.cs|All files (*.*)|*.*",
                 CheckFileExists = false, // file may not exist yet
             })
             {
@@ -1157,6 +1237,8 @@ namespace SESpriteLCDLayoutTool
                 _clipboardTimer.Dispose();
                 _clipboardTimer = null;
                 _mnuClipboardToggle.Text = "Watch Clipboard (PB)…";
+                _liveUndoPushed = false;
+                RefreshCode();
                 SetStatus("Clipboard watching stopped");
                 return;
             }
@@ -1200,13 +1282,20 @@ namespace SESpriteLCDLayoutTool
                     _canvas.CanvasLayout = _layout;
                 }
 
+                // Save ONE undo snapshot for the pre-stream state, then skip
+                // undo + code-gen for subsequent frames to avoid flooding the
+                // undo stack and burning CPU on code generation at ~20 FPS.
+                if (!_liveUndoPushed)
+                {
+                    PushUndo();
+                    _liveUndoPushed = true;
+                }
+
                 // Replace layout with the live frame
-                PushUndo();
                 _layout.Sprites.Clear();
                 _layout.Sprites.AddRange(sprites);
                 _canvas.CanvasLayout = _layout;
                 RefreshLayerList();
-                RefreshCode();
                 SetStatus($"Live frame: {sprites.Count} sprites");
             }));
         }

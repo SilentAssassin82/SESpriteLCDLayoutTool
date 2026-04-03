@@ -38,12 +38,13 @@ namespace SESpriteLCDLayoutTool.Services
         public string FilePath { get; private set; }
 
         private FileSystemWatcher _watcher;
-        private Timer _debounce;
+        private Timer _throttle;
+        private bool _throttlePending;
         private readonly object _lock = new object();
 
-        // Debounce interval — FileSystemWatcher often fires multiple events
-        // for a single write (create + change, or multiple change events).
-        private const int DebounceMs = 150;
+        // Throttle interval — guarantees one read every N ms even during
+        // continuous writes (debounce would starve under rapid writes).
+        private const int ThrottleMs = 50;
 
         /// <summary>
         /// Starts watching <paramref name="filePath"/> for changes.
@@ -84,8 +85,9 @@ namespace SESpriteLCDLayoutTool.Services
         {
             lock (_lock)
             {
-                _debounce?.Dispose();
-                _debounce = null;
+                _throttle?.Dispose();
+                _throttle = null;
+                _throttlePending = false;
             }
 
             if (_watcher != null)
@@ -115,22 +117,28 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
-        /// Resets a short debounce timer so that rapid successive file events
-        /// collapse into a single read.
+        /// Schedules a read after <see cref="ThrottleMs"/>.  If a read is
+        /// already scheduled the event is ignored — this guarantees a steady
+        /// read cadence even under continuous writes (no starvation).
         /// </summary>
         private void ScheduleRead()
         {
             lock (_lock)
             {
-                if (_debounce == null)
-                    _debounce = new Timer(ReadFile, null, DebounceMs, Timeout.Infinite);
+                if (_throttlePending) return;
+                _throttlePending = true;
+
+                if (_throttle == null)
+                    _throttle = new Timer(ReadFile, null, ThrottleMs, Timeout.Infinite);
                 else
-                    _debounce.Change(DebounceMs, Timeout.Infinite);
+                    _throttle.Change(ThrottleMs, Timeout.Infinite);
             }
         }
 
         private void ReadFile(object state)
         {
+            lock (_lock) { _throttlePending = false; }
+
             if (!IsListening) return;
             if (IsPaused) return;
 
