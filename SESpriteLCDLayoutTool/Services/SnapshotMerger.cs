@@ -50,18 +50,18 @@ namespace SESpriteLCDLayoutTool.Services
             }
 
             // Build a consumption index for snapshot sprites keyed by (Type, Data).
-            // Each key maps to a queue of snapshot sprites so duplicate Data values
-            // are matched in order.
-            var pool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
+            // Each key maps to a list so proximity-based selection can pick the
+            // candidate closest to the code sprite's declared position.
+            var pool = new Dictionary<string, List<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
             foreach (var snap in snapshotSprites)
             {
                 string key = MakeKey(snap);
-                if (!pool.TryGetValue(key, out var queue))
+                if (!pool.TryGetValue(key, out var list))
                 {
-                    queue = new Queue<SpriteEntry>();
-                    pool[key] = queue;
+                    list = new List<SpriteEntry>();
+                    pool[key] = list;
                 }
-                queue.Enqueue(snap);
+                list.Add(snap);
             }
 
             int matched = 0;
@@ -73,9 +73,10 @@ namespace SESpriteLCDLayoutTool.Services
                 if (code.IsReferenceLayout) continue; // don't touch reference sprites
 
                 string key = MakeKey(code);
-                if (pool.TryGetValue(key, out var queue) && queue.Count > 0)
+                if (pool.TryGetValue(key, out var candidates) && candidates.Count > 0)
                 {
-                    var snap = queue.Dequeue();
+                    var snap = PickBestCandidate(code, candidates);
+                    candidates.Remove(snap);
                     ApplyPosition(code, snap, applyColors);
                     matchedSnapshots.Add(snap);
                     matched++;
@@ -176,6 +177,37 @@ namespace SESpriteLCDLayoutTool.Services
                 ? (sp.Text ?? "")
                 : (sp.SpriteName ?? "");
             return $"{sp.Type}|{data}";
+        }
+
+        /// <summary>
+        /// Picks the snapshot candidate whose position is closest to the code
+        /// sprite's declared position.  Falls back to the first candidate when
+        /// only one exists or when the code sprite is at a default/unresolved
+        /// position (256,256 or 0,0), which means the parser could not evaluate
+        /// its position expression.
+        /// </summary>
+        private static SpriteEntry PickBestCandidate(SpriteEntry code, List<SpriteEntry> candidates)
+        {
+            if (candidates.Count == 1 || IsDefaultPosition(code))
+                return candidates[0];
+
+            SpriteEntry best = candidates[0];
+            float bestDist = SquaredDist(code, candidates[0]);
+            for (int i = 1; i < candidates.Count; i++)
+            {
+                float d = SquaredDist(code, candidates[i]);
+                if (d < bestDist) { bestDist = d; best = candidates[i]; }
+            }
+            return best;
+        }
+
+        private static bool IsDefaultPosition(SpriteEntry sp) =>
+            (sp.X == 256f && sp.Y == 256f) || (sp.X == 0f && sp.Y == 0f);
+
+        private static float SquaredDist(SpriteEntry a, SpriteEntry b)
+        {
+            float dx = a.X - b.X, dy = a.Y - b.Y;
+            return dx * dx + dy * dy;
         }
     }
 }

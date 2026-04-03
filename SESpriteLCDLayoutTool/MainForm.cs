@@ -1072,7 +1072,12 @@ namespace SESpriteLCDLayoutTool
                 _lstLayers.Items.Clear();
                 if (_layout == null) return;
                 foreach (var s in _layout.Sprites)
-                    _lstLayers.Items.Add(s.IsReferenceLayout ? $"[REF] {s.DisplayName}" : s.DisplayName);
+                {
+                    string entry = s.IsReferenceLayout ? $"[REF] {s.DisplayName}"
+                        : s.SourceStart < 0 ? $"· {s.DisplayName}"
+                        : s.DisplayName;
+                    _lstLayers.Items.Add(entry);
+                }
 
                 var sel = _canvas.SelectedSprite;
                 if (sel != null)

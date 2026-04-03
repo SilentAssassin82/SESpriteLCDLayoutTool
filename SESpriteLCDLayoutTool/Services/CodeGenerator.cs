@@ -643,11 +643,31 @@ namespace SESpriteLCDLayoutTool.Services
 
             string before = code.Substring(0, Math.Min(position, code.Length));
 
-            // Look for nearest "case ...:Kind.XYZ:" or "case ...XYZ:" pattern
+            // Strategy 1: nearest case statement (switch-based layouts)
             var caseMatch = Regex.Match(before,
                 @"case\s+(?:\w+\.)*(\w+)\s*:", RegexOptions.RightToLeft);
             if (caseMatch.Success)
                 return caseMatch.Groups[1].Value;
+
+            // Strategies 2 & 3: search the 400 chars immediately before the sprite
+            int searchStart = Math.Max(0, before.Length - 400);
+            string recent = before.Substring(searchStart);
+
+            // Strategy 2: nearest variable declaration (var/string/float/int/…)
+            var varMatch = Regex.Match(recent,
+                @"\b(?:var|string|float|int|bool|double|Vector2|Color)\s+(\w+)\s*=",
+                RegexOptions.RightToLeft);
+            if (varMatch.Success)
+                return varMatch.Groups[1].Value;
+
+            // Strategy 3: nearest single-line // comment
+            var commentMatch = Regex.Match(recent,
+                @"//\s*([A-Za-z][^\r\n]{1,38})", RegexOptions.RightToLeft);
+            if (commentMatch.Success)
+            {
+                string label = commentMatch.Groups[1].Value.Trim();
+                if (label.Length >= 2) return label;
+            }
 
             return null;
         }
