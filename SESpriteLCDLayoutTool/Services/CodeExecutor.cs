@@ -1,11 +1,11 @@
 using System;
-using System.CodeDom.Compiler;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
-using Microsoft.CSharp;
 using SESpriteLCDLayoutTool.Models;
 
 namespace SESpriteLCDLayoutTool.Services
@@ -181,38 +181,117 @@ namespace SESpriteLCDLayoutTool.Services
 
         // ── Compilation ───────────────────────────────────────────────────────
 
+        // Cached path to the VS Roslyn csc.exe (discovered once via vswhere.exe)
+        private static string _cachedCscPath;
+        private static bool _cscSearched;
+
         private static Assembly Compile(string source)
         {
-            var providerOptions = new Dictionary<string, string>
+            if (!_cscSearched)
             {
-                { "CompilerVersion", "v4.0" }
-            };
+                _cachedCscPath = FindRoslynCsc();
+                _cscSearched = true;
+            }
 
-            using (var provider = new CSharpCodeProvider(providerOptions))
+            if (_cachedCscPath != null)
+                return CompileWithRoslyn(source, _cachedCscPath);
+
+            throw new InvalidOperationException(
+                "Could not locate the Roslyn C# compiler (csc.exe).\n"
+                + "Please ensure Visual Studio 2019 or later is installed.");
+        }
+
+        /// <summary>
+        /// Locates the Roslyn csc.exe from the VS installation via vswhere.exe.
+        /// Returns null if VS is not found.
+        /// </summary>
+        private static string FindRoslynCsc()
+        {
+            try
             {
-                var cp = new CompilerParameters
+                string vswhere = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                    "Microsoft Visual Studio", "Installer", "vswhere.exe");
+
+                if (!File.Exists(vswhere)) return null;
+
+                var psi = new ProcessStartInfo(vswhere, "-latest -property installationPath")
                 {
-                    GenerateInMemory = true,
-                    GenerateExecutable = false,
-                    TreatWarningsAsErrors = false,
-                    CompilerOptions = "/optimize+",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
                 };
-                cp.ReferencedAssemblies.Add("mscorlib.dll");
-                cp.ReferencedAssemblies.Add("System.dll");
-                cp.ReferencedAssemblies.Add("System.Core.dll");
 
-                var cr = provider.CompileAssemblyFromSource(cp, source);
-
-                if (cr.Errors.HasErrors)
+                string vsPath;
+                using (var proc = Process.Start(psi))
                 {
-                    var errs = new StringBuilder("Compilation errors:\n");
-                    foreach (CompilerError err in cr.Errors)
-                        if (!err.IsWarning)
-                            errs.AppendLine("  Line " + err.Line + ": " + err.ErrorText);
-                    throw new InvalidOperationException(errs.ToString().TrimEnd());
+                    vsPath = proc.StandardOutput.ReadToEnd().Trim();
+                    proc.WaitForExit(5000);
                 }
 
-                return cr.CompiledAssembly;
+                if (string.IsNullOrWhiteSpace(vsPath)) return null;
+
+                string csc = Path.Combine(vsPath, "MSBuild", "Current", "Bin", "Roslyn", "csc.exe");
+                return File.Exists(csc) ? csc : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Compiles <paramref name="source"/> using the VS Roslyn csc.exe, loads the
+        /// resulting assembly from bytes (so the temp file can be deleted), and returns it.
+        /// </summary>
+        private static Assembly CompileWithRoslyn(string source, string cscPath)
+        {
+            // Reference the standard .NET Framework assemblies from the runtime directory
+            string runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
+            string refs = string.Join(" ",
+                "/reference:\"" + Path.Combine(runtimeDir, "System.dll") + "\"",
+                "/reference:\"" + Path.Combine(runtimeDir, "System.Core.dll") + "\"");
+
+            string tempSrc = Path.ChangeExtension(Path.GetTempFileName(), ".cs");
+            string tempDll = Path.ChangeExtension(Path.GetTempFileName(), ".dll");
+            try
+            {
+                File.WriteAllText(tempSrc, source, Encoding.UTF8);
+
+                string args = string.Format(
+                    "/target:library /optimize+ /langversion:7.3 /nologo {0} /out:\"{1}\" \"{2}\"",
+                    refs, tempDll, tempSrc);
+
+                var psi = new ProcessStartInfo(cscPath, args)
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+
+                string output;
+                int exitCode;
+                using (var proc = Process.Start(psi))
+                {
+                    output = proc.StandardOutput.ReadToEnd()
+                           + proc.StandardError.ReadToEnd();
+                    proc.WaitForExit(30000);
+                    exitCode = proc.ExitCode;
+                }
+
+                if (exitCode != 0)
+                {
+                    // Strip temp file path from error messages for readability
+                    output = output.Replace(tempSrc, "<user code>");
+                    throw new InvalidOperationException("Compilation errors:\n" + output.TrimEnd());
+                }
+
+                // Load as byte array so we can delete the temp DLL immediately
+                byte[] dllBytes = File.ReadAllBytes(tempDll);
+                return Assembly.Load(dllBytes);
+            }
+            finally
+            {
+                try { File.Delete(tempSrc); } catch { }
+                try { File.Delete(tempDll); } catch { }
             }
         }
 
