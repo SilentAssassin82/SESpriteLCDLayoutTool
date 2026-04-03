@@ -22,6 +22,8 @@ namespace SESpriteLCDLayoutTool.Services
             public int Matched;
             public int Unmatched;
             public string Summary;
+            /// <summary>Snapshot sprites that had no matching code sprite (loop-generated extras).</summary>
+            public List<SpriteEntry> UnmatchedSnapshots = new List<SpriteEntry>();
         }
 
         /// <summary>
@@ -64,6 +66,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             int matched = 0;
             int unmatched = 0;
+            var matchedSnapshots = new HashSet<SpriteEntry>();
 
             foreach (var code in codeSprites)
             {
@@ -74,6 +77,7 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     var snap = queue.Dequeue();
                     ApplyPosition(code, snap, applyColors);
+                    matchedSnapshots.Add(snap);
                     matched++;
                 }
                 else
@@ -91,10 +95,15 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     if (codeSprites[i].IsReferenceLayout) continue;
                     ApplyPosition(codeSprites[i], snapshotSprites[i], applyColors);
+                    matchedSnapshots.Add(snapshotSprites[i]);
                     matched++;
                 }
                 unmatched = Math.Max(0, codeSprites.Count - matched);
             }
+
+            foreach (var snap in snapshotSprites)
+                if (!matchedSnapshots.Contains(snap))
+                    result.UnmatchedSnapshots.Add(snap);
 
             result.Matched = matched;
             result.Unmatched = unmatched;

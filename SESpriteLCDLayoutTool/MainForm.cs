@@ -1330,13 +1330,14 @@ namespace SESpriteLCDLayoutTool
         }
 
         /// <summary>
-        /// Called when all streaming sources have stopped.  If the user paused
-        /// before stopping the canvas already shows the 27 code-tracked sprites —
-        /// just merge the last live frame to finalise positions and we're done.
-        /// If the user stopped without pausing the canvas still holds the full
-        /// live-frame sprite list (correct visual) — leave it there so nothing
-        /// disappears; OriginalSourceCode is preserved so the code panel falls
-        /// back to the compact original source.
+        /// Called when all streaming sources have stopped.  Restores the canvas to
+        /// code-tracked sprites so editing and click-to-jump work correctly.
+        /// If the user paused before stopping the code sprites are already on canvas —
+        /// the last live frame is merged to finalise positions.
+        /// If the user stopped without pausing, code sprites are restored from the
+        /// pre-stream snapshot and merged with the last live frame.  Loop-generated
+        /// sprites that have no code counterpart are kept as untracked entries so the
+        /// visual remains complete even though they are not round-trip editable.
         /// </summary>
         private void RestoreCodeSpritesIfStreamingEnded()
         {
@@ -1359,6 +1360,8 @@ namespace SESpriteLCDLayoutTool
 
             if (showingCodeSprites && _lastLiveFrame != null)
             {
+                // User paused before stopping — code sprites are already on canvas;
+                // just finalise the position/colour merge and we're done.
                 var editable = new List<SpriteEntry>();
                 foreach (var sp in _layout.Sprites)
                     if (!sp.IsReferenceLayout) editable.Add(sp);
@@ -1366,7 +1369,34 @@ namespace SESpriteLCDLayoutTool
                 _canvas.CanvasLayout = _layout;
                 RefreshLayerList();
             }
-            // else: live sprites already on canvas — nothing to change visually.
+            else if (_preLiveCodeSprites != null)
+            {
+                // User stopped without pausing — restore the code-tracked sprites so
+                // editing and click-to-jump work correctly after the stream ends.
+                // Loop-generated sprites that have no code counterpart are kept as
+                // untracked entries (visible on canvas but not round-trip editable).
+                _layout.Sprites.Clear();
+                foreach (var sp in _preLiveCodeSprites)
+                    _layout.Sprites.Add(sp);
+
+                if (_lastLiveFrame != null)
+                {
+                    var editable = new List<SpriteEntry>();
+                    foreach (var sp in _layout.Sprites)
+                        if (!sp.IsReferenceLayout) editable.Add(sp);
+                    var mergeResult = SnapshotMerger.Merge(editable, _lastLiveFrame, applyColors: true);
+
+                    foreach (var orphan in mergeResult.UnmatchedSnapshots)
+                    {
+                        orphan.SourceStart = -1;
+                        orphan.SourceEnd   = -1;
+                        _layout.Sprites.Add(orphan);
+                    }
+                }
+
+                _canvas.CanvasLayout = _layout;
+                RefreshLayerList();
+            }
 
             _preLiveCodeSprites = null;
             _lastLiveFrame = null;
