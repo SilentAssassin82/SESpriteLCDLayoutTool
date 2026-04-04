@@ -97,6 +97,15 @@ namespace SESpriteLCDLayoutTool
         private Button _btnAnimPlay, _btnAnimPause, _btnAnimStop, _btnAnimStep;
         private Label  _lblAnimTick;
 
+        // ── Debug tools ──────────────────────────────────────────────────────
+        private Panel _debugPanel;
+        private Label _lblDebugStats;
+        private bool  _debugPanelVisible;
+        private ToolStripMenuItem _mnuToggleDebug;
+        private ToolStripMenuItem _mnuOverlayBounds;
+        private ToolStripMenuItem _mnuOverlayHeatmap;
+        private ToolStripMenuItem _mnuSizeWarnings;
+
         /// <summary>
         /// Pre-animation layout sprites saved before playback starts.
         /// Used as a position reference: each animation frame's sprites are merged
@@ -167,6 +176,26 @@ namespace SESpriteLCDLayoutTool
             _statusLabel = new ToolStripStatusLabel("Ready") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
             statusStrip.Items.Add(_statusLabel);
             Controls.Add(statusStrip);
+
+            // Debug stats panel (above status bar, hidden by default)
+            _debugPanel = new Panel
+            {
+                Dock      = DockStyle.Bottom,
+                Height    = 48,
+                BackColor = Color.FromArgb(22, 28, 22),
+                Visible   = false,
+                Padding   = new Padding(8, 4, 8, 4),
+            };
+            _lblDebugStats = new Label
+            {
+                Dock      = DockStyle.Fill,
+                ForeColor = Color.FromArgb(170, 220, 170),
+                Font      = new Font("Consolas", 8.5f),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Text      = "No sprites",
+            };
+            _debugPanel.Controls.Add(_lblDebugStats);
+            Controls.Add(_debugPanel);
 
             // Main horizontal split: sprite tree | work area
             var mainSplit = new SplitContainer
@@ -283,6 +312,46 @@ namespace SESpriteLCDLayoutTool
             view.DropDownItems.Add("Auto-Detect Game Path", null, (s, e) => AutoDetectGamePath());
             view.DropDownItems.Add("Unload Textures", null, (s, e) => UnloadSpriteTextures());
             view.DropDownItems.Add("View Texture Load Errors…", null, (s, e) => ShowTextureLoadErrors());
+            view.DropDownItems.Add(new ToolStripSeparator());
+
+            // ── Debug tools ──
+            _mnuToggleDebug = new ToolStripMenuItem("Show Debug Stats Panel") { CheckOnClick = true };
+            _mnuToggleDebug.CheckedChanged += (s, e) => ToggleDebugPanel(_mnuToggleDebug.Checked);
+            view.DropDownItems.Add(_mnuToggleDebug);
+
+            _mnuOverlayBounds = new ToolStripMenuItem("Overlay: Bounding Boxes") { CheckOnClick = true };
+            _mnuOverlayBounds.CheckedChanged += (s, e) =>
+            {
+                if (_mnuOverlayBounds.Checked) _mnuOverlayHeatmap.Checked = false;
+                _canvas.OverlayMode = _mnuOverlayBounds.Checked
+                    ? DebugOverlayMode.BoundingBoxes
+                    : DebugOverlayMode.None;
+                SetStatus(_mnuOverlayBounds.Checked ? "Bounding box overlay enabled" : "Overlay disabled");
+            };
+            view.DropDownItems.Add(_mnuOverlayBounds);
+
+            _mnuOverlayHeatmap = new ToolStripMenuItem("Overlay: Overdraw Heatmap") { CheckOnClick = true };
+            _mnuOverlayHeatmap.CheckedChanged += (s, e) =>
+            {
+                if (_mnuOverlayHeatmap.Checked) _mnuOverlayBounds.Checked = false;
+                _canvas.OverlayMode = _mnuOverlayHeatmap.Checked
+                    ? DebugOverlayMode.OverdrawHeatmap
+                    : DebugOverlayMode.None;
+                SetStatus(_mnuOverlayHeatmap.Checked ? "Overdraw heatmap overlay enabled" : "Overlay disabled");
+            };
+            view.DropDownItems.Add(_mnuOverlayHeatmap);
+
+            _mnuSizeWarnings = new ToolStripMenuItem("Overlay: Texture Size Warnings") { CheckOnClick = true };
+            _mnuSizeWarnings.CheckedChanged += (s, e) =>
+            {
+                _canvas.ShowSizeWarnings = _mnuSizeWarnings.Checked;
+                if (_mnuSizeWarnings.Checked) RefreshDebugStats();
+                SetStatus(_mnuSizeWarnings.Checked ? "Texture size warnings enabled" : "Size warnings disabled");
+            };
+            view.DropDownItems.Add(_mnuSizeWarnings);
+
+            view.DropDownItems.Add("Show VRAM Budget…", null, (s, e) => ShowVramBudgetDialog());
+
             ms.Items.Add(view);
 
             var surface = new ToolStripMenuItem("Surface Size");
@@ -705,6 +774,7 @@ namespace SESpriteLCDLayoutTool
                     RefreshLayerList();
                     RefreshCode();
                     SetStatus($"Executed — {mergeResult.Summary}");
+                    RefreshDebugStats();
                     return;
                 }
             }
@@ -719,6 +789,7 @@ namespace SESpriteLCDLayoutTool
             RefreshLayerList();
             RefreshCode();
             SetStatus($"Executed — {result.Sprites.Count} sprite(s) captured.");
+            RefreshDebugStats();
         }
 
         private Panel BuildCodePanel()
@@ -1053,6 +1124,7 @@ namespace SESpriteLCDLayoutTool
             RefreshCode();
             UpdateTitle();
             SetStatus("New layout — surface 512 × 512. Double-click a sprite in the palette or use Add buttons.");
+            RefreshDebugStats();
         }
 
         private void ApplySurfacePreset(int idx)
@@ -2232,6 +2304,7 @@ namespace SESpriteLCDLayoutTool
             var sp = _canvas.SelectedSprite;
             string sel = sp != null ? $" | Selected: {sp.DisplayName}  ({sp.X:F0}, {sp.Y:F0})  {sp.Width:F0}×{sp.Height:F0}" : "";
             _statusLabel.Text = $"Surface: {_layout.SurfaceWidth}×{_layout.SurfaceHeight}  Sprites: {_layout.Sprites.Count}{sel}";
+            RefreshDebugStats();
         }
 
         // ── File I/O ──────────────────────────────────────────────────────────────
@@ -2251,6 +2324,7 @@ namespace SESpriteLCDLayoutTool
                     RefreshCode();
                     UpdateTitle();
                     SetStatus($"Opened: {Path.GetFileName(_currentFile)}");
+                    RefreshDebugStats();
                 }
                 catch (Exception ex)
                 {
@@ -3237,6 +3311,7 @@ namespace SESpriteLCDLayoutTool
             // Undo snapshot was pushed in BeginDrag via OnMouseDown;
             // nothing extra needed here — the drag's final state is the "current" state.
             RefreshCode();
+            RefreshDebugStats();
         }
 
         private void PerformUndo()
@@ -3662,7 +3737,8 @@ namespace SESpriteLCDLayoutTool
             string typeTag = _animPlayer?.ScriptType == ScriptType.ProgrammableBlock ? "PB"
                            : _animPlayer?.ScriptType == ScriptType.ModSurface        ? "Mod"
                            : "LCD";
-            _lblAnimTick.Text = $"{typeTag}  Tick: {tick}";
+            double ms = _animPlayer?.LastFrameMs ?? 0;
+            _lblAnimTick.Text = $"{typeTag}  Tick: {tick}  ({ms:F1} ms)";
         }
 
         private void OnAnimError(string error)
@@ -4007,6 +4083,125 @@ namespace SESpriteLCDLayoutTool
             panel.Controls.Add(lbl, 0, row);
             panel.Controls.Add(cmb, 1, row);
             row++;
+        }
+
+        // ── Debug tools ──────────────────────────────────────────────────────────
+
+        private void ToggleDebugPanel(bool visible)
+        {
+            _debugPanelVisible = visible;
+            _debugPanel.Visible = visible;
+            if (visible) RefreshDebugStats();
+        }
+
+        private void RefreshDebugStats()
+        {
+            if (_layout == null) return;
+
+            // Stats panel text
+            if (_debugPanelVisible)
+            {
+                var stats = DebugAnalyzer.Analyze(_layout);
+                var mem = DebugAnalyzer.AnalyzeTextureMemory(_layout, _textureCache);
+
+                string line1 = DebugAnalyzer.BuildStatusSummary(stats);
+                string line2 = mem.TotalBytes > 0
+                    ? $"VRAM estimate: {DebugAnalyzer.FormatBytes(mem.TotalBytes)} ({mem.Entries.Count} unique textures)"
+                    : "VRAM: — (no texture data)";
+                _lblDebugStats.Text = line1 + "\n" + line2;
+            }
+
+            // Size warnings (always refresh if overlay is on)
+            if (_canvas.ShowSizeWarnings)
+            {
+                _canvas.SizeWarnings = DebugAnalyzer.AnalyzeSizeWarnings(_layout, _textureCache);
+                _canvas.Invalidate();
+            }
+        }
+
+        private void ShowVramBudgetDialog()
+        {
+            if (_layout == null) { SetStatus("No layout loaded."); return; }
+
+            var report = DebugAnalyzer.AnalyzeTextureMemory(_layout, _textureCache);
+            if (report.Entries.Count == 0)
+            {
+                MessageBox.Show("No texture data available.\n\nLoad SE textures via View → Set SE Game Path to see VRAM estimates.",
+                    "VRAM Budget", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Sort by VRAM descending
+            report.Entries.Sort((a, b) => b.VramBytes.CompareTo(a.VramBytes));
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"Estimated VRAM budget: {DebugAnalyzer.FormatBytes(report.TotalBytes)}");
+            sb.AppendLine($"Unique textures: {report.Entries.Count}");
+            sb.AppendLine();
+            sb.AppendLine("Texture                                          Dimensions      VRAM");
+            sb.AppendLine(new string('─', 78));
+
+            foreach (var entry in report.Entries)
+            {
+                string name = entry.SpriteName.Length > 45
+                    ? entry.SpriteName.Substring(0, 42) + "..."
+                    : entry.SpriteName;
+                sb.AppendLine($"{name,-48} {entry.OriginalWidth,4}×{entry.OriginalHeight,-4}   {DebugAnalyzer.FormatBytes(entry.VramBytes),10}");
+            }
+
+            sb.AppendLine(new string('─', 78));
+            sb.AppendLine($"{"TOTAL",-48} {"",10}   {DebugAnalyzer.FormatBytes(report.TotalBytes),10}");
+
+            using (var dlg = new Form
+            {
+                Text          = "VRAM Budget — Texture Memory Estimate",
+                Size          = new Size(680, 460),
+                StartPosition = FormStartPosition.CenterParent,
+                BackColor     = Color.FromArgb(30, 30, 30),
+                ForeColor     = Color.FromArgb(220, 220, 220),
+                Font          = new Font("Segoe UI", 9f),
+            })
+            {
+                var txt = new RichTextBox
+                {
+                    Dock      = DockStyle.Fill,
+                    ReadOnly  = true,
+                    BackColor = Color.FromArgb(14, 14, 14),
+                    ForeColor = Color.FromArgb(200, 220, 200),
+                    Font      = new Font("Consolas", 9f),
+                    Text      = sb.ToString(),
+                    WordWrap  = false,
+                    ScrollBars = RichTextBoxScrollBars.Both,
+                    BorderStyle = BorderStyle.None,
+                };
+                dlg.Controls.Add(txt);
+
+                var btnClose = DarkButton("Close", Color.FromArgb(70, 70, 70));
+                btnClose.Dock  = DockStyle.Bottom;
+                btnClose.Height = 32;
+                btnClose.Click += (s, e) => dlg.Close();
+                dlg.Controls.Add(btnClose);
+
+                // Size warnings summary
+                var warnings = DebugAnalyzer.AnalyzeSizeWarnings(_layout, _textureCache);
+                if (warnings.Count > 0)
+                {
+                    var warnSb = new System.Text.StringBuilder();
+                    warnSb.AppendLine();
+                    warnSb.AppendLine($"⚠ {warnings.Count} sprite(s) using oversized textures:");
+                    warnSb.AppendLine();
+                    foreach (var w in warnings)
+                    {
+                        string name = (w.Sprite.SpriteName ?? "").Length > 35
+                            ? w.Sprite.SpriteName.Substring(0, 32) + "..."
+                            : w.Sprite.SpriteName ?? "";
+                        warnSb.AppendLine($"  {name,-38} tex {w.TextureWidth}×{w.TextureHeight} → rendered {w.RenderedWidth:F0}×{w.RenderedHeight:F0}  ({w.WasteRatio:F0}× waste)");
+                    }
+                    txt.AppendText(warnSb.ToString());
+                }
+
+                dlg.ShowDialog(this);
+            }
         }
 
         protected override void Dispose(bool disposing)

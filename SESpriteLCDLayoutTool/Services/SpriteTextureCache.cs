@@ -17,6 +17,7 @@ namespace SESpriteLCDLayoutTool.Services
     {
         private readonly Dictionary<string, Bitmap> _cache = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _spriteToPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Size> _originalSizes = new Dictionary<string, Size>(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> _loadErrors = new List<string>();
         private string _contentPath;
         private SeFontAtlas _fontAtlas;
@@ -151,6 +152,8 @@ namespace SESpriteLCDLayoutTool.Services
                 if (bmp != null)
                 {
                     Debug.WriteLine($"[TextureCache] Loaded: {spriteName} -> {texPath}");
+                    // Record original dimensions before downscaling (for VRAM budget analysis)
+                    _originalSizes[spriteName] = new Size(bmp.Width, bmp.Height);
                     // Resize large textures to save memory (preview only — 256px max)
                     if (bmp.Width > 256 || bmp.Height > 256)
                     {
@@ -191,6 +194,17 @@ namespace SESpriteLCDLayoutTool.Services
             return msg;
         }
 
+        /// <summary>
+        /// Returns the original (pre-downscale) dimensions of a loaded texture,
+        /// or null if the texture was never loaded.
+        /// </summary>
+        public Size? GetOriginalSize(string spriteName)
+        {
+            if (spriteName != null && _originalSizes.TryGetValue(spriteName, out Size size))
+                return size;
+            return null;
+        }
+
         /// <summary>Disposes all cached bitmaps and clears mappings.</summary>
         public void Unload()
         {
@@ -198,6 +212,7 @@ namespace SESpriteLCDLayoutTool.Services
                 bmp.Dispose();
             _cache.Clear();
             _spriteToPath.Clear();
+            _originalSizes.Clear();
             _loadErrors.Clear();
             _contentPath = null;
             _fontAtlas?.Dispose();
@@ -358,6 +373,9 @@ namespace SESpriteLCDLayoutTool.Services
             }
 
             if (bmp == null) return null;
+
+            // Record original dimensions before downscaling (for VRAM budget analysis)
+            _originalSizes[spriteName] = new Size(bmp.Width, bmp.Height);
 
             // Resize large textures (preview only — 256px max)
             if (bmp.Width > 256 || bmp.Height > 256)

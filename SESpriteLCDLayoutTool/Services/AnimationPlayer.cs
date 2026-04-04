@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Windows.Forms;
 using SESpriteLCDLayoutTool.Models;
 
@@ -27,6 +28,9 @@ namespace SESpriteLCDLayoutTool.Services
 
         /// <summary>The script type of the currently prepared animation.</summary>
         public ScriptType ScriptType { get; private set; }
+
+        /// <summary>Execution time of the last frame in milliseconds.</summary>
+        public double LastFrameMs { get; private set; }
 
         /// <summary>
         /// Fixed fallback interval in ms when the script does not set
@@ -141,7 +145,10 @@ namespace SESpriteLCDLayoutTool.Services
             _lastFrameTime = now;
             CurrentTick++;
 
+            var sw = Stopwatch.StartNew();
             var result = CodeExecutor.RunAnimationFrame(_ctx, _currentUpdateType, CurrentTick, elapsed);
+            sw.Stop();
+            LastFrameMs = sw.Elapsed.TotalMilliseconds;
 
             if (!result.Success)
             {
@@ -171,6 +178,7 @@ namespace SESpriteLCDLayoutTool.Services
             System.Threading.ThreadPool.QueueUserWorkItem(_ =>
             {
                 CodeExecutor.ExecutionResult result;
+                var sw = Stopwatch.StartNew();
                 try
                 {
                     result = CodeExecutor.RunAnimationFrame(ctx, updateType, tick, elapsed);
@@ -179,20 +187,24 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     result = new CodeExecutor.ExecutionResult { Error = ex.Message };
                 }
+                sw.Stop();
+                double frameMs = sw.Elapsed.TotalMilliseconds;
 
                 try
                 {
-                    _syncControl.BeginInvoke(new Action(() => HandleFrameResult(result, tick)));
+                    _syncControl.BeginInvoke(new Action(() => HandleFrameResult(result, tick, frameMs)));
                 }
                 catch (ObjectDisposedException) { }
                 catch (InvalidOperationException) { }
             });
         }
 
-        private void HandleFrameResult(CodeExecutor.ExecutionResult result, int tick)
+        private void HandleFrameResult(CodeExecutor.ExecutionResult result, int tick, double frameMs)
         {
             _frameInProgress = false;
             if (_ctx == null || !IsPlaying) return;
+
+            LastFrameMs = frameMs;
 
             if (!result.Success)
             {

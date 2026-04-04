@@ -615,6 +615,18 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.0.0
+- **Debug analysis tools** — a new suite of layout debugging and performance analysis features accessible from the **View** menu:
+  - **Debug Stats Panel** (`View → Show Debug Stats Panel`) — collapsible bottom panel showing sprite count, texture/text breakdown, unique textures, estimated draw calls, predicted game thread load (ms/frame), and a load rating (🟢 Light / 🟡 Moderate / 🟠 Heavy / 🔴 Extreme)
+  - **Overdraw Heatmap** (`View → Overlay: Overdraw Heatmap`) — canvas overlay that color-codes each 8×8 cell by how many sprites overlap it (blue → green → yellow → orange → red), with a legend strip showing the 1×–5×+ scale
+  - **Bounding Box Overlay** (`View → Overlay: Bounding Boxes`) — dashed rectangles with cycling colors and `#index` labels for every sprite, making layer order and overlap immediately visible
+  - **Texture Size Warnings** (`View → Overlay: Texture Size Warnings`) — ⚠ indicators above sprites where the source texture area is ≥ 4× the rendered area, highlighting VRAM waste from oversized textures rendered small
+  - **VRAM Budget Dialog** (`View → VRAM Budget…`) — modal dialog listing every unique texture with original dimensions, estimated VRAM usage, and total memory footprint; includes per-texture size waste warnings
+  - **Animation Frame Timing** — `Stopwatch`-measured execution time displayed in the animation tick label (`PB  Tick: 42  (1.3 ms)`) for both timer-driven and single-step playback
+- **`DebugAnalyzer` service** (`Services/DebugAnalyzer.cs`) — static analysis engine with `Analyze()` (sprite stats + game thread load model), `AnalyzeTextureMemory()` (per-texture VRAM estimation), `AnalyzeSizeWarnings()` (texture waste detection), and `ComputeOverdrawMap()` (2D overlap grid)
+- **Original texture dimension tracking** — `SpriteTextureCache` now stores pre-downscale dimensions via `GetOriginalSize()` for accurate VRAM estimation in debug tools
+- **`AnimationPlayer.LastFrameMs`** — new property exposing the most recent frame's execution time, measured via `System.Diagnostics.Stopwatch` around `RunAnimationFrame` calls
+
 ### v1.11.0
 - **Advancing `ElapsedPlayTime` for animations** — `MyAPIGateway.Session.ElapsedPlayTime` now advances with real wall-clock delta each animation frame, so time-based animations (radar sweeps, oscilloscopes, gauge bars, etc.) that use `ElapsedPlayTime.TotalSeconds` animate correctly in the built-in executor
   - `StubSession._elapsedTotalSeconds` is a mutable static field (base 120 s) incremented by the frame delta each tick

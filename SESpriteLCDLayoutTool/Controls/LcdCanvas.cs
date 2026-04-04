@@ -9,6 +9,14 @@ using SESpriteLCDLayoutTool.Services;
 
 namespace SESpriteLCDLayoutTool.Controls
 {
+    /// <summary>Debug overlay modes for the LCD canvas.</summary>
+    public enum DebugOverlayMode
+    {
+        None,
+        BoundingBoxes,
+        OverdrawHeatmap,
+    }
+
     /// <summary>
     /// Interactive canvas that renders the LCD surface and its sprites.
     /// Handles sprite selection, drag-to-move, and drag-to-resize with 8 handles.
@@ -115,6 +123,26 @@ namespace SESpriteLCDLayoutTool.Controls
         /// so the user can focus on a specific call's output.
         /// </summary>
         public HashSet<SpriteEntry> HighlightedSprites { get; set; }
+
+        /// <summary>Current debug overlay mode (None, BoundingBoxes, OverdrawHeatmap).</summary>
+        public DebugOverlayMode OverlayMode
+        {
+            get => _overlayMode;
+            set { _overlayMode = value; Invalidate(); }
+        }
+
+        /// <summary>Show per-sprite size warnings (⚠ icon for oversized textures).</summary>
+        public bool ShowSizeWarnings
+        {
+            get => _showSizeWarnings;
+            set { _showSizeWarnings = value; Invalidate(); }
+        }
+
+        private DebugOverlayMode _overlayMode = DebugOverlayMode.None;
+        private bool _showSizeWarnings;
+
+        /// <summary>Cached size warnings, refreshed externally when layout changes.</summary>
+        internal List<Services.DebugAnalyzer.SizeWarning> SizeWarnings { get; set; }
 
         // ── Constructor ───────────────────────────────────────────────────────────
         public LcdCanvas()
@@ -251,6 +279,16 @@ namespace SESpriteLCDLayoutTool.Controls
                 if (sprite.IsHidden) continue;
                 DrawSprite(g, sprite, sprite == _selectedSprite, scale, origin);
             }
+
+            // ── Debug overlays ───────────────────────────────────────────────────
+            if (_overlayMode == DebugOverlayMode.OverdrawHeatmap)
+                DrawOverdrawHeatmap(g, scale, origin, dw, dh);
+            else if (_overlayMode == DebugOverlayMode.BoundingBoxes)
+                DrawBoundingBoxOverlay(g, scale, origin);
+
+            // Per-sprite size warnings (⚠)
+            if (_showSizeWarnings && SizeWarnings != null)
+                DrawSizeWarnings(g, scale, origin);
 
             // Surface size label + zoom
             string zoomLabel = _zoom >= 0.995f && _zoom <= 1.005f ? "" : $"  Zoom: {_zoom:P0}";
@@ -915,5 +953,122 @@ namespace SESpriteLCDLayoutTool.Controls
         }
 
         protected override void OnResize(EventArgs e) { base.OnResize(e); Invalidate(); }
+
+        // ── Debug overlay rendering ──────────────────────────────────────────────
+
+        // Heatmap color ramp: 1 = blue, 2 = green, 3 = yellow, 4+ = red
+        private static readonly Color[] HeatmapColors =
+        {
+            Color.FromArgb(0, 0, 0, 0),       // 0 layers — transparent
+            Color.FromArgb(60, 40, 80, 200),   // 1 layer — subtle blue
+            Color.FromArgb(80, 40, 180, 80),   // 2 layers — green
+            Color.FromArgb(100, 220, 220, 40), // 3 layers — yellow
+            Color.FromArgb(120, 220, 80, 30),  // 4 layers — orange
+            Color.FromArgb(140, 220, 30, 30),  // 5+ layers — red
+        };
+
+        private void DrawOverdrawHeatmap(Graphics g, float scale, PointF origin, float dw, float dh)
+        {
+            if (_layout == null) return;
+            const int cellSize = 8;
+            var map = Services.DebugAnalyzer.ComputeOverdrawMap(_layout, cellSize);
+            if (map == null) return;
+
+            int cols = map.GetLength(0);
+            int rows = map.GetLength(1);
+            float cellW = cellSize * scale;
+            float cellH = cellSize * scale;
+
+            for (int c = 0; c < cols; c++)
+            {
+                for (int r = 0; r < rows; r++)
+                {
+                    int count = map[c, r];
+                    if (count == 0) continue;
+
+                    int idx = Math.Min(count, HeatmapColors.Length - 1);
+                    var color = HeatmapColors[idx];
+                    float x = origin.X + c * cellW;
+                    float y = origin.Y + r * cellH;
+
+                    using (var brush = new SolidBrush(color))
+                        g.FillRectangle(brush, x, y, cellW, cellH);
+                }
+            }
+
+            // Legend
+            using (var lf = new Font("Segoe UI", 7f))
+            using (var lb = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+            {
+                float lx = origin.X + dw + 4;
+                float ly = origin.Y;
+                g.DrawString("Overdraw", lf, lb, lx, ly);
+                for (int i = 1; i < HeatmapColors.Length; i++)
+                {
+                    float ry = ly + 14 + (i - 1) * 14;
+                    using (var cb = new SolidBrush(Color.FromArgb(200, HeatmapColors[i])))
+                        g.FillRectangle(cb, lx, ry, 10, 10);
+                    string label = i < HeatmapColors.Length - 1 ? $"{i}×" : $"{i}+×";
+                    g.DrawString(label, lf, lb, lx + 13, ry - 1);
+                }
+            }
+        }
+
+        private void DrawBoundingBoxOverlay(Graphics g, float scale, PointF origin)
+        {
+            if (_layout == null) return;
+
+            // Cycle through distinguishable colors for each sprite
+            Color[] palette =
+            {
+                Color.FromArgb(160, 255, 80, 80),
+                Color.FromArgb(160, 80, 255, 80),
+                Color.FromArgb(160, 80, 80, 255),
+                Color.FromArgb(160, 255, 255, 80),
+                Color.FromArgb(160, 80, 255, 255),
+                Color.FromArgb(160, 255, 80, 255),
+                Color.FromArgb(160, 255, 160, 60),
+                Color.FromArgb(160, 60, 200, 180),
+            };
+
+            int idx = 0;
+            foreach (var sprite in _layout.Sprites)
+            {
+                if (sprite.IsHidden) continue;
+                var rect = GetSpriteScreenRect(sprite, scale, origin);
+                var c = palette[idx % palette.Length];
+                using (var pen = new Pen(c, 1f) { DashStyle = DashStyle.Dash })
+                    g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+
+                // Draw sprite index label
+                using (var lf = new Font("Segoe UI", 6.5f, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (var lb = new SolidBrush(c))
+                    g.DrawString($"#{idx}", lf, lb, rect.X + 1, rect.Y - 9);
+
+                idx++;
+            }
+        }
+
+        private void DrawSizeWarnings(Graphics g, float scale, PointF origin)
+        {
+            if (SizeWarnings == null) return;
+
+            using (var warnFont = new Font("Segoe UI", 9f, FontStyle.Bold))
+            using (var warnBrush = new SolidBrush(Color.FromArgb(230, 255, 180, 40)))
+            using (var bgBrush = new SolidBrush(Color.FromArgb(180, 40, 30, 0)))
+            {
+                foreach (var w in SizeWarnings)
+                {
+                    if (w.Sprite.IsHidden) continue;
+                    var rect = GetSpriteScreenRect(w.Sprite, scale, origin);
+                    string label = $"\u26A0 {w.TextureWidth}\u00D7{w.TextureHeight} \u2192 {w.RenderedWidth:F0}\u00D7{w.RenderedHeight:F0}";
+                    var sz = g.MeasureString(label, warnFont);
+                    float tx = rect.X + rect.Width / 2f - sz.Width / 2f;
+                    float ty = rect.Y - sz.Height - 2;
+                    g.FillRectangle(bgBrush, tx - 2, ty, sz.Width + 4, sz.Height);
+                    g.DrawString(label, warnFont, warnBrush, tx, ty);
+                }
+            }
+        }
     }
 }
