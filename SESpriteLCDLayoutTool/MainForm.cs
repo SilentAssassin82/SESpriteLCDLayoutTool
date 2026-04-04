@@ -89,6 +89,32 @@ namespace SESpriteLCDLayoutTool
         private List<SpriteEntry> _fullFrameSprites;
         private HashSet<SpriteEntry> _isolatedCallSprites;
         private Button _btnShowAll;
+        private FlowLayoutPanel _actionBar;
+
+        // ── Animation playback ────────────────────────────────────────────────
+        private AnimationPlayer _animPlayer;
+        private Panel  _animBar;
+        private Button _btnAnimPlay, _btnAnimPause, _btnAnimStop, _btnAnimStep;
+        private Label  _lblAnimTick;
+
+        /// <summary>
+        /// Pre-animation layout sprites saved before playback starts.
+        /// Used as a position reference: each animation frame's sprites are merged
+        /// with this snapshot via <see cref="SnapshotMerger"/> so that sprites render
+        /// at their correct LCD positions even when auto-detected call parameters
+        /// produce incorrect coordinates.  Also used to restore the canvas when
+        /// animation stops.
+        /// </summary>
+        private List<SpriteEntry> _animPositionSnapshot;
+
+        /// <summary>
+        /// Per-key, per-occurrence position offsets computed on the first animation
+        /// frame.  Keyed by (Type|Data), each entry is a queue of (dx, dy) deltas
+        /// between the snapshot position and the animation's first-frame position.
+        /// Applied to every subsequent frame so animation movement is preserved
+        /// while the scene sits at the correct snapshot coordinates.
+        /// </summary>
+        private Dictionary<string, List<(float dx, float dy)>> _animFrameOffsets;
 
         // ─────────────────────────────────────────────────────────────────────────
         public MainForm()
@@ -596,6 +622,10 @@ namespace SESpriteLCDLayoutTool
         // ── Code output panel ─────────────────────────────────────────────────────
         private void OnExecCodeClick(object sender, EventArgs e)
         {
+            // Stop any running animation — single-shot execute replaces it
+            _animPlayer?.Stop();
+            UpdateAnimButtonStates();
+
             if (_layout == null) { SetStatus("No layout loaded."); return; }
 
             string code = _codeBox.Text;
@@ -707,6 +737,7 @@ namespace SESpriteLCDLayoutTool
             {
                 Dock          = DockStyle.Top,
                 Height        = 36,
+                AutoSize      = true,
                 BackColor     = Color.FromArgb(30, 30, 30),
                 FlowDirection = FlowDirection.LeftToRight,
                 Padding       = new Padding(4, 4, 4, 0),
@@ -764,8 +795,21 @@ namespace SESpriteLCDLayoutTool
             toolbar.Controls.Add(btnRefresh);
             toolbar.Controls.Add(btnResetSource);
             toolbar.Controls.Add(_cmbCodeStyle);
-            toolbar.Controls.Add(_btnCaptureSnapshot);
-            toolbar.Controls.Add(_btnShowAll);
+
+            // Action buttons in a separate thin toolbar so they never get
+            // hidden by FlowLayoutPanel wrapping on narrow panels.
+            _actionBar = new FlowLayoutPanel
+            {
+                Dock          = DockStyle.Top,
+                AutoSize      = true,
+                MinimumSize   = new Size(0, 0),
+                BackColor     = Color.FromArgb(30, 30, 30),
+                FlowDirection = FlowDirection.LeftToRight,
+                Padding       = new Padding(4, 2, 4, 2),
+                Visible       = false,
+            };
+            _actionBar.Controls.Add(_btnCaptureSnapshot);
+            _actionBar.Controls.Add(_btnShowAll);
 
             _codeBox = new RichTextBox
             {
@@ -781,6 +825,7 @@ namespace SESpriteLCDLayoutTool
             };
 
             panel.Controls.Add(_codeBox);
+            panel.Controls.Add(_actionBar);
             panel.Controls.Add(toolbar);
 
             // ── Execute-code bar (bottom of code panel) ───────────────────────────
@@ -829,6 +874,52 @@ namespace SESpriteLCDLayoutTool
             execBar.Controls.Add(lblExecPrefix);
             panel.Controls.Add(execBar);
 
+            // ── Animation playback bar (above exec bar) ──────────────────────────
+            _animBar = new Panel
+            {
+                Dock      = DockStyle.Bottom,
+                Height    = 30,
+                BackColor = Color.FromArgb(18, 28, 18),
+            };
+
+            _btnAnimPlay = DarkButton("▶ Play", Color.FromArgb(20, 100, 40));
+            _btnAnimPlay.Dock  = DockStyle.Left;
+            _btnAnimPlay.Width = 65;
+            _btnAnimPlay.Click += OnAnimPlayClick;
+
+            _btnAnimPause = DarkButton("⏸", Color.FromArgb(100, 100, 20));
+            _btnAnimPause.Dock    = DockStyle.Left;
+            _btnAnimPause.Width   = 36;
+            _btnAnimPause.Enabled = false;
+            _btnAnimPause.Click  += OnAnimPauseClick;
+
+            _btnAnimStop = DarkButton("⏹", Color.FromArgb(120, 30, 30));
+            _btnAnimStop.Dock    = DockStyle.Left;
+            _btnAnimStop.Width   = 36;
+            _btnAnimStop.Enabled = false;
+            _btnAnimStop.Click  += OnAnimStopClick;
+
+            _btnAnimStep = DarkButton("⏭", Color.FromArgb(60, 60, 120));
+            _btnAnimStep.Dock  = DockStyle.Left;
+            _btnAnimStep.Width = 36;
+            _btnAnimStep.Click += OnAnimStepClick;
+
+            _lblAnimTick = new Label
+            {
+                Text      = "Animation",
+                Dock      = DockStyle.Fill,
+                ForeColor = Color.FromArgb(130, 200, 130),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding   = new Padding(8, 0, 0, 0),
+            };
+
+            _animBar.Controls.Add(_lblAnimTick);
+            _animBar.Controls.Add(_btnAnimStep);
+            _animBar.Controls.Add(_btnAnimStop);
+            _animBar.Controls.Add(_btnAnimPause);
+            _animBar.Controls.Add(_btnAnimPlay);
+            panel.Controls.Add(_animBar);
+
             // ── Detected calls list (bottom of code panel, above exec bar) ────────
             var lblDetected = new Label
             {
@@ -858,6 +949,12 @@ namespace SESpriteLCDLayoutTool
                 if (_lstDetectedCalls.SelectedItem == null) return;
                 string call = _lstDetectedCalls.SelectedItem.ToString();
                 _execCallBox.Text = call;
+
+                // During animation, don't isolate (which would clear the scene).
+                // The call expression is already set above — it takes effect
+                // the next time the user restarts playback.
+                if (_animPlayer != null && _animPlayer.IsPlaying) return;
+
                 IsolateCallSprites(call);
             };
             panel.Controls.Add(_lstDetectedCalls);
@@ -972,6 +1069,7 @@ namespace SESpriteLCDLayoutTool
             _isolatedCallSprites = null;
             _canvas.HighlightedSprites = null;
             if (_btnShowAll != null) _btnShowAll.Visible = false;
+            UpdateActionBarVisibility();
             _canvas.CanvasLayout = _layout;
             RefreshLayerList();
             RefreshCode();
@@ -1928,6 +2026,20 @@ namespace SESpriteLCDLayoutTool
             bool canCapture = _lastLiveFrame != null && _lastLiveFrame.Count > 0 && !IsActivelyStreaming;
             if (_btnCaptureSnapshot != null) _btnCaptureSnapshot.Visible = canCapture;
             if (_mnuCaptureSnapshot != null) _mnuCaptureSnapshot.Enabled = canCapture;
+            UpdateActionBarVisibility();
+        }
+
+        /// <summary>
+        /// Shows or hides the action bar based on whether any of its child
+        /// buttons are visible, preventing a blank empty row.
+        /// </summary>
+        private void UpdateActionBarVisibility()
+        {
+            if (_actionBar == null) return;
+            bool anyVisible = false;
+            foreach (Control c in _actionBar.Controls)
+                if (c.Visible) { anyVisible = true; break; }
+            _actionBar.Visible = anyVisible;
         }
 
         /// <summary>
@@ -2021,6 +2133,7 @@ namespace SESpriteLCDLayoutTool
             _canvas.Invalidate();
             RefreshLayerList();
             if (_btnShowAll != null) _btnShowAll.Visible = true;
+            UpdateActionBarVisibility();
             SetStatus($"Isolated: {call} — {_isolatedCallSprites.Count} sprite(s). Edit, then click Show All.");
         }
 
@@ -2049,6 +2162,7 @@ namespace SESpriteLCDLayoutTool
                     sp.IsHidden = false;
 
             if (_btnShowAll != null) _btnShowAll.Visible = false;
+            UpdateActionBarVisibility();
             _canvas.Invalidate();
             RefreshLayerList();
             SetStatus("Full view restored.");
@@ -3354,10 +3468,280 @@ namespace SESpriteLCDLayoutTool
 
         private static float ClampF(float v, float min, float max) => v < min ? min : v > max ? max : v;
 
+        // ── Animation playback handlers ───────────────────────────────────────────
+
+        private void OnAnimPlayClick(object sender, EventArgs e)
+        {
+            // Resume if paused
+            if (_animPlayer != null && _animPlayer.IsPaused)
+            {
+                _animPlayer.Play();
+                UpdateAnimButtonStates();
+                SetStatus("Animation resumed.");
+                return;
+            }
+
+            // Prepare + play from scratch
+            string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
+            if (string.IsNullOrWhiteSpace(code)) { SetStatus("No code to animate."); return; }
+
+            EnsureAnimPlayer();
+            PushUndo();
+            CaptureAnimPositionSnapshot();
+            _animFrameOffsets = null;
+
+            // Pass null so CompileForAnimation auto-detects ALL rendering
+            // methods and calls them every frame — showing the full scene.
+            string error = _animPlayer.Prepare(code, null);
+            if (error != null)
+            {
+                MessageBox.Show(error, "Animation Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _animPositionSnapshot = null;
+                UpdateAnimButtonStates();
+                return;
+            }
+
+            _animPlayer.Play();
+            UpdateAnimButtonStates();
+            SetStatus("Animation playing…");
+        }
+
+        private void OnAnimPauseClick(object sender, EventArgs e)
+        {
+            if (_animPlayer == null) return;
+            if (_animPlayer.IsPaused)
+                _animPlayer.Play();
+            else
+                _animPlayer.Pause();
+            UpdateAnimButtonStates();
+        }
+
+        private void OnAnimStopClick(object sender, EventArgs e)
+        {
+            _animPlayer?.Stop();
+            UpdateAnimButtonStates();
+        }
+
+        private void OnAnimStepClick(object sender, EventArgs e)
+        {
+            // If not yet prepared, prepare first
+            if (_animPlayer == null || !_animPlayer.IsPlaying)
+            {
+                string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
+                if (string.IsNullOrWhiteSpace(code)) { SetStatus("No code to animate."); return; }
+
+                EnsureAnimPlayer();
+                PushUndo();
+                CaptureAnimPositionSnapshot();
+
+                // Pass null so CompileForAnimation auto-detects ALL rendering
+                // methods and calls them every frame — showing the full scene.
+                string error = _animPlayer.Prepare(code, null);
+                if (error != null)
+                {
+                    MessageBox.Show(error, "Animation Error",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    _animPositionSnapshot = null;
+                    UpdateAnimButtonStates();
+                    return;
+                }
+            }
+
+            _animPlayer.StepForward();
+            UpdateAnimButtonStates();
+        }
+
+        private void OnAnimFrame(List<SpriteEntry> sprites, int tick)
+        {
+            if (_animPositionSnapshot != null && _animPositionSnapshot.Count > 0)
+            {
+                // ── First frame: compute per-key offsets ──────────────────────
+                if (_animFrameOffsets == null)
+                {
+                    _animFrameOffsets = new Dictionary<string, List<(float dx, float dy)>>(StringComparer.OrdinalIgnoreCase);
+
+                    // Build consumption queues from the snapshot.
+                    var snapPool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var snap in _animPositionSnapshot)
+                    {
+                        string k = SnapshotMerger.MakeKey(snap);
+                        if (!snapPool.TryGetValue(k, out var sq))
+                        {
+                            sq = new Queue<SpriteEntry>();
+                            snapPool[k] = sq;
+                        }
+                        sq.Enqueue(snap);
+                    }
+
+                    // Walk animation sprites in order and pair with snapshot by key.
+                    foreach (var animSp in sprites)
+                    {
+                        string k = SnapshotMerger.MakeKey(animSp);
+                        float dx = 0f, dy = 0f;
+                        if (snapPool.TryGetValue(k, out var sq) && sq.Count > 0)
+                        {
+                            var snap = sq.Dequeue();
+                            dx = snap.X - animSp.X;
+                            dy = snap.Y - animSp.Y;
+                        }
+
+                        if (!_animFrameOffsets.TryGetValue(k, out var offsets))
+                        {
+                            offsets = new List<(float, float)>();
+                            _animFrameOffsets[k] = offsets;
+                        }
+                        offsets.Add((dx, dy));
+                    }
+                }
+
+                // ── Every frame: apply stored offsets to animation sprites ────
+                // Track consumption index per key so Nth occurrence gets Nth offset.
+                var idx = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                _layout.Sprites.Clear();
+                foreach (var animSp in sprites)
+                {
+                    string k = SnapshotMerger.MakeKey(animSp);
+                    if (!idx.TryGetValue(k, out int n)) n = 0;
+                    idx[k] = n + 1;
+
+                    var entry = animSp.CloneValues();
+                    if (_animFrameOffsets.TryGetValue(k, out var offsets) && n < offsets.Count)
+                    {
+                        entry.X += offsets[n].dx;
+                        entry.Y += offsets[n].dy;
+                    }
+                    _layout.Sprites.Add(entry);
+                }
+
+                // Add snapshot sprites that had no animation match (static elements).
+                var usedKeys = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var animSp in sprites)
+                {
+                    string k = SnapshotMerger.MakeKey(animSp);
+                    if (!usedKeys.ContainsKey(k)) usedKeys[k] = 0;
+                    usedKeys[k]++;
+                }
+                var snapCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var snap in _animPositionSnapshot)
+                {
+                    string k = SnapshotMerger.MakeKey(snap);
+                    if (!snapCount.ContainsKey(k)) snapCount[k] = 0;
+                    snapCount[k]++;
+                }
+                foreach (var kv in snapCount)
+                {
+                    int animN = 0;
+                    if (usedKeys.ContainsKey(kv.Key)) animN = usedKeys[kv.Key];
+                    if (kv.Value > animN)
+                    {
+                        // Some snapshot sprites of this key have no animation match.
+                        // Add the excess ones from the snapshot (static).
+                        int skip = animN;
+                        foreach (var snap in _animPositionSnapshot)
+                        {
+                            if (!string.Equals(SnapshotMerger.MakeKey(snap), kv.Key, StringComparison.OrdinalIgnoreCase))
+                                continue;
+                            if (skip > 0) { skip--; continue; }
+                            _layout.Sprites.Add(snap.CloneValues());
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // No snapshot — just show whatever the animation produced.
+                _layout.Sprites.Clear();
+                foreach (var sp in sprites)
+                    _layout.Sprites.Add(sp);
+            }
+
+            _canvas.SelectedSprite = null;
+            _canvas.Invalidate();
+
+            string typeTag = _animPlayer?.ScriptType == ScriptType.ProgrammableBlock ? "PB"
+                           : _animPlayer?.ScriptType == ScriptType.ModSurface        ? "Mod"
+                           : "LCD";
+            _lblAnimTick.Text = $"{typeTag}  Tick: {tick}";
+        }
+
+        private void OnAnimError(string error)
+        {
+            SetStatus("Animation error: " + error);
+            UpdateAnimButtonStates();
+            MessageBox.Show(error, "Animation Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private void OnAnimStopped()
+        {
+            // Restore pre-animation layout so the canvas returns to its
+            // editable state with correct source-tracking and positions.
+            if (_animPositionSnapshot != null)
+            {
+                _layout.Sprites.Clear();
+                foreach (var sp in _animPositionSnapshot)
+                    _layout.Sprites.Add(sp);
+                _animPositionSnapshot = null;
+                _canvas.CanvasLayout = _layout;
+                RefreshLayerList();
+            }
+
+            _animFrameOffsets = null;
+            _lblAnimTick.Text = "Animation";
+            UpdateAnimButtonStates();
+            SetStatus("Animation stopped.");
+        }
+
+        private void EnsureAnimPlayer()
+        {
+            if (_animPlayer != null) return;
+            _animPlayer = new AnimationPlayer(this);
+            _animPlayer.FrameRendered  += OnAnimFrame;
+            _animPlayer.ErrorOccurred  += OnAnimError;
+            _animPlayer.PlaybackStopped += OnAnimStopped;
+        }
+
+        /// <summary>
+        /// Saves the current layout sprites as a position reference for animation.
+        /// If the layout has non-reference sprites with valid positions, they are
+        /// cloned so the animation can merge frame output with these positions.
+        /// </summary>
+        private void CaptureAnimPositionSnapshot()
+        {
+            _animPositionSnapshot = null;
+            if (_layout == null || _layout.Sprites.Count == 0) return;
+
+            var snapshot = new List<SpriteEntry>();
+            foreach (var sp in _layout.Sprites)
+            {
+                if (sp.IsReferenceLayout) continue;
+                snapshot.Add(sp.CloneValues());
+            }
+
+            if (snapshot.Count > 0)
+                _animPositionSnapshot = snapshot;
+        }
+
+        private void UpdateAnimButtonStates()
+        {
+            bool playing = _animPlayer?.IsPlaying == true && !(_animPlayer?.IsPaused == true);
+            bool paused  = _animPlayer?.IsPaused == true;
+            bool active  = _animPlayer?.IsPlaying == true;
+
+            _btnAnimPlay.Enabled  = !playing;
+            _btnAnimPause.Enabled = playing || paused;
+            _btnAnimStop.Enabled  = active;
+            _btnAnimStep.Enabled  = !playing;
+
+            _btnAnimPause.Text = paused ? "▶" : "⏸";
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
+                _animPlayer?.Dispose();
                 _pipeListener?.Dispose();
                 _fileWatcher?.Dispose();
                 _clipboardTimer?.Dispose();

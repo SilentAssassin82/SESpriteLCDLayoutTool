@@ -171,7 +171,7 @@ namespace SESpriteLCDLayoutTool.Services
             }
         }
 
-        private static string MakeKey(SpriteEntry sp)
+        internal static string MakeKey(SpriteEntry sp)
         {
             string data = sp.Type == SpriteEntryType.Text
                 ? (sp.Text ?? "")
@@ -180,34 +180,17 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
-        /// Picks the snapshot candidate whose position is closest to the code
-        /// sprite's declared position.  Falls back to the first candidate when
-        /// only one exists or when the code sprite is at a default/unresolved
-        /// position (256,256 or 0,0), which means the parser could not evaluate
-        /// its position expression.
+        /// Returns the first available candidate in occurrence order.
+        /// Sprites are produced in deterministic order by the same rendering code,
+        /// so the Nth "Circle" in the code list corresponds to the Nth "Circle"
+        /// in the snapshot.  Proximity-based picking is avoided because dense
+        /// groups of same-type sprites (starfield, waveform, radar dots) shift
+        /// positions between frames, causing proximity to pair wrong candidates.
         /// </summary>
         private static SpriteEntry PickBestCandidate(SpriteEntry code, List<SpriteEntry> candidates)
         {
-            if (candidates.Count == 1 || IsDefaultPosition(code))
-                return candidates[0];
+            return candidates[0];
+        }
 
-            SpriteEntry best = candidates[0];
-            float bestDist = SquaredDist(code, candidates[0]);
-            for (int i = 1; i < candidates.Count; i++)
-            {
-                float d = SquaredDist(code, candidates[i]);
-                if (d < bestDist) { bestDist = d; best = candidates[i]; }
             }
-            return best;
         }
-
-        private static bool IsDefaultPosition(SpriteEntry sp) =>
-            (sp.X == 256f && sp.Y == 256f) || (sp.X == 0f && sp.Y == 0f);
-
-        private static float SquaredDist(SpriteEntry a, SpriteEntry b)
-        {
-            float dx = a.X - b.X, dy = a.Y - b.Y;
-            return dx * dx + dy * dy;
-        }
-    }
-}

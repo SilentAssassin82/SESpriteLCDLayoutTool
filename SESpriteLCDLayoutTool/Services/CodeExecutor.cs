@@ -220,6 +220,171 @@ namespace SESpriteLCDLayoutTool.Services
             }
         }
 
+        // ── Animation API ─────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Holds the compiled assembly and live runner instance for multi-frame
+        /// animation playback of any script type.
+        /// </summary>
+        public sealed class AnimationContext : IDisposable
+        {
+            internal Assembly CompiledAssembly;
+            internal object Runner;
+            internal Type RunnerType;
+            internal MethodInfo InitMethod;
+            internal MethodInfo FrameMethod;
+            internal MethodInfo GetFreqMethod;
+            internal MethodInfo SetElapsedMethod;
+            public ScriptType ScriptType { get; internal set; }
+
+            public void Dispose()
+            {
+                Runner = null;
+                CompiledAssembly = null;
+            }
+        }
+
+        /// <summary>
+        /// Compiles a script for animated (multi-frame) playback.
+        /// The returned <see cref="AnimationContext"/> keeps the runner instance alive
+        /// so that fields, counters, and <c>Storage</c> persist across ticks.
+        /// <para>For PB scripts, <paramref name="callExpression"/> may be null (auto-detects Main).
+        /// For LCD Helper and Mod scripts, a call expression may be null to auto-detect
+        /// all rendering methods and call them all each frame.</para>
+        /// </summary>
+        public static AnimationContext CompileForAnimation(string userCode, string callExpression = null)
+        {
+            var scriptType = DetectScriptType(userCode);
+
+            // Auto-detect all call expressions when none is specified (non-PB).
+            if (string.IsNullOrWhiteSpace(callExpression) && scriptType != ScriptType.ProgrammableBlock)
+            {
+                var allCalls = DetectAllCallExpressions(userCode);
+                if (allCalls.Count == 0)
+                    throw new InvalidOperationException(
+                        "No rendering methods detected in the script.\n"
+                        + "Add a method that accepts IMyTextSurface or List<MySprite>,\n"
+                        + "or enter a call expression manually in the '▶ Call:' box.");
+                callExpression = string.Join("\n", allCalls);
+            }
+
+            string source;
+            switch (scriptType)
+            {
+                case ScriptType.ProgrammableBlock:
+                    source = BuildPbAnimationSource(userCode);
+                    break;
+                case ScriptType.ModSurface:
+                    source = BuildModSurfaceAnimationSource(userCode, callExpression);
+                    break;
+                default: // LcdHelper
+                    source = BuildLcdHelperAnimationSource(userCode, callExpression);
+                    break;
+            }
+
+            Assembly asm = Compile(source);
+
+            Type runnerType = asm.GetType("SELcdExec.LcdRunner");
+            if (runnerType == null)
+                throw new InvalidOperationException("Internal error: LcdRunner type not found.");
+
+            var ctx = new AnimationContext
+            {
+                CompiledAssembly = asm,
+                RunnerType = runnerType,
+                Runner = Activator.CreateInstance(runnerType),
+                InitMethod = runnerType.GetMethod("AnimInit"),
+                FrameMethod = runnerType.GetMethod("RunFrame"),
+                GetFreqMethod = runnerType.GetMethod("GetUpdateFrequency"),      // null for non-PB
+                SetElapsedMethod = runnerType.GetMethod("SetTimeSinceLastRun"),   // null for non-PB
+                ScriptType = scriptType,
+            };
+            return ctx;
+        }
+
+        /// <summary>
+        /// Calls the script's constructor body (Program()) on the runner instance.
+        /// Must be called once after <see cref="CompileForAnimation"/> before any frames.
+        /// Capped at 5 seconds.
+        /// </summary>
+        public static void InitAnimation(AnimationContext ctx)
+        {
+            Exception initEx = null;
+            var thread = new System.Threading.Thread(() =>
+            {
+                try { ctx.InitMethod.Invoke(ctx.Runner, null); }
+                catch (Exception ex) { initEx = ex.InnerException ?? ex; }
+            });
+            thread.IsBackground = true;
+            thread.Start();
+            if (!thread.Join(5000))
+            {
+                thread.Abort();
+                throw new TimeoutException("Initialization timed out after 5 s.");
+            }
+            if (initEx != null) throw initEx;
+        }
+
+        /// <summary>
+        /// Executes a single animation frame on a live runner, capturing
+        /// the sprite output.  Instance state persists between calls.
+        /// Capped at 2 seconds per frame.
+        /// </summary>
+        public static ExecutionResult RunAnimationFrame(
+            AnimationContext ctx, int updateType, int tick, double elapsedSeconds)
+        {
+            if (ctx?.Runner == null)
+                return Fail("Animation session is not active.");
+
+            if (ctx.SetElapsedMethod != null)
+                ctx.SetElapsedMethod.Invoke(ctx.Runner, new object[] { elapsedSeconds });
+
+            string[][] rawData = null;
+            Exception runEx = null;
+
+            var thread = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    rawData = (string[][])ctx.FrameMethod.Invoke(
+                        ctx.Runner, new object[] { updateType, tick });
+                }
+                catch (Exception ex)
+                {
+                    runEx = ex.InnerException ?? ex;
+                }
+            });
+            thread.IsBackground = true;
+            thread.Start();
+
+            if (!thread.Join(2000))
+            {
+                thread.Abort();
+                return Fail("Frame execution timed out after 2 s — possible infinite loop.");
+            }
+
+            if (runEx != null)
+                return Fail("Runtime error: " + runEx.Message);
+            if (rawData == null)
+                return Fail("No sprite data returned.");
+
+            return new ExecutionResult
+            {
+                Sprites = ConvertFromMatrix(rawData),
+                ScriptType = ctx.ScriptType,
+            };
+        }
+
+        /// <summary>
+        /// Reads <c>Runtime.UpdateFrequency</c> from the live runner instance.
+        /// Returns the raw flags as an <see cref="int"/>.
+        /// </summary>
+        public static int GetUpdateFrequency(AnimationContext ctx)
+        {
+            if (ctx?.GetFreqMethod == null) return 0;
+            return (int)ctx.GetFreqMethod.Invoke(ctx.Runner, null);
+        }
+
         // ── Source construction ───────────────────────────────────────────────
 
         private static string BuildSource(string userCode, string callExpression,
@@ -419,6 +584,263 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("            var sprites = SpriteCollector.Captured;");
             AppendSpriteSerialisation(sb, "sprites");
             sb.AppendLine("        }");
+            sb.AppendLine("    }"); // class LcdRunner
+            sb.AppendLine("}");     // namespace
+            return sb.ToString();
+        }
+
+        // ── PB animation source (compile once, run many) ────────────────────
+
+        private static string BuildPbAnimationSource(string userCode)
+        {
+            string[] userUsings;
+            string stripped = ExtractUsings(userCode, out userUsings);
+            bool hadClassWrapper;
+            string className;
+            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className);
+
+            string ctorName = hadClassWrapper && !string.IsNullOrEmpty(className)
+                ? className
+                : "Program";
+
+            string ctorBody = ExtractConstructorBody(stripped, ctorName);
+            stripped = StripConstructors(stripped, ctorName);
+            stripped = StripReadonly(stripped);
+
+            // Detect Main() signature to determine call in RunFrame
+            string mainCall;
+            Match mainMatch = _rxMainMethod.Match(userCode);
+            if (mainMatch.Success && mainMatch.Value.Contains("UpdateType"))
+                mainCall = "Main(\"\", (UpdateType)updateType);";
+            else if (mainMatch.Success && mainMatch.Value.Contains("string"))
+                mainCall = "Main(\"\");";
+            else
+                mainCall = "Main();";
+
+            var sb = new StringBuilder();
+            AppendSharedHeader(sb, userUsings);
+
+            sb.AppendLine("    public class LcdRunner : MyGridProgram {");
+            sb.AppendLine();
+
+            // _InitStubs — identical to the regular PB path
+            sb.AppendLine("        private void _InitStubs() {");
+            sb.AppendLine("            var gts = new StubGridTerminalSystem();");
+            sb.AppendLine("            var pb = new StubProgrammableBlock();");
+            sb.AppendLine("            gts.RegisterBlock(pb);");
+            sb.AppendLine("            var lcd = new StubTerminalBlock(1);");
+            sb.AppendLine("            lcd.EntityId = 2;");
+            sb.AppendLine("            gts.RegisterBlock(lcd);");
+            sb.AppendLine("            Me = pb;");
+            sb.AppendLine("            Runtime = new StubRuntime();");
+            sb.AppendLine("            GridTerminalSystem = gts;");
+            sb.AppendLine("            Storage = string.Empty;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // User methods (including Main)
+            sb.AppendLine(stripped);
+            sb.AppendLine();
+
+            // AnimInit — called once to set up stubs + run constructor
+            sb.AppendLine("        public void AnimInit() {");
+            sb.AppendLine("            _InitStubs();");
+            sb.AppendLine("            SpriteCollector.Reset();");
+            if (!string.IsNullOrWhiteSpace(ctorBody))
+            {
+                sb.AppendLine("            {");
+                sb.AppendLine("                " + ctorBody);
+                sb.AppendLine("            }");
+            }
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // RunFrame — called every tick; resets collector, calls Main, returns sprites
+            sb.AppendLine("        public string[][] RunFrame(int updateType, int tick) {");
+            sb.AppendLine("            SpriteCollector.Reset();");
+            sb.AppendLine("            " + mainCall);
+            sb.AppendLine("            var sprites = SpriteCollector.Captured;");
+            AppendSpriteSerialisation(sb, "sprites");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // GetUpdateFrequency — returns Runtime.UpdateFrequency as int
+            sb.AppendLine("        public int GetUpdateFrequency() {");
+            sb.AppendLine("            return (int)Runtime.UpdateFrequency;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // SetTimeSinceLastRun — allows the host to feed realistic elapsed time
+            sb.AppendLine("        public void SetTimeSinceLastRun(double elapsed) {");
+            sb.AppendLine("            ((StubRuntime)Runtime).TimeSinceLastRun = elapsed;");
+            sb.AppendLine("        }");
+
+            sb.AppendLine("    }"); // class LcdRunner
+            sb.AppendLine("}");     // namespace
+            return sb.ToString();
+        }
+
+        // ── LCD Helper animation source (compile once, run many) ────────────
+
+        private static string BuildLcdHelperAnimationSource(string userCode, string callExpression)
+        {
+            string[] userUsings;
+            string stripped = ExtractUsings(userCode, out userUsings);
+            bool hadClassWrapper;
+            string className;
+            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className);
+
+            string ctorBody = "";
+            if (hadClassWrapper && !string.IsNullOrEmpty(className))
+            {
+                ctorBody = ExtractConstructorBody(stripped, className);
+                stripped = StripConstructors(stripped, className);
+            }
+            stripped = StripReadonly(stripped);
+
+            // callExpression may contain multiple calls separated by newlines
+            var callLines = new List<string>();
+            foreach (string raw in callExpression.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string cl = raw.Trim();
+                if (string.IsNullOrEmpty(cl)) continue;
+                if (!cl.EndsWith(";")) cl += ";";
+                callLines.Add(cl);
+            }
+
+            var sb = new StringBuilder();
+            AppendSharedHeader(sb, userUsings);
+            sb.AppendLine("    public class LcdRunner {");
+
+            if (!hadClassWrapper)
+            {
+                sb.AppendLine("        public int _tick = 0;");
+                sb.AppendLine("        public float _h2 = 0.5f;");
+                sb.AppendLine("        public float _o2 = 0.8f;");
+                sb.AppendLine("        public float _power = 0.75f;");
+                sb.AppendLine("        public bool _alert = false;");
+                sb.AppendLine("        public string _status = \"ONLINE\";");
+                sb.AppendLine("        public float _cargo = 0.5f;");
+                sb.AppendLine("        public int _count = 0;");
+                sb.AppendLine();
+            }
+            else
+            {
+                sb.AppendLine("        public IMyRuntime Runtime = new StubRuntime();");
+                sb.AppendLine("        public IMyProgrammableBlock Me = new StubProgrammableBlock();");
+                sb.AppendLine("        public IMyGridTerminalSystem GridTerminalSystem = new StubGridTerminalSystem();");
+                sb.AppendLine("        public string Storage = string.Empty;");
+                sb.AppendLine("        public virtual void Save() { }");
+                sb.AppendLine();
+            }
+
+            sb.AppendLine(stripped);
+            sb.AppendLine();
+            sb.AppendLine("        public void Echo(string text) { }");
+            sb.AppendLine("        public void SaveCustomData(string d) { }");
+            sb.AppendLine();
+
+            // AnimInit
+            sb.AppendLine("        public void AnimInit() {");
+            if (!string.IsNullOrWhiteSpace(ctorBody))
+            {
+                sb.AppendLine("            {");
+                sb.AppendLine("                " + ctorBody);
+                sb.AppendLine("            }");
+            }
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // RunFrame — updates _tick (bare scripts), calls ALL user methods, returns sprites
+            sb.AppendLine("        public string[][] RunFrame(int updateType, int tick) {");
+            if (!hadClassWrapper)
+                sb.AppendLine("            _tick = tick;");
+            sb.AppendLine("            var sprites = new List<MySprite>();");
+            foreach (string cl in callLines)
+                sb.AppendLine("            " + cl);
+            AppendSpriteSerialisation(sb, "sprites");
+            sb.AppendLine("        }");
+
+            sb.AppendLine("    }"); // class LcdRunner
+            sb.AppendLine("}");     // namespace
+            return sb.ToString();
+        }
+
+        // ── Mod / surface animation source (compile once, run many) ─────────
+
+        private static string BuildModSurfaceAnimationSource(string userCode, string callExpression)
+        {
+            string[] userUsings;
+            string stripped = ExtractUsings(userCode, out userUsings);
+            bool hadClassWrapper;
+            string className;
+            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className);
+
+            string ctorBody = "";
+            if (hadClassWrapper && !string.IsNullOrEmpty(className))
+            {
+                ctorBody = ExtractConstructorBody(stripped, className);
+                stripped = StripConstructors(stripped, className);
+            }
+            stripped = StripReadonly(stripped);
+
+            // Rewrite `surface` → `_stubSurface` in the call expression(s)
+            // callExpression may contain multiple calls separated by newlines
+            var callLines = new List<string>();
+            foreach (string raw in callExpression.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string cl = raw.Trim();
+                if (string.IsNullOrEmpty(cl)) continue;
+                if (!cl.EndsWith(";")) cl += ";";
+                cl = Regex.Replace(cl, @"\bsurface\b", "_stubSurface");
+                callLines.Add(cl);
+            }
+
+            var sb = new StringBuilder();
+            AppendSharedHeader(sb, userUsings);
+            sb.AppendLine("    public class LcdRunner {");
+            sb.AppendLine();
+
+            // Persistent surface field (survives across frames)
+            sb.AppendLine("        private StubTextSurface _stubSurface = new StubTextSurface(512f, 512f);");
+            sb.AppendLine();
+
+            if (hadClassWrapper)
+            {
+                sb.AppendLine("        public IMyRuntime Runtime = new StubRuntime();");
+                sb.AppendLine("        public IMyProgrammableBlock Me = new StubProgrammableBlock();");
+                sb.AppendLine("        public IMyGridTerminalSystem GridTerminalSystem = new StubGridTerminalSystem();");
+                sb.AppendLine("        public string Storage = string.Empty;");
+                sb.AppendLine("        public virtual void Save() { }");
+                sb.AppendLine();
+            }
+
+            sb.AppendLine(stripped);
+            sb.AppendLine();
+            sb.AppendLine("        public void Echo(string text) { }");
+            sb.AppendLine("        public void SaveCustomData(string d) { }");
+            sb.AppendLine();
+
+            // AnimInit
+            sb.AppendLine("        public void AnimInit() {");
+            if (!string.IsNullOrWhiteSpace(ctorBody))
+            {
+                sb.AppendLine("            {");
+                sb.AppendLine("                " + ctorBody);
+                sb.AppendLine("            }");
+            }
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // RunFrame — resets collector, calls ALL user methods, returns captured sprites
+            sb.AppendLine("        public string[][] RunFrame(int updateType, int tick) {");
+            sb.AppendLine("            SpriteCollector.Reset();");
+            foreach (string cl in callLines)
+                sb.AppendLine("            " + cl);
+            sb.AppendLine("            var sprites = SpriteCollector.Captured;");
+            AppendSpriteSerialisation(sb, "sprites");
+            sb.AppendLine("        }");
+
             sb.AppendLine("    }"); // class LcdRunner
             sb.AppendLine("}");     // namespace
             return sb.ToString();
@@ -752,6 +1174,15 @@ namespace SESpriteLCDLayoutTool.Services
                 @"^\s*using\s+[\w\.]+\s*;\s*\r?\n?", "", RegexOptions.Multiline);
         }
 
+        /// <summary>
+        /// Removes the <c>readonly</c> modifier from field declarations so that
+        /// constructor-body code moved into AnimInit() can still assign them.
+        /// </summary>
+        private static string StripReadonly(string code)
+        {
+            return Regex.Replace(code, @"\breadonly\s+", "");
+        }
+
         private static string StripConstructors(string body, string className)
         {
             if (string.IsNullOrEmpty(className)) return body;
@@ -765,14 +1196,7 @@ namespace SESpriteLCDLayoutTool.Services
             while (m.Success)
             {
                 result.Append(body, pos, m.Index - pos);
-                int depth = 1;
-                int scan = m.Index + m.Length;
-                while (scan < body.Length && depth > 0)
-                {
-                    if (body[scan] == '{') depth++;
-                    else if (body[scan] == '}') depth--;
-                    scan++;
-                }
+                int scan = ScanToMatchingBrace(body, m.Index + m.Length);
                 pos = scan;
                 m = ctorRegex.Match(body, pos);
             }
@@ -795,19 +1219,16 @@ namespace SESpriteLCDLayoutTool.Services
             Match m = ctorRegex.Match(body);
             if (!m.Success) return "";
 
-            int depth = 1;
-            int scan = m.Index + m.Length;
-            while (scan < body.Length && depth > 0)
-            {
-                if (body[scan] == '{') depth++;
-                else if (body[scan] == '}') depth--;
-                scan++;
-            }
+            int scan = ScanToMatchingBrace(body, m.Index + m.Length);
             // Extract inner body (between outer { and })
             int bodyStart = m.Index + m.Length;
             int bodyEnd = scan - 1;
             if (bodyEnd <= bodyStart) return "";
-            return body.Substring(bodyStart, bodyEnd - bodyStart).Trim();
+            // Strip bare return statements — they are valid in void constructors
+            // but would cause CS0126 when inlined into RunAllData (string[][]).
+            string ctorBody = body.Substring(bodyStart, bodyEnd - bodyStart).Trim();
+            ctorBody = Regex.Replace(ctorBody, @"(?m)^\s*return\s*;\s*$", "").Trim();
+            return ctorBody;
         }
 
         /// <summary>
@@ -833,17 +1254,121 @@ namespace SESpriteLCDLayoutTool.Services
 
             className = classMatch.Groups[1].Value;
             int bodyStart = classMatch.Index + classMatch.Length;
-            int depth = 1;
-            int pos = bodyStart;
-            while (pos < code.Length && depth > 0)
-            {
-                if (code[pos] == '{') depth++;
-                else if (code[pos] == '}') depth--;
-                pos++;
-            }
+            int pos = ScanToMatchingBrace(code, bodyStart);
 
             hadWrapper = true;
             return code.Substring(bodyStart, pos - 1 - bodyStart);
+        }
+
+        // ── Brace-aware scanning ─────────────────────────────────────────────
+        // The simple '{'/'}' counter used previously failed when braces appeared
+        // inside string literals, character literals, or comments.  These helpers
+        // skip over such constructs so that StripClassWrapper, StripConstructors,
+        // and ExtractConstructorBody see only structural braces.
+
+        /// <summary>
+        /// Starting right after an opening '{', scans forward until the matching
+        /// closing '}' is found, correctly skipping braces inside string literals,
+        /// character literals, and comments.  Returns the index just past the
+        /// closing '}'.  If no match is found, returns <c>code.Length</c>.
+        /// </summary>
+        private static int ScanToMatchingBrace(string code, int start)
+        {
+            int depth = 1;
+            int i = start;
+            while (i < code.Length && depth > 0)
+            {
+                char c = code[i];
+                switch (c)
+                {
+                    case '/':
+                        if (i + 1 < code.Length)
+                        {
+                            if (code[i + 1] == '/')
+                            {
+                                int nl = code.IndexOf('\n', i + 2);
+                                i = nl < 0 ? code.Length : nl + 1;
+                                continue;
+                            }
+                            if (code[i + 1] == '*')
+                            {
+                                int end = code.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                                i = end < 0 ? code.Length : end + 2;
+                                continue;
+                            }
+                        }
+                        break;
+                    case '@':
+                        if (i + 1 < code.Length && code[i + 1] == '"')
+                        {
+                            i = SkipVerbatimString(code, i + 2);
+                            continue;
+                        }
+                        if (i + 2 < code.Length && code[i + 1] == '$' && code[i + 2] == '"')
+                        {
+                            i = SkipVerbatimString(code, i + 3);
+                            continue;
+                        }
+                        break;
+                    case '$':
+                        if (i + 1 < code.Length && code[i + 1] == '"')
+                        {
+                            i = SkipRegularString(code, i + 2);
+                            continue;
+                        }
+                        if (i + 2 < code.Length && code[i + 1] == '@' && code[i + 2] == '"')
+                        {
+                            i = SkipVerbatimString(code, i + 3);
+                            continue;
+                        }
+                        break;
+                    case '"':
+                        i = SkipRegularString(code, i + 1);
+                        continue;
+                    case '\'':
+                        i++;
+                        if (i < code.Length && code[i] == '\\') i++;
+                        i++;
+                        if (i < code.Length && code[i] == '\'') i++;
+                        continue;
+                    case '{':
+                        depth++;
+                        break;
+                    case '}':
+                        depth--;
+                        break;
+                }
+                i++;
+            }
+            return i;
+        }
+
+        private static int SkipRegularString(string code, int i)
+        {
+            while (i < code.Length)
+            {
+                if (code[i] == '\\') { i += 2; continue; }
+                if (code[i] == '"') return i + 1;
+                i++;
+            }
+            return i;
+        }
+
+        private static int SkipVerbatimString(string code, int i)
+        {
+            while (i < code.Length)
+            {
+                if (code[i] == '"')
+                {
+                    if (i + 1 < code.Length && code[i + 1] == '"')
+                        i += 2;
+                    else
+                        return i + 1;
+                }
+                else
+                    i++;
+            }
+            return i;
         }
 
         // ── Misc helpers ──────────────────────────────────────────────────────
@@ -1077,7 +1602,8 @@ namespace Sandbox.ModAPI.Ingame
     public class StubRuntime : IMyRuntime
     {
         public UpdateFrequency UpdateFrequency { get; set; }
-        public double TimeSinceLastRun { get { return 0.016; } }
+        private double _tsLastRun = 0.016;
+        public double TimeSinceLastRun { get { return _tsLastRun; } set { _tsLastRun = value; } }
         public double LastRunTimeMs { get { return 0.1; } }
         public int MaxInstructionCount { get { return 50000; } }
     }
