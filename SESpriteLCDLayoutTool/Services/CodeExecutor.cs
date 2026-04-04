@@ -359,14 +359,16 @@ namespace SESpriteLCDLayoutTool.Services
             string className;
             stripped = StripClassWrapper(stripped, out hadClassWrapper, out className);
 
-            // For PB scripts we KEEP constructors — they initialise UpdateFrequency, etc.
-            // However we rename them to an Init() method that RunAllData calls.
-            string ctorBody = "";
-            if (hadClassWrapper && !string.IsNullOrEmpty(className))
-            {
-                ctorBody = ExtractConstructorBody(stripped, className);
-                stripped = StripConstructors(stripped, className);
-            }
+            // PB scripts may or may not have a class wrapper.  In SE's in-game
+            // editor the code is bare (no class declaration) but still has a
+            // Program() constructor.  Use "Program" as the class name when no
+            // wrapper was found so constructors are still extracted and stripped.
+            string ctorName = hadClassWrapper && !string.IsNullOrEmpty(className)
+                ? className
+                : "Program";
+
+            string ctorBody = ExtractConstructorBody(stripped, ctorName);
+            stripped = StripConstructors(stripped, ctorName);
 
             string callLine = callExpression.TrimEnd();
             if (!callLine.EndsWith(";")) callLine += ";";
@@ -747,7 +749,7 @@ namespace SESpriteLCDLayoutTool.Services
         {
             if (string.IsNullOrEmpty(className)) return body;
             var ctorRegex = new Regex(
-                @"(?:public|private|protected|internal)\s+" + Regex.Escape(className)
+                @"(?:(?:public|private|protected|internal)\s+)?" + Regex.Escape(className)
                 + @"\s*\([^)]*\)(?:\s*:[^{]+)?\s*\{",
                 RegexOptions.Singleline);
             var result = new StringBuilder();
@@ -780,7 +782,7 @@ namespace SESpriteLCDLayoutTool.Services
         {
             if (string.IsNullOrEmpty(className)) return "";
             var ctorRegex = new Regex(
-                @"(?:public|private|protected|internal)\s+" + Regex.Escape(className)
+                @"(?:(?:public|private|protected|internal)\s+)?" + Regex.Escape(className)
                 + @"\s*\([^)]*\)(?:\s*:[^{]+)?\s*\{",
                 RegexOptions.Singleline);
             Match m = ctorRegex.Match(body);
