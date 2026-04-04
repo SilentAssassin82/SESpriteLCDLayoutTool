@@ -629,6 +629,7 @@ MIT License
   - **Logging & misc:** `VRage.Utils.MyLog` stub, `Sandbox.Game.GameSystems` namespace stub
   - **Detection regex updated** — `_rxSurfaceMethod` now matches `IMyTextPanel` parameters in addition to `IMyTextSurface`, so mod methods like `DrawHUD(IMyTextPanel lcd)` are auto-detected as executable
   - **Auto-imported namespaces** — `VRage.ModAPI`, `VRage.Game.ModAPI`, `VRage.Game.Components`, `VRage.Utils`, `Sandbox.Game.GameSystems` are now auto-added alongside the existing SE namespace imports
+  - **Base class inheritance preserved** — when the user's code extends `MySessionComponentBase`, the generated `LcdRunner` class now inherits from it too, so `override void UpdateAfterSimulation()` and other overrides compile correctly
 
 ### v1.9.0
 - **Animation code snippets** — right-click any sprite on the canvas and choose **Add Animation…** to generate ready-to-paste C# animation code for your PB, mod, or plugin script

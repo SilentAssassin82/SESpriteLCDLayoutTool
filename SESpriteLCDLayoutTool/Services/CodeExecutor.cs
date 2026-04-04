@@ -827,10 +827,10 @@ namespace SESpriteLCDLayoutTool.Services
             List<string> stateUpdateCalls = null)
         {
             string[] userUsings;
-            string stripped = ExtractUsings(userCode, out userUsings);
+             string stripped = ExtractUsings(userCode, out userUsings);
             bool hadClassWrapper;
-            string className;
-            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className);
+            string className, baseClassName;
+            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className, out baseClassName);
 
             string ctorBody = "";
             if (hadClassWrapper && !string.IsNullOrEmpty(className))
@@ -852,7 +852,8 @@ namespace SESpriteLCDLayoutTool.Services
 
             var sb = new StringBuilder();
             AppendSharedHeader(sb, userUsings);
-            sb.AppendLine("    public class LcdRunner {");
+            string baseDecl = (baseClassName == "MySessionComponentBase") ? " : MySessionComponentBase" : "";
+            sb.AppendLine($"    public class LcdRunner{baseDecl} {{");
 
             if (!hadClassWrapper)
             {
@@ -927,8 +928,8 @@ namespace SESpriteLCDLayoutTool.Services
             string[] userUsings;
             string stripped = ExtractUsings(userCode, out userUsings);
             bool hadClassWrapper;
-            string className;
-            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className);
+            string className, baseClassName;
+            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className, out baseClassName);
 
             string ctorBody = "";
             if (hadClassWrapper && !string.IsNullOrEmpty(className))
@@ -952,7 +953,8 @@ namespace SESpriteLCDLayoutTool.Services
 
             var sb = new StringBuilder();
             AppendSharedHeader(sb, userUsings);
-            sb.AppendLine("    public class LcdRunner {");
+            string baseDecl = (baseClassName == "MySessionComponentBase") ? " : MySessionComponentBase" : "";
+            sb.AppendLine($"    public class LcdRunner{baseDecl} {{");
             sb.AppendLine();
 
             // Persistent surface field (survives across frames)
@@ -1018,8 +1020,8 @@ namespace SESpriteLCDLayoutTool.Services
         {
             string[] userUsings;
             string stripped = ExtractUsings(userCode, out userUsings);
-            string className;
-            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className);
+            string className, baseClassName;
+            stripped = StripClassWrapper(stripped, out hadClassWrapper, out className, out baseClassName);
             if (hadClassWrapper && !string.IsNullOrEmpty(className))
                 stripped = StripConstructors(stripped, className);
 
@@ -1030,7 +1032,8 @@ namespace SESpriteLCDLayoutTool.Services
 
             var sb = new StringBuilder();
             AppendSharedHeader(sb, userUsings);
-            sb.AppendLine("    public class LcdRunner {");
+            string baseDecl = (baseClassName == "MySessionComponentBase") ? " : MySessionComponentBase" : "";
+            sb.AppendLine($"    public class LcdRunner{baseDecl} {{");
             sb.AppendLine();
 
             if (hadClassWrapper)
@@ -1404,6 +1407,12 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         private static string StripClassWrapper(string code, out bool hadWrapper, out string className)
         {
+            string baseClassName;
+            return StripClassWrapper(code, out hadWrapper, out className, out baseClassName);
+        }
+
+        private static string StripClassWrapper(string code, out bool hadWrapper, out string className, out string baseClassName)
+        {
             var classMatch = Regex.Match(code,
                 @"(?:public|private|internal|protected)?\s*" +
                 @"(?:static|sealed|abstract|partial)?\s*" +
@@ -1414,10 +1423,17 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 hadWrapper = false;
                 className = null;
+                baseClassName = null;
                 return code;
             }
 
             className = classMatch.Groups[1].Value;
+
+            // Extract base class name from the inheritance list (e.g. ": MySessionComponentBase")
+            string header = classMatch.Value;
+            var baseMatch = Regex.Match(header, @":\s*(\w+)");
+            baseClassName = baseMatch.Success ? baseMatch.Groups[1].Value : null;
+
             int bodyStart = classMatch.Index + classMatch.Length;
             int pos = ScanToMatchingBrace(code, bodyStart);
 
