@@ -29,12 +29,21 @@ namespace SESpriteLCDLayoutTool.Services
 
         public static Bitmap Load(string path)
         {
-            if (!File.Exists(path)) return null;
+            return Load(path, out _);
+        }
+
+        /// <summary>
+        /// Loads a DDS texture and provides a human-readable error reason on failure.
+        /// </summary>
+        public static Bitmap Load(string path, out string error)
+        {
+            error = null;
+            if (!File.Exists(path)) { error = "File not found"; return null; }
             try
             {
                 byte[] data = File.ReadAllBytes(path);
-                if (data.Length < 128) return null;
-                if (BitConverter.ToUInt32(data, 0) != DdsMagic) return null;
+                if (data.Length < 128) { error = $"File too small ({data.Length} bytes)"; return null; }
+                if (BitConverter.ToUInt32(data, 0) != DdsMagic) { error = "Invalid DDS magic number"; return null; }
 
                 int height = (int)BitConverter.ToUInt32(data, 12);
                 int width  = (int)BitConverter.ToUInt32(data, 16);
@@ -46,7 +55,11 @@ namespace SESpriteLCDLayoutTool.Services
                 uint pfB = BitConverter.ToUInt32(data, 100);
                 uint pfA = BitConverter.ToUInt32(data, 104);
 
-                if (width <= 0 || height <= 0 || width > 16384 || height > 16384) return null;
+                if (width <= 0 || height <= 0 || width > 16384 || height > 16384)
+                {
+                    error = $"Invalid dimensions ({width}×{height})";
+                    return null;
+                }
 
                 int off = 128;
                 byte[] pixels;
@@ -55,30 +68,42 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     if (pfFourCC == FCC_DX10)
                     {
-                        if (data.Length < 148) return null;
+                        if (data.Length < 148) { error = "DX10 extended header truncated"; return null; }
                         uint dxgi = BitConverter.ToUInt32(data, 128);
                         off = 148;
                         if (dxgi == 98 || dxgi == 99)      pixels = DecompressBC7(data, off, width, height);
                         else if (dxgi == 71 || dxgi == 72)  pixels = DecompressBC1(data, off, width, height);
                         else if (dxgi == 77 || dxgi == 78)  pixels = DecompressBC3(data, off, width, height);
                         else if (dxgi == 74 || dxgi == 75)  pixels = DecompressBC3(data, off, width, height);
-                        else return null;
+                        else { error = $"Unsupported DXGI format ({dxgi})"; return null; }
                     }
                     else if (pfFourCC == FCC_DXT1) pixels = DecompressBC1(data, off, width, height);
                     else if (pfFourCC == FCC_DXT5) pixels = DecompressBC3(data, off, width, height);
                     else if (pfFourCC == FCC_DXT3) pixels = DecompressBC3(data, off, width, height);
-                    else return null;
+                    else
+                    {
+                        char c0 = (char)(pfFourCC & 0xFF);
+                        char c1 = (char)((pfFourCC >> 8) & 0xFF);
+                        char c2 = (char)((pfFourCC >> 16) & 0xFF);
+                        char c3 = (char)((pfFourCC >> 24) & 0xFF);
+                        error = $"Unsupported FourCC '{c0}{c1}{c2}{c3}'";
+                        return null;
+                    }
                 }
                 else if ((pfFlags & DDPF_RGB) != 0 && pfBits == 32)
                 {
                     pixels = DecodeRaw32(data, off, width, height, pfR, pfG, pfB, pfA);
                 }
-                else return null;
+                else
+                {
+                    error = $"Unsupported pixel format (flags=0x{pfFlags:X}, bits={pfBits})";
+                    return null;
+                }
 
-                if (pixels == null) return null;
+                if (pixels == null) { error = "Pixel decompression failed (data truncated?)"; return null; }
                 return MakeBitmap(pixels, width, height);
             }
-            catch { return null; }
+            catch (Exception ex) { error = ex.Message; return null; }
         }
 
         // ══════════════════════════════════════════════════════════════════════════

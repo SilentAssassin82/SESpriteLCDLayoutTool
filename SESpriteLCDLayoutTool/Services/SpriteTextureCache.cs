@@ -17,6 +17,7 @@ namespace SESpriteLCDLayoutTool.Services
     {
         private readonly Dictionary<string, Bitmap> _cache = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _spriteToPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> _loadErrors = new List<string>();
         private string _contentPath;
         private SeFontAtlas _fontAtlas;
 
@@ -28,6 +29,12 @@ namespace SESpriteLCDLayoutTool.Services
 
         /// <summary>The loaded SE font atlas (for glyph rendering). May be null.</summary>
         public SeFontAtlas FontAtlas => _fontAtlas;
+
+        /// <summary>
+        /// Detailed per-texture error messages for textures that failed to load.
+        /// Useful for debugging missing/corrupt/unsupported textures in mods.
+        /// </summary>
+        public IReadOnlyList<string> LoadErrors => _loadErrors;
 
         /// <summary>
         /// Returns the cached Bitmap for a given SE sprite name, or null if not loaded.
@@ -106,6 +113,7 @@ namespace SESpriteLCDLayoutTool.Services
             int loaded = 0;
             int failed = 0;
             int notFound = 0;
+            _loadErrors.Clear();
             foreach (var kv in _spriteToPath)
             {
                 string spriteName = kv.Key;
@@ -119,19 +127,25 @@ namespace SESpriteLCDLayoutTool.Services
                         string withDds = texPath + ".dds";
                         if (File.Exists(withDds)) texPath = withDds;
                     }
-                    if (!File.Exists(texPath)) { notFound++; continue; }
+                    if (!File.Exists(texPath))
+                    {
+                        notFound++;
+                        _loadErrors.Add($"[MISSING] {spriteName}  →  {texPath}");
+                        continue;
+                    }
                 }
 
                 Bitmap bmp = null;
+                string decodeError = null;
                 if (texPath.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
                 {
-                    bmp = DdsLoader.Load(texPath);
+                    bmp = DdsLoader.Load(texPath, out decodeError);
                 }
                 else
                 {
                     // PNG, JPG, BMP — load via GDI+
                     try { bmp = new Bitmap(texPath); }
-                    catch { /* unsupported or corrupt image */ }
+                    catch (Exception ex) { decodeError = ex.Message; }
                 }
 
                 if (bmp != null)
@@ -159,6 +173,7 @@ namespace SESpriteLCDLayoutTool.Services
                 else
                 {
                     Debug.WriteLine($"[TextureCache] DECODE FAILED: {spriteName} -> {texPath}");
+                    _loadErrors.Add($"[DECODE FAILED] {spriteName}  →  {texPath}  —  {decodeError ?? "unknown"}");
                     failed++;
                 }
             }
@@ -183,6 +198,7 @@ namespace SESpriteLCDLayoutTool.Services
                 bmp.Dispose();
             _cache.Clear();
             _spriteToPath.Clear();
+            _loadErrors.Clear();
             _contentPath = null;
             _fontAtlas?.Dispose();
             _fontAtlas = null;

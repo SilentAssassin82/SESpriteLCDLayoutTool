@@ -58,6 +58,21 @@ namespace SESpriteLCDLayoutTool.Services
             @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(\w+)\s*\(\s*List\s*<\s*MySprite\s*>\s+\w+([^)]*)\)",
             RegexOptions.Compiled);
 
+        // Matches void methods with no params whose name indicates a state-update
+        // method: Advance, Update, Tick, Simulate, Step, etc.
+        // Excludes OnTick/OnUpdate/OnStep — these are timer/event wrappers that
+        // typically call the direct methods, causing double-advance if both match.
+        private static readonly Regex _rxStateUpdateMethod = new Regex(
+            @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(Advance|Update|Tick|Simulate|Step|DoUpdate|ProcessTick)\s*\(\s*\)",
+            RegexOptions.Compiled);
+
+        // Matches methods that RETURN List<MySprite> — these are orchestrators
+        // (e.g. BuildSprites(Vector2 surfaceSize)) that call render methods internally
+        // with correct positions.  Preferred over individual render method calls.
+        private static readonly Regex _rxSpriteReturnMethod = new Regex(
+            @"(?:private|public|internal|protected)?\s*(?:static\s+)?List\s*<\s*MySprite\s*>\s+(\w+)\s*\(([^)]*)\)",
+            RegexOptions.Compiled);
+
         /// <summary>
         /// Auto-detects whether <paramref name="userCode"/> is a Programmable Block script,
         /// a mod/plugin with IMyTextSurface methods, or a plain LCD helper with List&lt;MySprite&gt; methods.
@@ -91,10 +106,11 @@ namespace SESpriteLCDLayoutTool.Services
 
         /// <summary>
         /// Scans <paramref name="userCode"/> for ALL callable entry points based on the
-        /// detected script type.  For LcdHelper scripts returns expressions like
-        /// <c>"RenderPanel(sprites, 512f, 10f, 1f)"</c>.  For PB scripts returns
-        /// <c>"Main(\"\", UpdateType.None)"</c>.  For mod surface scripts returns
-        /// expressions like <c>"DrawHUD(surface)"</c>.
+        /// detected script type.  For LcdHelper scripts, first checks for orchestrator
+        /// methods that return <c>List&lt;MySprite&gt;</c> (e.g. <c>BuildSprites</c>).
+        /// If found, these are preferred because they call render methods internally
+        /// with correct positions.  Falls back to individual render method detection
+        /// with guessed parameter defaults.
         /// </summary>
         public static List<string> DetectAllCallExpressions(string userCode)
         {
@@ -116,7 +132,13 @@ namespace SESpriteLCDLayoutTool.Services
                     break;
 
                 default:
-                    DetectLcdHelperCalls(userCode, results);
+                    // Prefer sprite-returning orchestrators (e.g. BuildSprites)
+                    // over individual render methods with guessed params.
+                    var returnCalls = DetectSpriteReturnCalls(userCode);
+                    if (returnCalls.Count > 0)
+                        results.AddRange(returnCalls);
+                    else
+                        DetectLcdHelperCalls(userCode, results);
                     break;
             }
 
@@ -186,6 +208,73 @@ namespace SESpriteLCDLayoutTool.Services
                 string call = BuildCallExpression(methodName, restParams);
                 if (call != null) results.Add(call);
             }
+        }
+
+        /// <summary>
+        /// Detects state-update methods (Advance, Update, Tick, etc.) that
+        /// should be called before rendering methods each frame so animation state
+        /// actually changes between frames.  Timer wrappers like OnTick are
+        /// excluded to avoid double-advancing state.
+        /// </summary>
+        public static List<string> DetectStateUpdateCalls(string userCode)
+        {
+            var results = new List<string>();
+            if (string.IsNullOrWhiteSpace(userCode)) return results;
+
+            foreach (Match m in _rxStateUpdateMethod.Matches(userCode))
+            {
+                string methodName = m.Groups[1].Value;
+                results.Add(methodName + "()");
+            }
+            return results;
+        }
+
+        /// <summary>
+        /// Detects methods that RETURN <c>List&lt;MySprite&gt;</c> — these are
+        /// orchestrators (e.g. <c>BuildSprites(Vector2 surfaceSize)</c>) that call
+        /// render methods internally with correct positions.  When found, these
+        /// should be preferred over calling individual render methods with guessed
+        /// parameter defaults.  Returns call expressions like
+        /// <c>"sprites = BuildSprites(new Vector2(512f, 512f))"</c>.
+        /// </summary>
+        public static List<string> DetectSpriteReturnCalls(string userCode)
+        {
+            var results = new List<string>();
+            if (string.IsNullOrWhiteSpace(userCode)) return results;
+
+            foreach (Match m in _rxSpriteReturnMethod.Matches(userCode))
+            {
+                string methodName = m.Groups[1].Value;
+                string paramDecl = m.Groups[2].Value.Trim();
+                string call = BuildReturnCallExpression(methodName, paramDecl);
+                if (call != null) results.Add(call);
+            }
+            return results;
+        }
+
+        private static string BuildReturnCallExpression(string methodName, string paramDecl)
+        {
+            if (string.IsNullOrWhiteSpace(paramDecl))
+                return "sprites = " + methodName + "()";
+
+            var args = new List<string>();
+            foreach (string param in paramDecl.Split(','))
+            {
+                string p = param.Trim();
+                if (string.IsNullOrWhiteSpace(p)) continue;
+
+                string[] parts = p.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2) continue;
+
+                string typeName = parts[0];
+                string paramName = parts[parts.Length - 1].ToLowerInvariant().TrimStart('_');
+
+                if (typeName == "Vector2")
+                    args.Add("new Vector2(512f, 512f)");
+                else
+                    args.Add(GuessDefaultArg(typeName.ToLowerInvariant(), paramName));
+            }
+            return "sprites = " + methodName + "(" + string.Join(", ", args) + ")";
         }
 
         /// <summary>
@@ -268,6 +357,12 @@ namespace SESpriteLCDLayoutTool.Services
                 callExpression = string.Join("\n", allCalls);
             }
 
+            // Detect state-update methods (Advance, Update, Tick, etc.) for non-PB scripts.
+            // These are called each frame before rendering so animation state actually changes.
+            var stateUpdateCalls = (scriptType != ScriptType.ProgrammableBlock)
+                ? DetectStateUpdateCalls(userCode)
+                : new List<string>();
+
             string source;
             switch (scriptType)
             {
@@ -275,10 +370,10 @@ namespace SESpriteLCDLayoutTool.Services
                     source = BuildPbAnimationSource(userCode);
                     break;
                 case ScriptType.ModSurface:
-                    source = BuildModSurfaceAnimationSource(userCode, callExpression);
+                    source = BuildModSurfaceAnimationSource(userCode, callExpression, stateUpdateCalls);
                     break;
                 default: // LcdHelper
-                    source = BuildLcdHelperAnimationSource(userCode, callExpression);
+                    source = BuildLcdHelperAnimationSource(userCode, callExpression, stateUpdateCalls);
                     break;
             }
 
@@ -682,7 +777,8 @@ namespace SESpriteLCDLayoutTool.Services
 
         // ── LCD Helper animation source (compile once, run many) ────────────
 
-        private static string BuildLcdHelperAnimationSource(string userCode, string callExpression)
+        private static string BuildLcdHelperAnimationSource(string userCode, string callExpression,
+            List<string> stateUpdateCalls = null)
         {
             string[] userUsings;
             string stripped = ExtractUsings(userCode, out userUsings);
@@ -751,10 +847,21 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // RunFrame — updates _tick (bare scripts), calls ALL user methods, returns sprites
+            // RunFrame — updates _tick (bare scripts), calls state-update methods, then
+            // calls ALL rendering methods, and returns sprites
             sb.AppendLine("        public string[][] RunFrame(int updateType, int tick) {");
             if (!hadClassWrapper)
                 sb.AppendLine("            _tick = tick;");
+            // Call state-update methods (Advance, Update, Tick, etc.) before rendering
+            if (stateUpdateCalls != null)
+            {
+                foreach (string upd in stateUpdateCalls)
+                {
+                    string updCall = upd.Trim();
+                    if (!updCall.EndsWith(";")) updCall += ";";
+                    sb.AppendLine("            " + updCall);
+                }
+            }
             sb.AppendLine("            var sprites = new List<MySprite>();");
             foreach (string cl in callLines)
                 sb.AppendLine("            " + cl);
@@ -768,7 +875,8 @@ namespace SESpriteLCDLayoutTool.Services
 
         // ── Mod / surface animation source (compile once, run many) ─────────
 
-        private static string BuildModSurfaceAnimationSource(string userCode, string callExpression)
+        private static string BuildModSurfaceAnimationSource(string userCode, string callExpression,
+            List<string> stateUpdateCalls = null)
         {
             string[] userUsings;
             string stripped = ExtractUsings(userCode, out userUsings);
@@ -832,9 +940,20 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // RunFrame — resets collector, calls ALL user methods, returns captured sprites
+            // RunFrame — resets collector, calls state-update methods, then calls ALL
+            // rendering methods, and returns captured sprites
             sb.AppendLine("        public string[][] RunFrame(int updateType, int tick) {");
             sb.AppendLine("            SpriteCollector.Reset();");
+            // Call state-update methods (Advance, Update, Tick, etc.) before rendering
+            if (stateUpdateCalls != null)
+            {
+                foreach (string upd in stateUpdateCalls)
+                {
+                    string updCall = upd.Trim();
+                    if (!updCall.EndsWith(";")) updCall += ";";
+                    sb.AppendLine("            " + updCall);
+                }
+            }
             foreach (string cl in callLines)
                 sb.AppendLine("            " + cl);
             sb.AppendLine("            var sprites = SpriteCollector.Captured;");

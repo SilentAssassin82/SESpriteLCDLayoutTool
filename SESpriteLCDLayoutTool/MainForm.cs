@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using System.Windows.Forms;
 using System.Xml.Serialization;
 using SESpriteLCDLayoutTool.Controls;
@@ -89,7 +90,6 @@ namespace SESpriteLCDLayoutTool
         private List<SpriteEntry> _fullFrameSprites;
         private HashSet<SpriteEntry> _isolatedCallSprites;
         private Button _btnShowAll;
-        private FlowLayoutPanel _actionBar;
 
         // ── Animation playback ────────────────────────────────────────────────
         private AnimationPlayer _animPlayer;
@@ -107,15 +107,6 @@ namespace SESpriteLCDLayoutTool
         /// </summary>
         private List<SpriteEntry> _animPositionSnapshot;
 
-        /// <summary>
-        /// Per-key, per-occurrence position offsets computed on the first animation
-        /// frame.  Keyed by (Type|Data), each entry is a queue of (dx, dy) deltas
-        /// between the snapshot position and the animation's first-frame position.
-        /// Applied to every subsequent frame so animation movement is preserved
-        /// while the scene sits at the correct snapshot coordinates.
-        /// </summary>
-        private Dictionary<string, List<(float dx, float dy)>> _animFrameOffsets;
-
         // ─────────────────────────────────────────────────────────────────────────
         public MainForm()
         {
@@ -131,8 +122,8 @@ namespace SESpriteLCDLayoutTool
             UserSpriteCatalog.Load();
             PopulateSpriteTree();
             AppSettings.Load();
-            LoadSpriteTextures(AppSettings.GameContentPath ?? AppSettings.AutoDetectContentPath());
             NewLayout();
+            LoadSpriteTexturesAsync(AppSettings.GameContentPath ?? AppSettings.AutoDetectContentPath());
 
             Load += (s, e) =>
             {
@@ -291,6 +282,7 @@ namespace SESpriteLCDLayoutTool
             view.DropDownItems.Add("Set SE Game Path...", null, (s, e) => BrowseGamePath());
             view.DropDownItems.Add("Auto-Detect Game Path", null, (s, e) => AutoDetectGamePath());
             view.DropDownItems.Add("Unload Textures", null, (s, e) => UnloadSpriteTextures());
+            view.DropDownItems.Add("View Texture Load Errors…", null, (s, e) => ShowTextureLoadErrors());
             ms.Items.Add(view);
 
             var surface = new ToolStripMenuItem("Surface Size");
@@ -795,21 +787,8 @@ namespace SESpriteLCDLayoutTool
             toolbar.Controls.Add(btnRefresh);
             toolbar.Controls.Add(btnResetSource);
             toolbar.Controls.Add(_cmbCodeStyle);
-
-            // Action buttons in a separate thin toolbar so they never get
-            // hidden by FlowLayoutPanel wrapping on narrow panels.
-            _actionBar = new FlowLayoutPanel
-            {
-                Dock          = DockStyle.Top,
-                AutoSize      = true,
-                MinimumSize   = new Size(0, 0),
-                BackColor     = Color.FromArgb(30, 30, 30),
-                FlowDirection = FlowDirection.LeftToRight,
-                Padding       = new Padding(4, 2, 4, 2),
-                Visible       = false,
-            };
-            _actionBar.Controls.Add(_btnCaptureSnapshot);
-            _actionBar.Controls.Add(_btnShowAll);
+            toolbar.Controls.Add(_btnCaptureSnapshot);
+            toolbar.Controls.Add(_btnShowAll);
 
             _codeBox = new RichTextBox
             {
@@ -825,7 +804,6 @@ namespace SESpriteLCDLayoutTool
             };
 
             panel.Controls.Add(_codeBox);
-            panel.Controls.Add(_actionBar);
             panel.Controls.Add(toolbar);
 
             // ── Execute-code bar (bottom of code panel) ───────────────────────────
@@ -2030,16 +2008,12 @@ namespace SESpriteLCDLayoutTool
         }
 
         /// <summary>
-        /// Shows or hides the action bar based on whether any of its child
-        /// buttons are visible, preventing a blank empty row.
+        /// Legacy placeholder — action buttons are now in the main toolbar
+        /// with individual Visible management; no separate bar to toggle.
         /// </summary>
         private void UpdateActionBarVisibility()
         {
-            if (_actionBar == null) return;
-            bool anyVisible = false;
-            foreach (Control c in _actionBar.Controls)
-                if (c.Visible) { anyVisible = true; break; }
-            _actionBar.Visible = anyVisible;
+            // Buttons manage their own Visible state individually.
         }
 
         /// <summary>
@@ -2504,6 +2478,7 @@ namespace SESpriteLCDLayoutTool
                     BackColor = Color.FromArgb(20, 20, 20),
                     ForeColor = Color.FromArgb(212, 212, 212),
                     AcceptsTab = true,
+                    MaxLength = 0,
                 };
 
                 var lblSnapshot = new Label
@@ -2525,6 +2500,7 @@ namespace SESpriteLCDLayoutTool
                     BackColor = Color.FromArgb(15, 18, 25),
                     ForeColor = Color.FromArgb(180, 210, 255),
                     AcceptsTab = true,
+                    MaxLength = 0,
                 };
 
                 // ── Code-execution panel (sits above the snapshot box) ────────────────
@@ -2768,12 +2744,21 @@ namespace SESpriteLCDLayoutTool
                             sprite.ImportLabel = label;
                             sprite.ImportBaseline = sprite.CloneValues();
 
-                            // Check if positions look like expression-parsed defaults
-                            // (256,256) = SpriteEntry default, (0,0) = ParseVector2 failure on expressions
-                            if (sprite.SourceStart >= 0 &&
-                                ((sprite.X == 256f && sprite.Y == 256f) ||
-                                 (sprite.X == 0f && sprite.Y == 0f)))
-                                hasDynamicPositions = true;
+                            // Check if positions look like expression-parsed defaults.
+                            // Only flag as dynamic when the sprite's source text actually
+                            // contains a Position property that couldn't be fully evaluated
+                            // (parsed to 0,0).  When Position is absent the sprite
+                            // intentionally uses the SE default center — don't move it.
+                            if (sprite.SourceStart >= 0 && sprite.SourceEnd > sprite.SourceStart &&
+                                sprite.SourceEnd <= sourceCode.Length)
+                            {
+                                string spriteText = sourceCode.Substring(sprite.SourceStart,
+                                    sprite.SourceEnd - sprite.SourceStart);
+                                bool hasPositionInSource = spriteText.IndexOf("Position", StringComparison.Ordinal) >= 0;
+                                if (hasPositionInSource &&
+                                    (sprite.X == 0f && sprite.Y == 0f))
+                                    hasDynamicPositions = true;
+                            }
                         }
 
                         // ── Snapshot merge: apply runtime positions ──
@@ -2808,22 +2793,36 @@ namespace SESpriteLCDLayoutTool
                         }
                         }
 
-                        // Auto-position sprites with default positions so they're visible/selectable
+                        // Auto-position sprites whose Position expression couldn't be evaluated
                         if (hasDynamicPositions)
                         {
                             float centerX = _layout.SurfaceWidth / 2f;
                             float yPos = 30f;
                             foreach (var sprite in sprites)
                             {
-                                if ((sprite.X == 256f && sprite.Y == 256f) ||
-                                    (sprite.X == 0f && sprite.Y == 0f))
+                                // Only reposition sprites whose source actually contains
+                                // a Position property that parsed to zero (expression failure)
+                                bool shouldMove = false;
+                                bool shouldShrink = false;
+                                if (sprite.SourceStart >= 0 && sprite.SourceEnd > sprite.SourceStart &&
+                                    sprite.SourceEnd <= sourceCode.Length)
+                                {
+                                    string st = sourceCode.Substring(sprite.SourceStart,
+                                        sprite.SourceEnd - sprite.SourceStart);
+                                    shouldMove = st.IndexOf("Position", StringComparison.Ordinal) >= 0 &&
+                                                 sprite.X == 0f && sprite.Y == 0f;
+                                    shouldShrink = st.IndexOf("Size", StringComparison.Ordinal) >= 0 &&
+                                                   sprite.Width == 100f && sprite.Height == 100f &&
+                                                   sprite.Type == SpriteEntryType.Texture;
+                                }
+
+                                if (shouldMove)
                                 {
                                     sprite.X = centerX;
                                     sprite.Y = yPos;
                                     yPos += 28f;
                                 }
-                                if (sprite.Width == 100f && sprite.Height == 100f &&
-                                    sprite.Type == SpriteEntryType.Texture)
+                                if (shouldShrink)
                                 {
                                     sprite.Width = 24f;
                                     sprite.Height = 24f;
@@ -2877,26 +2876,11 @@ namespace SESpriteLCDLayoutTool
         // ── Apply Runtime Snapshot ────────────────────────────────────────────────
         private void ShowApplySnapshotDialog()
         {
-            if (_layout == null || _layout.Sprites.Count == 0)
+            // Create a blank layout if none exists — the snapshot will populate it
+            if (_layout == null)
             {
-                MessageBox.Show(
-                    "Import a layout first (Edit → Paste Layout Code) before applying a snapshot.",
-                    "No Layout", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-
-            // Check there are non-reference sprites to merge into
-            bool hasEditable = false;
-            foreach (var sp in _layout.Sprites)
-                if (!sp.IsReferenceLayout) { hasEditable = true; break; }
-
-            if (!hasEditable)
-            {
-                MessageBox.Show(
-                    "The current layout only contains reference sprites.\n"
-                    + "Import editable sprites first (uncheck 'Import as reference layout').",
-                    "No Editable Sprites", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                _layout = new LcdLayout();
+                _canvas.CanvasLayout = _layout;
             }
 
             using (var dlg = new Form())
@@ -2973,7 +2957,13 @@ namespace SESpriteLCDLayoutTool
                     PushUndo();
                     var result = SnapshotMerger.Merge(editable, snapshotSprites);
 
+                    // Add any unmatched snapshot sprites directly to the layout
+                    // (covers empty layouts, loop-generated extras, etc.)
+                    foreach (var extra in result.UnmatchedSnapshots)
+                        _layout.Sprites.Add(extra);
+
                     _canvas.Invalidate();
+                    RefreshLayerList();
                     RefreshCode();
                     SetStatus(result.Summary);
                     dlg.Close();
@@ -2990,19 +2980,30 @@ namespace SESpriteLCDLayoutTool
         }
 
         // ── Sprite texture loading ────────────────────────────────────────────────
-        private void LoadSpriteTextures(string contentPath)
+        private void LoadSpriteTexturesAsync(string contentPath)
         {
             if (string.IsNullOrWhiteSpace(contentPath) || !Directory.Exists(contentPath))
                 return;
 
             _textureCache?.Dispose();
-            _textureCache = new SpriteTextureCache();
-            string result = _textureCache.LoadFromContent(contentPath);
-            _canvas.TextureCache = _textureCache;
+            _textureCache = null;
+            _canvas.TextureCache = null;
+            SetStatus("Loading sprite textures…");
 
-            AppSettings.GameContentPath = contentPath;
-            AppSettings.Save();
-            SetStatus($"Textures: {result}");
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                var cache = new SpriteTextureCache();
+                string result = cache.LoadFromContent(contentPath);
+
+                BeginInvoke((Action)(() =>
+                {
+                    _textureCache = cache;
+                    _canvas.TextureCache = cache;
+                    AppSettings.GameContentPath = contentPath;
+                    AppSettings.Save();
+                    SetStatus($"Textures: {result}");
+                }));
+            });
         }
 
         private void BrowseGamePath()
@@ -3035,7 +3036,7 @@ namespace SESpriteLCDLayoutTool
                     return;
                 }
 
-                LoadSpriteTextures(selected);
+                LoadSpriteTexturesAsync(selected);
             }
         }
 
@@ -3044,8 +3045,7 @@ namespace SESpriteLCDLayoutTool
             string path = AppSettings.AutoDetectContentPath();
             if (path != null)
             {
-                LoadSpriteTextures(path);
-                SetStatus($"Auto-detected SE at: {path}  — {_textureCache?.LoadedCount ?? 0} textures loaded");
+                LoadSpriteTexturesAsync(path);
             }
             else
             {
@@ -3066,6 +3066,76 @@ namespace SESpriteLCDLayoutTool
             AppSettings.GameContentPath = null;
             AppSettings.Save();
             SetStatus("Sprite textures unloaded — using placeholder rendering.");
+        }
+
+        private void ShowTextureLoadErrors()
+        {
+            if (_textureCache == null || _textureCache.LoadErrors.Count == 0)
+            {
+                MessageBox.Show(
+                    _textureCache == null
+                        ? "No textures loaded — set the SE game path first."
+                        : "All textures loaded successfully — no errors.",
+                    "Texture Load Errors",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            using (var dlg = new Form())
+            {
+                dlg.Text = $"Texture Load Errors ({_textureCache.LoadErrors.Count})";
+                dlg.Size = new Size(780, 520);
+                dlg.MinimumSize = new Size(500, 300);
+                dlg.StartPosition = FormStartPosition.CenterParent;
+                dlg.BackColor = Color.FromArgb(30, 30, 30);
+
+                var info = new Label
+                {
+                    Text      = $"{_textureCache.LoadErrors.Count} texture(s) failed to load.  This is useful for debugging missing, corrupt, or unsupported textures in your mods.",
+                    Dock      = DockStyle.Top,
+                    AutoSize  = true,
+                    Padding   = new Padding(8, 8, 8, 4),
+                    ForeColor = Color.FromArgb(200, 200, 200),
+                    Font      = new Font("Segoe UI", 9f),
+                };
+
+                var txt = new RichTextBox
+                {
+                    Dock      = DockStyle.Fill,
+                    ReadOnly  = true,
+                    BackColor = Color.FromArgb(14, 14, 14),
+                    ForeColor = Color.FromArgb(212, 212, 212),
+                    Font      = new Font("Consolas", 8.5f),
+                    BorderStyle = BorderStyle.None,
+                    WordWrap  = false,
+                };
+
+                var sb = new System.Text.StringBuilder();
+                foreach (var err in _textureCache.LoadErrors)
+                    sb.AppendLine(err);
+                txt.Text = sb.ToString();
+
+                var btnCopy = new Button
+                {
+                    Text      = "Copy to Clipboard",
+                    Dock      = DockStyle.Bottom,
+                    Height    = 32,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = Color.FromArgb(0, 100, 180),
+                    ForeColor = Color.White,
+                };
+                btnCopy.Click += (s, e) =>
+                {
+                    Clipboard.SetText(txt.Text);
+                    btnCopy.Text = "✓ Copied!";
+                };
+
+                dlg.Controls.Add(txt);
+                dlg.Controls.Add(info);
+                dlg.Controls.Add(btnCopy);
+                dlg.ShowDialog(this);
+            }
         }
 
         // ── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -3488,7 +3558,6 @@ namespace SESpriteLCDLayoutTool
             EnsureAnimPlayer();
             PushUndo();
             CaptureAnimPositionSnapshot();
-            _animFrameOffsets = null;
 
             // Pass null so CompileForAnimation auto-detects ALL rendering
             // methods and calls them every frame — showing the full scene.
@@ -3554,107 +3623,14 @@ namespace SESpriteLCDLayoutTool
 
         private void OnAnimFrame(List<SpriteEntry> sprites, int tick)
         {
-            if (_animPositionSnapshot != null && _animPositionSnapshot.Count > 0)
-            {
-                // ── First frame: compute per-key offsets ──────────────────────
-                if (_animFrameOffsets == null)
-                {
-                    _animFrameOffsets = new Dictionary<string, List<(float dx, float dy)>>(StringComparer.OrdinalIgnoreCase);
+            _layout.Sprites.Clear();
 
-                    // Build consumption queues from the snapshot.
-                    var snapPool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var snap in _animPositionSnapshot)
-                    {
-                        string k = SnapshotMerger.MakeKey(snap);
-                        if (!snapPool.TryGetValue(k, out var sq))
-                        {
-                            sq = new Queue<SpriteEntry>();
-                            snapPool[k] = sq;
-                        }
-                        sq.Enqueue(snap);
-                    }
-
-                    // Walk animation sprites in order and pair with snapshot by key.
-                    foreach (var animSp in sprites)
-                    {
-                        string k = SnapshotMerger.MakeKey(animSp);
-                        float dx = 0f, dy = 0f;
-                        if (snapPool.TryGetValue(k, out var sq) && sq.Count > 0)
-                        {
-                            var snap = sq.Dequeue();
-                            dx = snap.X - animSp.X;
-                            dy = snap.Y - animSp.Y;
-                        }
-
-                        if (!_animFrameOffsets.TryGetValue(k, out var offsets))
-                        {
-                            offsets = new List<(float, float)>();
-                            _animFrameOffsets[k] = offsets;
-                        }
-                        offsets.Add((dx, dy));
-                    }
-                }
-
-                // ── Every frame: apply stored offsets to animation sprites ────
-                // Track consumption index per key so Nth occurrence gets Nth offset.
-                var idx = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                _layout.Sprites.Clear();
-                foreach (var animSp in sprites)
-                {
-                    string k = SnapshotMerger.MakeKey(animSp);
-                    if (!idx.TryGetValue(k, out int n)) n = 0;
-                    idx[k] = n + 1;
-
-                    var entry = animSp.CloneValues();
-                    if (_animFrameOffsets.TryGetValue(k, out var offsets) && n < offsets.Count)
-                    {
-                        entry.X += offsets[n].dx;
-                        entry.Y += offsets[n].dy;
-                    }
-                    _layout.Sprites.Add(entry);
-                }
-
-                // Add snapshot sprites that had no animation match (static elements).
-                var usedKeys = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                foreach (var animSp in sprites)
-                {
-                    string k = SnapshotMerger.MakeKey(animSp);
-                    if (!usedKeys.ContainsKey(k)) usedKeys[k] = 0;
-                    usedKeys[k]++;
-                }
-                var snapCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                foreach (var snap in _animPositionSnapshot)
-                {
-                    string k = SnapshotMerger.MakeKey(snap);
-                    if (!snapCount.ContainsKey(k)) snapCount[k] = 0;
-                    snapCount[k]++;
-                }
-                foreach (var kv in snapCount)
-                {
-                    int animN = 0;
-                    if (usedKeys.ContainsKey(kv.Key)) animN = usedKeys[kv.Key];
-                    if (kv.Value > animN)
-                    {
-                        // Some snapshot sprites of this key have no animation match.
-                        // Add the excess ones from the snapshot (static).
-                        int skip = animN;
-                        foreach (var snap in _animPositionSnapshot)
-                        {
-                            if (!string.Equals(SnapshotMerger.MakeKey(snap), kv.Key, StringComparison.OrdinalIgnoreCase))
-                                continue;
-                            if (skip > 0) { skip--; continue; }
-                            _layout.Sprites.Add(snap.CloneValues());
-                        }
-                    }
-                }
-            }
-            else
-            {
-                // No snapshot — just show whatever the animation produced.
-                _layout.Sprites.Clear();
-                foreach (var sp in sprites)
-                    _layout.Sprites.Add(sp);
-            }
+            // Show executor sprites directly — the compiled code produces sprites
+            // with correct positions (via orchestrator like BuildSprites, or individual
+            // render methods).  No merge with snapshot positions needed; the pre-play
+            // layout is saved and restored when animation stops.
+            foreach (var sp in sprites)
+                _layout.Sprites.Add(sp);
 
             _canvas.SelectedSprite = null;
             _canvas.Invalidate();
@@ -3687,7 +3663,6 @@ namespace SESpriteLCDLayoutTool
                 RefreshLayerList();
             }
 
-            _animFrameOffsets = null;
             _lblAnimTick.Text = "Animation";
             UpdateAnimButtonStates();
             SetStatus("Animation stopped.");

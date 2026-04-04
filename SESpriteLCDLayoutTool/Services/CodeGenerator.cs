@@ -97,9 +97,9 @@ namespace SESpriteLCDLayoutTool.Services
                         sb.AppendLine($"            Type           = SpriteType.TEXT,");
                         sb.AppendLine($"            Data           = {Q(sp.Text)},");
                         if (sp.IsReferenceLayout)
-                            sb.AppendLine($"            // Position  = new Vector2({sp.X:F1}f, {sp.Y:F1}f),  // snapshot reference — replace with your variable");
+                            sb.AppendLine($"            // Position  = new Vector2({sp.X:F4}f, {sp.Y:F4}f),  // snapshot reference — replace with your variable");
                         else
-                            sb.AppendLine($"            Position       = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
+                            sb.AppendLine($"            Position       = new Vector2({sp.X:F4}f, {sp.Y:F4}f),");
                         sb.AppendLine($"            Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
                         sb.AppendLine($"            FontId         = {Q(sp.FontId)},");
                         sb.AppendLine($"            Alignment      = TextAlignment.{sp.Alignment.ToString().ToUpperInvariant()},");
@@ -111,13 +111,13 @@ namespace SESpriteLCDLayoutTool.Services
                         sb.AppendLine($"            Data           = {Q(sp.SpriteName)},");
                         if (sp.IsReferenceLayout)
                         {
-                            sb.AppendLine($"            // Position  = new Vector2({sp.X:F1}f, {sp.Y:F1}f),  // snapshot reference");
-                            sb.AppendLine($"            // Size      = new Vector2({sp.Width:F1}f, {sp.Height:F1}f),  // snapshot reference");
+                            sb.AppendLine($"            // Position  = new Vector2({sp.X:F4}f, {sp.Y:F4}f),  // snapshot reference");
+                            sb.AppendLine($"            // Size      = new Vector2({sp.Width:F4}f, {sp.Height:F4}f),  // snapshot reference");
                         }
                         else
                         {
-                            sb.AppendLine($"            Position       = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
-                            sb.AppendLine($"            Size           = new Vector2({sp.Width:F1}f, {sp.Height:F1}f),");
+                            sb.AppendLine($"            Position       = new Vector2({sp.X:F4}f, {sp.Y:F4}f),");
+                            sb.AppendLine($"            Size           = new Vector2({sp.Width:F4}f, {sp.Height:F4}f),");
                         }
                         sb.AppendLine($"            Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
                         sb.AppendLine($"            Alignment      = TextAlignment.CENTER,");
@@ -460,9 +460,9 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("        sb.AppendLine($\"    Type           = SpriteType.{s.Type},\");");
             sb.AppendLine("        sb.AppendLine($\"    Data           = \\\"{s.Data}\\\",\");");
             sb.AppendLine("        if (s.Position.HasValue)");
-            sb.AppendLine("            sb.AppendLine($\"    Position       = new Vector2({s.Position.Value.X:F1}f, {s.Position.Value.Y:F1}f),\");");
-            sb.AppendLine("        if (s.Size.HasValue)");
-            sb.AppendLine("            sb.AppendLine($\"    Size           = new Vector2({s.Size.Value.X:F1}f, {s.Size.Value.Y:F1}f),\");");
+                sb.AppendLine("            sb.AppendLine($\"    Position       = new Vector2({s.Position.Value.X:F4}f, {s.Position.Value.Y:F4}f),\");");
+                sb.AppendLine("        if (s.Size.HasValue)");
+                sb.AppendLine("            sb.AppendLine($\"    Size           = new Vector2({s.Size.Value.X:F4}f, {s.Size.Value.Y:F4}f),\");");
             sb.AppendLine("        if (s.Color.HasValue)");
             sb.AppendLine("            sb.AppendLine($\"    Color          = new Color({s.Color.Value.R}, {s.Color.Value.G}, {s.Color.Value.B}, {s.Color.Value.A}),\");");
             sb.AppendLine("        if (s.FontId != null)");

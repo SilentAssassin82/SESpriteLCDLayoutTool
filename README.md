@@ -615,6 +615,26 @@ MIT License
 
 ## 📝 Changelog
 
+### v1.8.0
+- **Animation orchestrator detection** — the tool now detects methods returning `List<MySprite>` (e.g. `BuildSprites(Vector2 surfaceSize)`) and prefers them over individual render methods during animation playback. This ensures sprites are rendered with correct positions from the orchestrator's layout logic rather than guessed parameter values
+- **State-update method injection** — animation frames now automatically detect and call state-update methods (`Advance()`, `Update()`, `Tick()`, etc.) before rendering, so animated state machines advance correctly each frame
+- **Fixed double-advance bug** — timer/event wrapper methods like `OnTick(object)` are now excluded from state-update detection, preventing the internal `Advance()` from being called twice per frame
+- **Simplified animation rendering** — removed the key-based sprite merge from `OnAnimFrame` which caused sprites sharing the same `Type|Data` key (e.g. multiple circles across oscilloscope, radar, and icons) to shuffle between groups. Executor output is now shown directly
+- **Snapshot on empty layout** — `Apply Runtime Snapshot` now works when the canvas is empty: creates a blank layout, populates all snapshot sprites as unmatched additions, and adds them directly to the canvas
+
+### v1.7.0
+- **Animation playback system** — compile and run SE LCD scripts frame-by-frame with Play / Pause / Stop / Step controls and tick counter
+  - Multi-call animation support — all detected rendering methods are called every frame
+  - Auto-detection of rendering methods for LCD Helper, PB, and Mod scripts
+  - Snapshot-anchored playback with position offset computation and preservation
+  - Layout fully restored when animation stops
+- **Async texture loading** — sprite textures now load on a background thread, fixing ContextSwitchDeadlock on large texture sets
+- **Texture decode error logging** — DDS/PNG/JPG load failures are now tracked with human-readable reasons; view via **View → View Texture Load Errors…**
+- **Position/Size precision** — `CodeGenerator` now serializes Position and Size with F4 precision (was F1), preserving sub-pixel accuracy in round-trip code
+- **SnapshotMerger** — switched from proximity-based matching to occurrence-order matching for more predictable merge results
+- **UI fixes** — toolbar button wrapping fix, capture/show-all buttons moved to main toolbar, TextBox.MaxLength set to 0 for paste/snapshot dialogs to prevent truncation
+- **Bug fixes** — fixed `hasDynamicPositions` false-trigger on snapshot data, removed broken offset-based animation (`_animFrameOffsets`)
+
 ### v1.6.0
 - **Expanded SE API stubs** — comprehensive block, inventory, and utility type coverage for PB/mod script compilation:
   - **Block interfaces:** `IMyFunctionalBlock`, `IMyBatteryBlock`, `IMyGasTank`, `IMyShipConnector`, `IMyThrust`, `IMyGyro`, `IMySensorBlock`, `IMyDoor`, `IMyLightingBlock`, `IMyMotorStator`, `IMyPistonBase` — each with commonly-used properties (e.g. `CurrentStoredPower`, `FilledRatio`, `Status`, `Velocity`, `Angle`)

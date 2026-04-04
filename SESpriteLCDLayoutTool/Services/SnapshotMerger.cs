@@ -43,9 +43,18 @@ namespace SESpriteLCDLayoutTool.Services
         {
             var result = new MergeResult();
             if (codeSprites == null || snapshotSprites == null ||
-                codeSprites.Count == 0 || snapshotSprites.Count == 0)
+                snapshotSprites.Count == 0)
             {
-                result.Summary = "Nothing to merge — one or both sprite lists are empty.";
+                result.Summary = "Nothing to merge — snapshot list is empty.";
+                return result;
+            }
+
+            // When there are no code sprites, all snapshot sprites are unmatched
+            if (codeSprites.Count == 0)
+            {
+                foreach (var snap in snapshotSprites)
+                    result.UnmatchedSnapshots.Add(snap);
+                result.Summary = $"No existing sprites — added {snapshotSprites.Count} sprite(s) from snapshot.";
                 return result;
             }
 
