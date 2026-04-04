@@ -615,6 +615,21 @@ MIT License
 
 ## 📝 Changelog
 
+### v1.10.0
+- **Expanded SE mod/session component stubs** — the built-in code executor now compiles and runs full SE **mod session components** (`MySessionComponentBase` subclasses) in addition to PB and LCD helper scripts:
+  - **Session component infrastructure:** `MySessionComponentBase` abstract class, `MySessionComponentDescriptor` attribute, `MyUpdateOrder` enum (`VRage.Game.Components`)
+  - **`MyAPIGateway` static class** (`Sandbox.ModAPI`) — stub implementations for `Session` (with `ElapsedPlayTime`, `WeatherEffects`), `Multiplayer` (`IsServer`), `Entities` (`GetEntities()`), `TerminalActionsHelper`, and `Utilities` (`ShowMissionScreen`)
+  - **Mod-side interfaces:** `Sandbox.ModAPI.IMyTerminalBlock`, `Sandbox.ModAPI.IMyFunctionalBlock`, `Sandbox.ModAPI.IMyTextPanel` — full mod-side hierarchy extending their `Sandbox.ModAPI.Ingame` counterparts
+  - **`IMyTextPanel` interface** (`Sandbox.ModAPI.Ingame`) — extends `IMyTextSurface` + `IMyFunctionalBlock`, enabling methods that accept `IMyTextPanel` to work with `StubTextSurface`
+  - **Power producer interfaces:** `IMyPowerProducer` (with `CurrentOutput`, `MaxOutput`), `IMyWindTurbine`, `IMySolarPanel`
+  - **Entity & grid types:** `VRage.ModAPI.IMyEntity`, `VRage.Game.ModAPI.IMyCubeGrid` (with `GetBlocks()`, `GridSizeEnum`), `IMySlimBlock` (with `FatBlock`, `Position`)
+  - **`IMyTerminalBlock` extended** — `GetPosition()` (returns `Vector3D`) and `DetailedInfo` property added to the ingame interface and all stubs
+  - **`StubTextSurface` upgraded** — now implements `IMyTextPanel` (full `IMyTerminalBlock` + `IMyFunctionalBlock` member set) so it can be passed to mod render methods expecting `IMyTextPanel`
+  - **Additional named colors:** `Color.Lime`, `Color.DarkGray`, `Color.LightGray`
+  - **Logging & misc:** `VRage.Utils.MyLog` stub, `Sandbox.Game.GameSystems` namespace stub
+  - **Detection regex updated** — `_rxSurfaceMethod` now matches `IMyTextPanel` parameters in addition to `IMyTextSurface`, so mod methods like `DrawHUD(IMyTextPanel lcd)` are auto-detected as executable
+  - **Auto-imported namespaces** — `VRage.ModAPI`, `VRage.Game.ModAPI`, `VRage.Game.Components`, `VRage.Utils`, `Sandbox.Game.GameSystems` are now auto-added alongside the existing SE namespace imports
+
 ### v1.9.0
 - **Animation code snippets** — right-click any sprite on the canvas and choose **Add Animation…** to generate ready-to-paste C# animation code for your PB, mod, or plugin script
   - **6 animation types:** Rotate, Oscillate, Pulse (Scale), Fade, Blink, Color Cycle

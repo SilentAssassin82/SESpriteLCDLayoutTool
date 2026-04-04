@@ -52,7 +52,7 @@ namespace SESpriteLCDLayoutTool.Services
             @"(?:public\s+)?void\s+Main\s*\(\s*(?:string\s+\w+(?:\s*,\s*UpdateType\s+\w+)?)?\s*\)",
             RegexOptions.Compiled);
         private static readonly Regex _rxSurfaceMethod = new Regex(
-            @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(\w+)\s*\([^)]*IMyTextSurface\s+\w+[^)]*\)",
+            @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(\w+)\s*\([^)]*(?:IMyTextSurface|IMyTextPanel)\s+\w+[^)]*\)",
             RegexOptions.Compiled);
         private static readonly Regex _rxSpriteListMethod = new Regex(
             @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(\w+)\s*\(\s*List\s*<\s*MySprite\s*>\s+\w+([^)]*)\)",
@@ -553,6 +553,8 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 "VRage.Game.GUI.TextPanel", "VRageMath", "Sandbox.ModAPI.Ingame",
                 "Sandbox.ModAPI", "VRage", "VRage.Game.ModAPI.Ingame",
+                "VRage.ModAPI", "VRage.Game.ModAPI", "VRage.Game.Components",
+                "VRage.Utils", "Sandbox.Game.GameSystems",
                 "System", "System.Collections.Generic",
                 "System.Globalization", "System.Linq", "System.Text", "System.Threading"
             };
@@ -560,8 +562,13 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("    using VRage;");
             sb.AppendLine("    using VRage.Game.GUI.TextPanel;");
             sb.AppendLine("    using VRage.Game.ModAPI.Ingame;");
+            sb.AppendLine("    using VRage.ModAPI;");
+            sb.AppendLine("    using VRage.Game.ModAPI;");
+            sb.AppendLine("    using VRage.Game.Components;");
+            sb.AppendLine("    using VRage.Utils;");
             sb.AppendLine("    using VRageMath;");
             sb.AppendLine("    using Sandbox.ModAPI.Ingame;");
+            sb.AppendLine("    using Sandbox.Game.GameSystems;");
             foreach (string u in userUsings)
                 if (!knownUsings.Contains(u))
                     sb.AppendLine("    using " + u + ";");
@@ -1612,6 +1619,9 @@ namespace VRageMath
         public static Color Magenta     { get { return new Color(255,0,255);   } }
         public static Color Gray        { get { return new Color(128,128,128); } }
         public static Color Orange      { get { return new Color(255,165,0);   } }
+        public static Color Lime        { get { return new Color(0,255,0);     } }
+        public static Color DarkGray    { get { return new Color(64,64,64);    } }
+        public static Color LightGray   { get { return new Color(192,192,192); } }
         public static Color Transparent { get { return new Color(0,0,0,0);    } }
         public static Color operator*(Color c, float f) { return new Color((int)(c.R*f),(int)(c.G*f),(int)(c.B*f),(int)c.A); }
     }
@@ -1766,9 +1776,10 @@ namespace Sandbox.ModAPI.Ingame
         public int MaxInstructionCount { get { return 50000; } }
     }
 
-    public class StubTextSurface : IMyTextSurface
+    public class StubTextSurface : IMyTextSurface, IMyTextPanel
     {
         private string _text = """";
+        private readonly StubInventory _inv = new StubInventory();
         public ContentType ContentType { get; set; }
         public Color FontColor { get; set; }
         public Color BackgroundColor { get; set; }
@@ -1785,6 +1796,23 @@ namespace Sandbox.ModAPI.Ingame
         public MySpriteDrawFrame DrawFrame() { return new MySpriteDrawFrame(); }
         public void GetSprites(List<string> sprites) { sprites.Clear(); }
 
+        // IMyFunctionalBlock / IMyTerminalBlock members
+        public bool Enabled { get; set; }
+        public string CustomName { get; set; }
+        public string CustomData { get; set; }
+        public string DetailedInfo { get; set; }
+        public bool IsWorking { get { return true; } }
+        public bool IsFunctional { get { return true; } }
+        public long EntityId { get; set; }
+        public IMyCubeGrid CubeGrid { get; set; }
+        public ITerminalProperty GetProperty(string name) { return new StubTerminalProperty(name); }
+        public ITerminalAction GetAction(string name) { return new StubTerminalAction(name); }
+        public bool HasInventory { get { return false; } }
+        public int InventoryCount { get { return 0; } }
+        public IMyInventory GetInventory() { return _inv; }
+        public IMyInventory GetInventory(int index) { return _inv; }
+        public Vector3D GetPosition() { return Vector3D.Zero; }
+
         public StubTextSurface() : this(512f, 512f) { }
         public StubTextSurface(float w, float h)
         {
@@ -1796,6 +1824,12 @@ namespace Sandbox.ModAPI.Ingame
             BackgroundColor = Color.Black;
             ScriptBackgroundColor = new Color(0, 88, 151);
             ScriptForegroundColor = Color.White;
+            Enabled = true;
+            CustomName = ""LCD Panel"";
+            CustomData = """";
+            DetailedInfo = """";
+            EntityId = 2;
+            CubeGrid = new StubCubeGrid();
         }
     }
 
@@ -1805,17 +1839,19 @@ namespace Sandbox.ModAPI.Ingame
         int SurfaceCount { get; }
     }
 
-    public class StubTerminalBlock : IMyTerminalBlock, IMyTextSurfaceProvider
+    public class StubTerminalBlock : IMyTerminalBlock, IMyTextSurfaceProvider, IMyFunctionalBlock
     {
         private readonly StubTextSurface[] _surfaces;
         private readonly StubInventory _inv = new StubInventory();
         public string CustomName { get; set; }
         public string CustomData { get; set; }
+        public string DetailedInfo { get; set; }
         public bool IsWorking { get { return true; } }
         public bool IsFunctional { get { return true; } }
         public bool Enabled { get; set; }
         public long EntityId { get; set; }
         public IMyCubeGrid CubeGrid { get; set; }
+        public VRageMath.Vector3D GetPosition() { return VRageMath.Vector3D.Zero; }
         public int SurfaceCount { get { return _surfaces.Length; } }
         public IMyTextSurface GetSurface(int index) { return _surfaces[index]; }
         public ITerminalProperty GetProperty(string name) { return new StubTerminalProperty(name); }
@@ -1832,6 +1868,7 @@ namespace Sandbox.ModAPI.Ingame
                 _surfaces[i] = new StubTextSurface();
             CustomName = ""LCD Panel"";
             CustomData = """";
+            DetailedInfo = """";
             Enabled = true;
             EntityId = 1;
             CubeGrid = new StubCubeGrid();
@@ -1984,6 +2021,7 @@ namespace Sandbox.ModAPI.Ingame
     {
         string CustomName { get; set; }
         string CustomData { get; set; }
+        string DetailedInfo { get; }
         bool IsWorking { get; }
         bool IsFunctional { get; }
         long EntityId { get; }
@@ -1994,6 +2032,7 @@ namespace Sandbox.ModAPI.Ingame
         int InventoryCount { get; }
         IMyInventory GetInventory();
         IMyInventory GetInventory(int index);
+        VRageMath.Vector3D GetPosition();
     }
 
     public interface IMyFunctionalBlock : IMyTerminalBlock
@@ -2225,7 +2264,194 @@ namespace Sandbox.ModAPI.Ingame
         bool HandBrake { get; set; }
         bool DampenersOverride { get; set; }
     }
+
+    public interface IMyTextPanel : IMyTextSurface, IMyFunctionalBlock { }
+
+    public interface IMyPowerProducer : IMyFunctionalBlock
+    {
+        float CurrentOutput { get; }
+        float MaxOutput { get; }
+    }
+
+    public interface IMyWindTurbine : IMyPowerProducer { }
+
+    public interface IMySolarPanel : IMyPowerProducer { }
 }
+
+// ── Sandbox.ModAPI — mod/plugin-side block interfaces ─────────────────
+namespace Sandbox.ModAPI
+{
+    using VRageMath;
+
+    public interface IMyTerminalBlock : Sandbox.ModAPI.Ingame.IMyTerminalBlock
+    {
+    }
+
+    public interface IMyFunctionalBlock : IMyTerminalBlock, Sandbox.ModAPI.Ingame.IMyFunctionalBlock
+    {
+    }
+
+    public interface IMyTextPanel : Sandbox.ModAPI.Ingame.IMyTextPanel, IMyFunctionalBlock
+    {
+    }
+
+    // ── MyAPIGateway — core mod API entry point ───────────────────────────
+
+    public static class MyAPIGateway
+    {
+        public static IMySession Session = new StubSession();
+        public static IMyMultiplayer Multiplayer = new StubMultiplayer();
+        public static IMyEntities Entities = new StubEntities();
+        public static IMyTerminalActionsHelper TerminalActionsHelper = new StubTerminalActionsHelper();
+        public static IMyUtilities Utilities = new StubUtilities();
+    }
+
+    public interface IMySession
+    {
+        IMyWeatherEffects WeatherEffects { get; }
+        System.TimeSpan ElapsedPlayTime { get; }
+    }
+
+    public interface IMyWeatherEffects
+    {
+        string GetWeather(Vector3D position);
+    }
+
+    public interface IMyMultiplayer
+    {
+        bool IsServer { get; }
+    }
+
+    public interface IMyEntities
+    {
+        void GetEntities(System.Collections.Generic.HashSet<VRage.ModAPI.IMyEntity> entities);
+    }
+
+    public interface IMyTerminalActionsHelper
+    {
+        Sandbox.ModAPI.Ingame.IMyGridTerminalSystem GetTerminalSystemForGrid(Sandbox.ModAPI.Ingame.IMyCubeGrid grid);
+    }
+
+    public interface IMyUtilities
+    {
+        void ShowMissionScreen(string screenTitle, string currentObjectivePrefix, string currentObjective, string description);
+    }
+
+    // ── Stubs ─────────────────────────────────────────────────────────────
+
+    public class StubSession : IMySession
+    {
+        private readonly StubWeatherEffects _weather = new StubWeatherEffects();
+        public IMyWeatherEffects WeatherEffects { get { return _weather; } }
+        public System.TimeSpan ElapsedPlayTime { get { return System.TimeSpan.FromSeconds(120); } }
+    }
+
+    public class StubWeatherEffects : IMyWeatherEffects
+    {
+        public string GetWeather(Vector3D position) { return ""Clear""; }
+    }
+
+    public class StubMultiplayer : IMyMultiplayer
+    {
+        public bool IsServer { get { return true; } }
+    }
+
+    public class StubEntities : IMyEntities
+    {
+        public void GetEntities(System.Collections.Generic.HashSet<VRage.ModAPI.IMyEntity> entities) { entities.Clear(); }
+    }
+
+    public class StubTerminalActionsHelper : IMyTerminalActionsHelper
+    {
+        public Sandbox.ModAPI.Ingame.IMyGridTerminalSystem GetTerminalSystemForGrid(Sandbox.ModAPI.Ingame.IMyCubeGrid grid)
+        {
+            return new Sandbox.ModAPI.Ingame.StubGridTerminalSystem();
+        }
+    }
+
+    public class StubUtilities : IMyUtilities
+    {
+        public void ShowMissionScreen(string screenTitle, string currentObjectivePrefix, string currentObjective, string description) { }
+    }
+}
+
+// ── VRage.ModAPI — entity interfaces ──────────────────────────────────
+namespace VRage.ModAPI
+{
+    public interface IMyEntity
+    {
+        long EntityId { get; }
+        string DisplayName { get; }
+    }
+}
+
+// ── VRage.Game.ModAPI — grid & slim block interfaces ──────────────────
+namespace VRage.Game.ModAPI
+{
+    using System.Collections.Generic;
+
+    public interface IMyCubeGrid : VRage.ModAPI.IMyEntity, Sandbox.ModAPI.Ingame.IMyCubeGrid
+    {
+        void GetBlocks(List<IMySlimBlock> blocks);
+    }
+
+    public interface IMySlimBlock
+    {
+        object FatBlock { get; }
+    }
+
+    public class StubSlimBlock : IMySlimBlock
+    {
+        public object FatBlock { get; set; }
+    }
+
+    public class StubModCubeGrid : IMyCubeGrid
+    {
+        public long EntityId { get; set; }
+        public string DisplayName { get { return CustomName; } }
+        public string CustomName { get; set; }
+        public void GetBlocks(List<IMySlimBlock> blocks) { blocks.Clear(); }
+        public StubModCubeGrid() { CustomName = ""Grid""; }
+    }
+}
+
+// ── VRage.Game.Components — session component base ────────────────────
+namespace VRage.Game.Components
+{
+    [System.Flags]
+    public enum MyUpdateOrder { NoUpdate = 0, BeforeSimulation = 1, Simulation = 2, AfterSimulation = 4 }
+
+    [System.AttributeUsage(System.AttributeTargets.Class)]
+    public class MySessionComponentDescriptor : System.Attribute
+    {
+        public MyUpdateOrder UpdateOrder;
+        public MySessionComponentDescriptor(MyUpdateOrder updateOrder) { UpdateOrder = updateOrder; }
+    }
+
+    public abstract class MySessionComponentBase
+    {
+        public virtual void LoadData() { }
+        public virtual void UnloadData() { }
+        public virtual void UpdateBeforeSimulation() { }
+        public virtual void UpdateAfterSimulation() { }
+        public virtual void BeforeStart() { }
+        public virtual void Init(object sessionComponent) { }
+    }
+}
+
+// ── VRage.Utils ───────────────────────────────────────────────────────
+namespace VRage.Utils
+{
+    public class MyLog
+    {
+        public static MyLog Default = new MyLog();
+        public void WriteLineAndConsole(string msg) { }
+        public void WriteLine(string msg) { }
+    }
+}
+
+// ── Sandbox.Game.GameSystems (stub namespace) ─────────────────────────
+namespace Sandbox.Game.GameSystems { }
 ";
     }
 }
