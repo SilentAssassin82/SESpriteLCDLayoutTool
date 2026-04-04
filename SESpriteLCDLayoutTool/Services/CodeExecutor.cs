@@ -1390,10 +1390,13 @@ namespace Sandbox.ModAPI.Ingame
         public float         RotationOrScale;
         public TextAlignment Alignment;
 
-        public MySprite(SpriteType type, string data, Vector2 position, Vector2 size, Color color)
+        public MySprite(SpriteType type, string data,
+                       Vector2? position = null, Vector2? size = null, Color? color = null,
+                       string fontId = null, TextAlignment alignment = TextAlignment.LEFT,
+                       float rotationOrScale = 0f)
         {
             Type=type; Data=data; Position=position; Size=size; Color=color;
-            FontId=null; RotationOrScale=0f; Alignment=TextAlignment.LEFT;
+            FontId=fontId; RotationOrScale=rotationOrScale; Alignment=alignment;
         }
 
         public static MySprite CreateText(string text, string font, Color color,
