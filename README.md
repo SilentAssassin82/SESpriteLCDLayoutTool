@@ -598,8 +598,8 @@ MIT License
 
 ## 📝 Changelog
 
-### v1.4.0
-- **Full Programmable Block script execution** — paste an entire PB script (extending `MyGridProgram`) and execute it directly. The tool auto-detects `Main(string, UpdateType)` / `Main(string)` / `Main()`, wires up functional stubs for `Me`, `Runtime`, `GridTerminalSystem`, runs the `Program()` constructor body, calls `Main()`, and captures every sprite drawn via `MySpriteDrawFrame.Add()`
+### v1.5.0
+- **Full Programmable Block script execution**
 - **Mod / plugin script execution** — methods that accept `IMyTextSurface` are now detected and executable. The tool creates a functional `StubTextSurface` (512×512, configurable), passes it to your render method, and captures all sprites drawn through `DrawFrame().Add()`
 - **Script type auto-detection** — `DetectScriptType()` classifies pasted code as `LcdHelper`, `ProgrammableBlock`, or `ModSurface` using regex pattern matching:
   - PB: `class ... : MyGridProgram` or `void Main(string...)`
