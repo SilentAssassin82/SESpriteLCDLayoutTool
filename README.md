@@ -615,8 +615,17 @@ MIT License
 
 ## 📝 Changelog
 
+### v1.9.0
+- **Animation code snippets** — right-click any sprite on the canvas and choose **Add Animation…** to generate ready-to-paste C# animation code for your PB, mod, or plugin script
+  - **6 animation types:** Rotate, Oscillate, Pulse (Scale), Fade, Blink, Color Cycle
+  - Each type opens a parameter dialog with live code preview — tweak speed, amplitude, axis, alpha range, etc. and see the generated code update in real time
+  - Generated snippets include a tick counter field, animation math, and the full `frame.Add(new MySprite { … })` block with the animated property clearly marked (`// ← animated`)
+  - One-click **Copy to Clipboard** — paste directly into your rendering method
+  - Supports both TEXTURE and TEXT sprites with correct property mapping (RotationOrScale as rotation vs. scale)
+  - Submenu is context-aware: only enabled when a sprite is selected on the canvas
+
 ### v1.8.0
-- **Animation orchestrator detection** — the tool now detects methods returning `List<MySprite>` (e.g. `BuildSprites(Vector2 surfaceSize)`) and prefers them over individual render methods during animation playback. This ensures sprites are rendered with correct positions from the orchestrator's layout logic rather than guessed parameter values
+- **Animation orchestrator detection**
 - **State-update method injection** — animation frames now automatically detect and call state-update methods (`Advance()`, `Update()`, `Tick()`, etc.) before rendering, so animated state machines advance correctly each frame
 - **Fixed double-advance bug** — timer/event wrapper methods like `OnTick(object)` are now excluded from state-update detection, preventing the internal `Advance()` from being called twice per frame
 - **Simplified animation rendering** — removed the key-based sprite merge from `OnAnimFrame` which caused sprites sharing the same `Type|Data` key (e.g. multiple circles across oscilloscope, radar, and icons) to shuffle between groups. Executor output is now shown directly

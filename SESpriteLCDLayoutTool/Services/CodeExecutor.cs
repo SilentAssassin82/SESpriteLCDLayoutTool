@@ -132,13 +132,35 @@ namespace SESpriteLCDLayoutTool.Services
                     break;
 
                 default:
-                    // Prefer sprite-returning orchestrators (e.g. BuildSprites)
-                    // over individual render methods with guessed params.
+                    // List orchestrators first (e.g. BuildSprites), then individual
+                    // render methods.  The user can select any single method to
+                    // animate in isolation, or leave the default (all) for the full scene.
                     var returnCalls = DetectSpriteReturnCalls(userCode);
-                    if (returnCalls.Count > 0)
-                        results.AddRange(returnCalls);
-                    else
-                        DetectLcdHelperCalls(userCode, results);
+                    results.AddRange(returnCalls);
+                    // Collect method names from orchestrators so we can skip duplicates
+                    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (string rc in returnCalls)
+                    {
+                        // Extract method name from "sprites = MethodName(...)"
+                        int eq = rc.IndexOf('=');
+                        if (eq >= 0)
+                        {
+                            string after = rc.Substring(eq + 1).Trim();
+                            int paren = after.IndexOf('(');
+                            if (paren > 0) seen.Add(after.Substring(0, paren).Trim());
+                        }
+                    }
+                    // Add individual render methods that weren't already listed as orchestrators
+                    var helperCalls = new List<string>();
+                    DetectLcdHelperCalls(userCode, helperCalls);
+                    foreach (string hc in helperCalls)
+                    {
+                        // Extract method name from "MethodName(sprites, ...)"
+                        int paren = hc.IndexOf('(');
+                        string name = paren > 0 ? hc.Substring(0, paren).Trim() : hc;
+                        if (!seen.Contains(name))
+                            results.Add(hc);
+                    }
                     break;
             }
 
@@ -345,16 +367,33 @@ namespace SESpriteLCDLayoutTool.Services
         {
             var scriptType = DetectScriptType(userCode);
 
-            // Auto-detect all call expressions when none is specified (non-PB).
+            // Auto-detect call expressions when none is specified (non-PB).
+            // For LcdHelper scripts, prefer orchestrators (methods returning List<MySprite>)
+            // which call individual render methods internally with correct positions.
+            // Using both would duplicate sprites since the orchestrator already invokes them.
             if (string.IsNullOrWhiteSpace(callExpression) && scriptType != ScriptType.ProgrammableBlock)
             {
-                var allCalls = DetectAllCallExpressions(userCode);
-                if (allCalls.Count == 0)
+                List<string> animCalls;
+                if (scriptType == ScriptType.LcdHelper)
+                {
+                    // Orchestrators first; fall back to individual render methods
+                    animCalls = DetectSpriteReturnCalls(userCode);
+                    if (animCalls.Count == 0)
+                    {
+                        animCalls = new List<string>();
+                        DetectLcdHelperCalls(userCode, animCalls);
+                    }
+                }
+                else
+                {
+                    animCalls = DetectAllCallExpressions(userCode);
+                }
+                if (animCalls.Count == 0)
                     throw new InvalidOperationException(
                         "No rendering methods detected in the script.\n"
                         + "Add a method that accepts IMyTextSurface or List<MySprite>,\n"
                         + "or enter a call expression manually in the '▶ Call:' box.");
-                callExpression = string.Join("\n", allCalls);
+                callExpression = string.Join("\n", animCalls);
             }
 
             // Detect state-update methods (Advance, Update, Tick, etc.) for non-PB scripts.
