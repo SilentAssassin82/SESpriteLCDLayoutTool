@@ -386,6 +386,10 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("            var gts = new StubGridTerminalSystem();");
             sb.AppendLine("            var pb = new StubProgrammableBlock();");
             sb.AppendLine("            gts.RegisterBlock(pb);");
+            sb.AppendLine("            // Register a default LCD panel so GetBlockWithName finds a surface");
+            sb.AppendLine("            var lcd = new StubTerminalBlock(1);");
+            sb.AppendLine("            lcd.EntityId = 2;");
+            sb.AppendLine("            gts.RegisterBlock(lcd);");
             sb.AppendLine("            Me = pb;");
             sb.AppendLine("            Runtime = new StubRuntime();");
             sb.AppendLine("            GridTerminalSystem = gts;");
@@ -977,6 +981,7 @@ namespace Sandbox.ModAPI.Ingame
         public void WriteText(string text, bool append = false) { _text = append ? _text + text : text; }
         public string ReadText() { return _text; }
         public MySpriteDrawFrame DrawFrame() { return new MySpriteDrawFrame(); }
+        public void GetSprites(List<string> sprites) { sprites.Clear(); }
 
         public StubTextSurface() : this(512f, 512f) { }
         public StubTextSurface(float w, float h)
@@ -1004,6 +1009,7 @@ namespace Sandbox.ModAPI.Ingame
         public bool IsWorking { get { return true; } }
         public bool IsFunctional { get { return true; } }
         public long EntityId { get; set; }
+        public IMyCubeGrid CubeGrid { get; set; }
         public int SurfaceCount { get { return _surfaces.Length; } }
         public IMyTextSurface GetSurface(int index) { return _surfaces[index]; }
 
@@ -1015,6 +1021,7 @@ namespace Sandbox.ModAPI.Ingame
             CustomName = ""LCD Panel"";
             CustomData = """";
             EntityId = 1;
+            CubeGrid = new StubCubeGrid();
         }
     }
 
@@ -1045,6 +1052,24 @@ namespace Sandbox.ModAPI.Ingame
             foreach (var b in _blocks) if (b.EntityId == id) return b;
             return null;
         }
+
+        public IMyTerminalBlock GetBlockWithName(string name)
+        {
+            foreach (var b in _blocks)
+                if (b.CustomName == name) return b;
+            // Fallback: return first non-PB block so preview always works
+            foreach (var b in _blocks)
+                if (!(b is IMyProgrammableBlock)) return b;
+            return _blocks.Count > 0 ? _blocks[0] : null;
+        }
+
+        public void SearchBlocksOfName(string name, List<IMyTerminalBlock> blocks, Func<IMyTerminalBlock, bool> collect = null)
+        {
+            blocks.Clear();
+            foreach (var b in _blocks)
+                if (b.CustomName.Contains(name) && (collect == null || collect(b)))
+                    blocks.Add(b);
+        }
     }
 
     // ── Interfaces ────────────────────────────────────────────────────────
@@ -1057,6 +1082,19 @@ namespace Sandbox.ModAPI.Ingame
         int MaxInstructionCount { get; }
     }
 
+    public interface IMyCubeGrid
+    {
+        string CustomName { get; set; }
+        string DisplayName { get; }
+    }
+
+    public class StubCubeGrid : IMyCubeGrid
+    {
+        public string CustomName { get; set; }
+        public string DisplayName { get { return CustomName; } }
+        public StubCubeGrid() { CustomName = ""My Grid""; }
+    }
+
     public interface IMyTerminalBlock
     {
         string CustomName { get; set; }
@@ -1064,6 +1102,7 @@ namespace Sandbox.ModAPI.Ingame
         bool IsWorking { get; }
         bool IsFunctional { get; }
         long EntityId { get; }
+        IMyCubeGrid CubeGrid { get; }
     }
 
     public interface IMyTextSurface
@@ -1074,11 +1113,13 @@ namespace Sandbox.ModAPI.Ingame
         float FontSize { get; set; }
         string Font { get; set; }
         float TextPadding { get; set; }
+        string Script { get; set; }
         Vector2 SurfaceSize { get; }
         Vector2 TextureSize { get; }
         void WriteText(string text, bool append = false);
         string ReadText();
         MySpriteDrawFrame DrawFrame();
+        void GetSprites(List<string> sprites);
     }
 
     public struct MySpriteDrawFrame : IDisposable
@@ -1101,6 +1142,8 @@ namespace Sandbox.ModAPI.Ingame
     {
         void GetBlocksOfType<T>(List<T> blocks, Func<T, bool> collect = null) where T : class;
         IMyTerminalBlock GetBlockWithId(long id);
+        IMyTerminalBlock GetBlockWithName(string name);
+        void SearchBlocksOfName(string name, List<IMyTerminalBlock> blocks, Func<IMyTerminalBlock, bool> collect = null);
     }
 
     public class MyGridProgram
