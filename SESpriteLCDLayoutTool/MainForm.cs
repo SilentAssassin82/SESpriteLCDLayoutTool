@@ -608,10 +608,19 @@ namespace SESpriteLCDLayoutTool
                 call = CodeExecutor.DetectCallExpression(code);
                 if (call == null)
                 {
-                    MessageBox.Show(
-                        "Could not auto-detect a render method with a List<MySprite> parameter.\n\n"
-                        + "Type the call expression in the '▶ Call:' box below, e.g.:\n"
-                        + "  RenderPanel(sprites, 512f, 10f, 1f)",
+                    var st = CodeExecutor.DetectScriptType(code);
+                    string hint = st == ScriptType.ProgrammableBlock
+                        ? "Could not auto-detect a Main() entry point in this PB script.\n\n"
+                          + "Type the call expression in the '▶ Call:' box below, e.g.:\n"
+                          + "  Main(\"\", UpdateType.None)"
+                        : st == ScriptType.ModSurface
+                        ? "Could not auto-detect a render method with an IMyTextSurface parameter.\n\n"
+                          + "Type the call expression in the '▶ Call:' box below, e.g.:\n"
+                          + "  DrawHUD(surface)"
+                        : "Could not auto-detect a render method with a List<MySprite> parameter.\n\n"
+                          + "Type the call expression in the '▶ Call:' box below, e.g.:\n"
+                          + "  RenderPanel(sprites, 512f, 10f, 1f)";
+                    MessageBox.Show(hint,
                         "No Method Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     _execCallBox.Focus();
                     return;
@@ -633,7 +642,10 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
-            _execResultLabel.Text      = "✔ " + result.Sprites.Count;
+            string typeTag = result.ScriptType == ScriptType.ProgrammableBlock ? " [PB]"
+                           : result.ScriptType == ScriptType.ModSurface        ? " [Mod]"
+                           : "";
+            _execResultLabel.Text      = "✔ " + result.Sprites.Count + typeTag;
             _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
 
             PushUndo();
@@ -2520,10 +2532,19 @@ namespace SESpriteLCDLayoutTool
                         call = CodeExecutor.DetectCallExpression(txtCode.Text);
                         if (call == null)
                         {
-                            MessageBox.Show(
-                                "Could not detect a render method with a List<MySprite> parameter.\n\n"
-                                + "Enter the call expression manually in the 'Execute call' box, e.g.:\n"
-                                + "  RenderPanel(sprites, 512f, 10f, 1f)",
+                            var st = CodeExecutor.DetectScriptType(txtCode.Text);
+                            string hint = st == ScriptType.ProgrammableBlock
+                                ? "Could not detect a Main() entry point in this PB script.\n\n"
+                                  + "Enter the call expression manually, e.g.:\n"
+                                  + "  Main(\"\", UpdateType.None)"
+                                : st == ScriptType.ModSurface
+                                ? "Could not detect a render method with an IMyTextSurface parameter.\n\n"
+                                  + "Enter the call expression manually, e.g.:\n"
+                                  + "  DrawHUD(surface)"
+                                : "Could not detect a render method with a List<MySprite> parameter.\n\n"
+                                  + "Enter the call expression manually in the 'Execute call' box, e.g.:\n"
+                                  + "  RenderPanel(sprites, 512f, 10f, 1f)";
+                            MessageBox.Show(hint,
                                 "No Method Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
                             return;
                         }
@@ -2546,7 +2567,10 @@ namespace SESpriteLCDLayoutTool
                     }
 
                     executedSprites = execResult.Sprites;
-                    lblExecResult.Text = "✔ " + executedSprites.Count + " sprites";
+                    string typeTag = execResult.ScriptType == ScriptType.ProgrammableBlock ? " [PB]"
+                                   : execResult.ScriptType == ScriptType.ModSurface        ? " [Mod]"
+                                   : "";
+                    lblExecResult.Text = "✔ " + executedSprites.Count + " sprites" + typeTag;
                     lblExecResult.ForeColor = Color.FromArgb(80, 220, 100);
                 };
 

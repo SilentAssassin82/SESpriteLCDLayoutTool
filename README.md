@@ -54,19 +54,33 @@ Design your screens with drag & drop, preview real in-game textures, then export
 
 ### 🔧 Built-in Code Compiler & Executor
 - **Compile and run SE LCD scripts directly inside the tool** — no need for Space Engineers, a Programmable Block, or any external build step
+- **Three script types auto-detected and supported:**
+  - **LCD Helper** — standalone render methods with `List<MySprite>` first parameter (e.g. `RenderPanel(sprites, 512f, 10f, 1f)`)
+  - **Programmable Block (PB)** — full PB scripts extending `MyGridProgram` with `Main()` entry point. Paste your entire PB script and the tool detects `Main(string, UpdateType)`, wires up functional stubs for `Me`, `Runtime`, `GridTerminalSystem`, runs the constructor body, calls `Main()`, and captures every sprite drawn via `frame.Add()` — no modifications to your code needed
+  - **Mod / Plugin** — scripts with methods that accept `IMyTextSurface`. The tool creates a functional stub surface, passes it to your render method, and captures sprites drawn through `DrawFrame().Add()`
+- The result label shows **`[PB]`** or **`[Mod]`** tags so you always know which script type was detected
 - Uses the **Roslyn C# compiler** (`csc.exe`) from your local Visual Studio installation (auto-detected via `vswhere.exe`)
 - Compiles with `/langversion:7.3` and `/optimize+`, targeting the standard .NET Framework assemblies
-- **Lightweight Space Engineers type stubs** are compiled alongside your code — `MySprite`, `Vector2`, `Color`, `SpriteType`, `TextAlignment`, `MySpriteDrawFrame`, `IMyTextSurface`, `IMyGridTerminalSystem`, `IMyProgrammableBlock`, and more — so scripts that `using VRageMath`, `using VRage.Game.GUI.TextPanel`, or `using Sandbox.ModAPI.Ingame` compile without modification
-- **Automatic method detection** — the tool scans your code for methods whose first parameter is `List<MySprite>` and builds a call expression with sensible defaults (e.g. `RenderPanel(sprites, 512f, 10f, 1f)`)
-  - All detected methods are listed; select any one to execute
-  - You can also type a custom call expression manually
+- **Comprehensive Space Engineers type stubs** compiled alongside your code:
+  - Core types: `MySprite`, `Vector2`, `Color`, `SpriteType`, `TextAlignment`, `MySpriteDrawFrame`, `ContentType`
+  - PB infrastructure: `MyGridProgram`, `IMyProgrammableBlock`, `IMyRuntime`, `IMyGridTerminalSystem`, `UpdateType`, `UpdateFrequency`
+  - Surface types: `IMyTextSurface`, `IMyTextSurfaceProvider`, `IMyTerminalBlock`
+  - Functional concrete stubs: `StubTextSurface` (working `DrawFrame()`, `WriteText()`, configurable size), `StubProgrammableBlock` (2 surfaces, `GetSurface()`), `StubRuntime` (with `UpdateFrequency`), `StubGridTerminalSystem` (`GetBlocksOfType<T>()`, `GetBlockWithId()`)
+  - Math helpers: `MathHelper` (Pi, Clamp, Lerp, ToRadians, ToDegrees), extended `Color` constructors (float RGBA, alpha override), additional named colors (Yellow, Cyan, Magenta, Gray, Orange), `Color * float` operator, `MySprite.CreateSprite()`
+  - Scripts using `using VRageMath`, `using VRage.Game.GUI.TextPanel`, or `using Sandbox.ModAPI.Ingame` compile without modification
+- **Sprite capture via `SpriteCollector`** — `MySpriteDrawFrame.Add()` feeds into a global collector so sprites drawn through the SE surface API (not just `List<MySprite>`) are captured and rendered on the canvas
+- **Automatic entry point detection** adapts to the script type:
+  - LCD Helper: scans for methods with `List<MySprite>` first parameter
+  - PB: detects `Main(string, UpdateType)`, `Main(string)`, or `Main()` and suggests `Main("", UpdateType.None)`
+  - Mod: detects methods with `IMyTextSurface` parameter and suggests e.g. `DrawHUD(surface)`
+  - All detected entry points are listed; select any one to execute, or type a custom call expression
+- **PB constructor support** — the tool extracts the body of your `Program()` constructor and runs it before `Main()`, so `Runtime.UpdateFrequency` assignments and field initialisation work correctly
 - **5-second timeout guard** — execution runs on a background thread with a hard timeout to catch infinite loops
-- **Compilation errors** are reported with clear messages (temp file paths stripped for readability)
-- **SE Programmable Block compatibility** — if your code is wrapped in a class (inheriting `MyGridProgram` etc.), the tool strips the class wrapper and constructors, injects PB-inherited members (`Runtime`, `Me`, `GridTerminalSystem`, `Storage`), and stubs out `Echo()` / `SaveCustomData()` so your PB scripts compile as-is
+- **Compilation errors** are reported with clear, script-type-aware messages (temp file paths stripped for readability)
 - **Use from the Paste Layout Code dialog** — accessible via **Edit → Paste Layout Code…**:
-  1. Paste your SE rendering code into the top editor
+  1. Paste your SE rendering code into the top editor (PB script, mod code, or standalone helpers)
   2. Click **▶ Execute Code** (or double-click a detected method in the list)
-  3. The tool compiles, runs, and shows the resulting sprite count (e.g. "✔ 42 sprites")
+  3. The tool compiles, runs, and shows the resulting sprite count with script type (e.g. "✔ 42 sprites [PB]")
   4. Click **Import** to bring the executed sprites onto the canvas — or combine with a runtime snapshot for merged positions
 - **Call isolation mode** — when you have a layout with multiple rendering methods, execute a single call to isolate only its sprites on the canvas (dimming the rest), then click "Show All" to restore the full frame
 - **Auto re-execution after expression edits** — when you edit a color, vector, float, or string literal in the SOURCE VALUES panel, the tool automatically re-compiles and re-executes your patched source code to refresh the canvas in real time
@@ -583,6 +597,25 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v1.4.0
+- **Full Programmable Block script execution** — paste an entire PB script (extending `MyGridProgram`) and execute it directly. The tool auto-detects `Main(string, UpdateType)` / `Main(string)` / `Main()`, wires up functional stubs for `Me`, `Runtime`, `GridTerminalSystem`, runs the `Program()` constructor body, calls `Main()`, and captures every sprite drawn via `MySpriteDrawFrame.Add()`
+- **Mod / plugin script execution** — methods that accept `IMyTextSurface` are now detected and executable. The tool creates a functional `StubTextSurface` (512×512, configurable), passes it to your render method, and captures all sprites drawn through `DrawFrame().Add()`
+- **Script type auto-detection** — `DetectScriptType()` classifies pasted code as `LcdHelper`, `ProgrammableBlock`, or `ModSurface` using regex pattern matching:
+  - PB: `class ... : MyGridProgram` or `void Main(string...)`
+  - Mod: methods with `IMyTextSurface` parameter
+  - LCD Helper: methods with `List<MySprite>` first parameter (original behavior, unchanged)
+- **Sprite capture via `SpriteCollector`** — `MySpriteDrawFrame.Add()` now feeds into a thread-static global collector instead of being a no-op, so sprites drawn through the SE surface API are captured for canvas rendering
+- **Functional concrete stubs** replace the previous null/interface-only stubs:
+  - `StubTextSurface` — implements `IMyTextSurface` with working `DrawFrame()`, `WriteText()` / `ReadText()`, configurable `SurfaceSize` / `TextureSize`
+  - `StubProgrammableBlock` — 2 surfaces, working `GetSurface()`, default `CustomName` / `CustomData`
+  - `StubRuntime` — `UpdateFrequency` read/write, `TimeSinceLastRun` / `MaxInstructionCount` defaults
+  - `StubGridTerminalSystem` — working `GetBlocksOfType<T>()` with filter support, `GetBlockWithId()`, block registration
+  - `StubTerminalBlock` — base class with `IMyTextSurfaceProvider`, configurable surface count
+- **Extended math/color stubs** — `MathHelper` (Pi, Clamp, Lerp, ToRadians, ToDegrees), `Color(float,float,float)` and `Color(Color,float)` constructors, `Color * float` operator, additional named colors (Yellow, Cyan, Magenta, Gray, Orange), `MySprite.CreateSprite()` factory
+- **PB constructor extraction** — `ExtractConstructorBody()` captures the body of the `Program()` constructor and inlines it into the execution harness before `Main()`, so `Runtime.UpdateFrequency` assignments and field initialization work correctly
+- **Script-type-aware UI** — result labels show `[PB]` or `[Mod]` tags; error messages provide context-appropriate hints (e.g. "try `Main(\"\", UpdateType.None)`" for PB scripts, "try `DrawHUD(surface)`" for mod scripts)
+- **`MyGridProgram` base class** — `LcdRunner` now extends `MyGridProgram` for PB scripts, so inherited members (`Runtime`, `Me`, `Echo()`, etc.) resolve naturally without field injection
 
 ### v1.3.5
 - **Expression literal extraction & editing** — the SOURCE VALUES panel now extracts and offers inline editing for all literal types found near each sprite's source definition, not just colors:
