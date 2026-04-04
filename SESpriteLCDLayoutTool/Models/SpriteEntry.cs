@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Xml.Serialization;
 
@@ -6,6 +7,89 @@ namespace SESpriteLCDLayoutTool.Models
 {
     public enum SpriteEntryType { Texture, Text }
     public enum SpriteTextAlignment { Left, Center, Right }
+
+    /// <summary>
+    /// Represents a single Color literal found in the source code surrounding a sprite definition.
+    /// Used to display editable swatches for expression colors (e.g. ternary branches).
+    /// </summary>
+    public class ExpressionColor
+    {
+        public int R { get; set; }
+        public int G { get; set; }
+        public int B { get; set; }
+        public int A { get; set; } = 255;
+
+        /// <summary>Character offset in OriginalSourceCode where this Color literal starts.</summary>
+        public int SourceOffset { get; set; }
+
+        /// <summary>Length of the Color literal text in OriginalSourceCode.</summary>
+        public int SourceLength { get; set; }
+
+        /// <summary>The original literal text (e.g. "new Color(0, 200, 255)" or "Color.White").</summary>
+        public string LiteralText { get; set; }
+
+        /// <summary>Convenience property for UI display.</summary>
+        public Color Color => Color.FromArgb(A, R, G, B);
+    }
+
+    /// <summary>Discriminator for expression literal types.</summary>
+    public enum ValueKind { Color, Vector2, Float, String }
+
+    /// <summary>
+    /// Base class for any source-code literal found near a sprite definition.
+    /// Carries the source offset/length for offset-targeted patching.
+    /// </summary>
+    public abstract class ExpressionLiteral
+    {
+        /// <summary>What kind of literal this is.</summary>
+        public abstract ValueKind Kind { get; }
+
+        /// <summary>Character offset in OriginalSourceCode where this literal starts.</summary>
+        public int SourceOffset { get; set; }
+
+        /// <summary>Length of the literal text in OriginalSourceCode.</summary>
+        public int SourceLength { get; set; }
+
+        /// <summary>The original literal text as it appears in the source.</summary>
+        public string LiteralText { get; set; }
+    }
+
+    /// <summary>
+    /// Represents a <c>new Vector2(X, Y)</c> literal found in source code.
+    /// </summary>
+    public class ExpressionVector2 : ExpressionLiteral
+    {
+        public override ValueKind Kind => ValueKind.Vector2;
+        public float X { get; set; }
+        public float Y { get; set; }
+
+        /// <summary>Optional property context (e.g. "Position", "Size") if the literal is an assignment.</summary>
+        public string PropertyContext { get; set; }
+    }
+
+    /// <summary>
+    /// Represents a float literal (e.g. <c>0.8f</c>, <c>1.2f</c>) found in source code.
+    /// </summary>
+    public class ExpressionFloat : ExpressionLiteral
+    {
+        public override ValueKind Kind => ValueKind.Float;
+        public float Value { get; set; }
+
+        /// <summary>Optional property context (e.g. "RotationOrScale") if the literal is an assignment.</summary>
+        public string PropertyContext { get; set; }
+    }
+
+    /// <summary>
+    /// Represents a quoted string literal (e.g. <c>"SquareSimple"</c>) found in source code.
+    /// </summary>
+    public class ExpressionString : ExpressionLiteral
+    {
+        public override ValueKind Kind => ValueKind.String;
+        public string Value { get; set; }
+
+        /// <summary>Optional property context (e.g. "Data", "FontId") if the literal is an assignment.</summary>
+        public string PropertyContext { get; set; }
+    }
 
     [Serializable]
     public class SpriteEntry
@@ -57,6 +141,30 @@ namespace SESpriteLCDLayoutTool.Models
 
         /// <summary>Snapshot of property values at import time, used for diffing in per-sprite round-trip.</summary>
         [XmlIgnore] public SpriteEntry ImportBaseline { get; set; }
+
+        /// <summary>When true, this sprite is temporarily hidden from the canvas and hit-testing.</summary>
+        [XmlIgnore] public bool IsHidden { get; set; }
+
+        /// <summary>
+        /// All Color literals found in the source context surrounding this sprite's definition.
+        /// Populated when the sprite has source tracking (SourceStart/SourceEnd &gt;= 0).
+        /// </summary>
+        [XmlIgnore] public List<ExpressionColor> ExpressionColors { get; set; }
+
+        /// <summary>
+        /// All Vector2 literals found in the source context surrounding this sprite's definition.
+        /// </summary>
+        [XmlIgnore] public List<ExpressionVector2> ExpressionVectors { get; set; }
+
+        /// <summary>
+        /// All float literals found in the source context surrounding this sprite's definition.
+        /// </summary>
+        [XmlIgnore] public List<ExpressionFloat> ExpressionFloats { get; set; }
+
+        /// <summary>
+        /// All string literals found in the source context surrounding this sprite's definition.
+        /// </summary>
+        [XmlIgnore] public List<ExpressionString> ExpressionStrings { get; set; }
 
         [XmlIgnore]
         public Color Color

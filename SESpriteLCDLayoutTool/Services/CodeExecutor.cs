@@ -41,7 +41,18 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public static string DetectCallExpression(string userCode)
         {
-            if (string.IsNullOrWhiteSpace(userCode)) return null;
+            var all = DetectAllCallExpressions(userCode);
+            return all.Count > 0 ? all[0] : null;
+        }
+
+        /// <summary>
+        /// Scans <paramref name="userCode"/> for ALL methods whose first parameter
+        /// is <c>List&lt;MySprite&gt;</c> and returns suggested call expressions.
+        /// </summary>
+        public static List<string> DetectAllCallExpressions(string userCode)
+        {
+            var results = new List<string>();
+            if (string.IsNullOrWhiteSpace(userCode)) return results;
 
             // Find void MethodName(List<MySprite> anyName, optional params…)
             var pattern = new Regex(
@@ -53,9 +64,9 @@ namespace SESpriteLCDLayoutTool.Services
                 string methodName = m.Groups[1].Value;
                 string restParams = m.Groups[2].Value.Trim();
                 string call = BuildCallExpression(methodName, restParams);
-                if (call != null) return call;
+                if (call != null) results.Add(call);
             }
-            return null;
+            return results;
         }
 
         /// <summary>

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -108,6 +109,12 @@ namespace SESpriteLCDLayoutTool.Controls
             get => _textureCache;
             set { _textureCache = value; Invalidate(); }
         }
+
+        /// <summary>
+        /// When non-null, sprites NOT in this set are drawn at reduced opacity
+        /// so the user can focus on a specific call's output.
+        /// </summary>
+        public HashSet<SpriteEntry> HighlightedSprites { get; set; }
 
         // ── Constructor ───────────────────────────────────────────────────────────
         public LcdCanvas()
@@ -240,7 +247,10 @@ namespace SESpriteLCDLayoutTool.Controls
 
             // Sprites — bottom layer first
             foreach (var sprite in _layout.Sprites)
+            {
+                if (sprite.IsHidden) continue;
                 DrawSprite(g, sprite, sprite == _selectedSprite, scale, origin);
+            }
 
             // Surface size label + zoom
             string zoomLabel = _zoom >= 0.995f && _zoom <= 1.005f ? "" : $"  Zoom: {_zoom:P0}";
@@ -253,6 +263,45 @@ namespace SESpriteLCDLayoutTool.Controls
         private void DrawSprite(Graphics g, SpriteEntry sprite, bool selected, float scale, PointF origin)
         {
             var rect = GetSpriteScreenRect(sprite, scale, origin);
+
+            // When isolating a call, dim sprites not in the highlighted set
+            bool dimmed = HighlightedSprites != null && !HighlightedSprites.Contains(sprite);
+            if (dimmed)
+            {
+                // Draw at ~25% opacity by wrapping in a temporary container
+                var state = g.Save();
+                var cm = new ColorMatrix { Matrix33 = 0.2f };
+                // We can't apply ColorMatrix to vector drawing easily,
+                // so we render into a bitmap and draw that at reduced alpha.
+                int bw = Math.Max(1, (int)Math.Ceiling(rect.Width + 2));
+                int bh = Math.Max(1, (int)Math.Ceiling(rect.Height + 2));
+                // Clamp to avoid huge off-screen allocations
+                if (bw > 2048) bw = 2048;
+                if (bh > 2048) bh = 2048;
+                using (var bmp = new Bitmap(bw, bh))
+                using (var bg = Graphics.FromImage(bmp))
+                {
+                    bg.SmoothingMode = SmoothingMode.AntiAlias;
+                    bg.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                    // Offset so sprite draws at (0,0) within the bitmap
+                    var offsetRect = new RectangleF(0, 0, rect.Width, rect.Height);
+                    if (sprite.Type == SpriteEntryType.Text)
+                        DrawTextSprite(bg, sprite, offsetRect, scale);
+                    else
+                        DrawTextureSprite(bg, sprite, offsetRect);
+
+                    using (var ia = new ImageAttributes())
+                    {
+                        ia.SetColorMatrix(cm);
+                        g.DrawImage(bmp,
+                            new[] { new PointF(rect.Left, rect.Top), new PointF(rect.Right, rect.Top), new PointF(rect.Left, rect.Bottom) },
+                            new RectangleF(0, 0, bw, bh),
+                            GraphicsUnit.Pixel, ia);
+                    }
+                }
+                g.Restore(state);
+                return; // no selection handles or REF label for dimmed sprites
+            }
 
             if (sprite.Type == SpriteEntryType.Text)
                 DrawTextSprite(g, sprite, rect, scale);
@@ -614,7 +663,7 @@ namespace SESpriteLCDLayoutTool.Controls
             var pt = new PointF(e.X, e.Y);
 
             // Check resize handles on the currently selected sprite first
-            if (_selectedSprite != null)
+            if (_selectedSprite != null && !_selectedSprite.IsHidden)
             {
                 var selRect = GetSpriteScreenRect(_selectedSprite, scale, origin);
                 var mode = HitTestHandle(pt, selRect);
@@ -625,6 +674,7 @@ namespace SESpriteLCDLayoutTool.Controls
             // Hit-test all sprites in reverse (top-layer first)
             for (int i = _layout.Sprites.Count - 1; i >= 0; i--)
             {
+                if (_layout.Sprites[i].IsHidden) continue;
                 var rect = GetSpriteScreenRect(_layout.Sprites[i], scale, origin);
                 if (rect.Contains(pt))
                 {

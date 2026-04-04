@@ -43,6 +43,13 @@ Design your screens with drag & drop, preview real in-game textures, then export
   - **Plugin / Torch** — `Sandbox.ModAPI` with `IMyTextSurfaceProvider` hints
 - Smart **code parser** supporting many C# styles (object initializers, constructors, factory methods, assignments, fully-qualified enums)
 - **Code round-trip** — paste your existing source code, edit visually, and get your original code back with only the changed properties patched in (colors, textures, fonts). Works with both static layouts and dynamic code (loops, switch/case, expressions)
+- **Expression literal editing** — the SOURCE VALUES panel extracts all literal values (Color, Vector2, float, string) from the source context surrounding each sprite and offers type-specific inline editing:
+  - **Color** swatches for `new Color(R,G,B)`, `Color.White`, etc.
+  - **Vector2** coordinate displays for `new Vector2(X, Y)` with property context (Position, Size)
+  - **Float** numeric fields for `RotationOrScale = 0.8f` and similar assignments
+  - **String** text fields for `Data = "SquareSimple"`, `FontId = "White"`, etc.
+  - All edits are offset-targeted — the patcher replaces only the exact literal in your original source, preserving all surrounding expressions, ternaries, and control flow
+  - Unified offset management keeps all tracked literal positions consistent across multi-edit sessions
 - One-click **Copy to clipboard**
 
 ### 📸 LCD Snapshot Capture & Live Streaming
@@ -545,6 +552,20 @@ MIT License
 
 ## 📝 Changelog
 
+### v1.3.5
+- **Expression literal extraction & editing** — the SOURCE VALUES panel now extracts and offers inline editing for all literal types found near each sprite's source definition, not just colors:
+  - **Vector2 literals** — `new Vector2(X, Y)` with automatic property context detection (Position, Size, or standalone variable)
+  - **Float literals** — assignment-context floats like `RotationOrScale = 0.8f` (requires `f` suffix and `=` to reduce false positives)
+  - **String literals** — quoted strings in assignments like `Data = "SquareSimple"` with full C# unescape support including `\uXXXX`
+- **Offset-targeted patchers** — `PatchVector2AtOffset`, `PatchFloatAtOffset`, `PatchStringAtOffset` follow the same verified-offset pattern as `PatchColorAtOffset`:
+  - Verify the literal text at the stored offset still matches before patching
+  - Return `null` on mismatch (stale offset) so the UI can handle gracefully
+- **Unified offset management** — new `ShiftExpressionOffsets` helper shifts source offsets for all expression literal types (Color, Vector2, float, string) across all sprites in a single call, replacing the inline per-type loop
+  - Also shifts `SourceStart`/`SourceEnd` for sprites after the patch point
+  - Accepts an `excludeLiteral` parameter to skip the just-patched literal
+- **Expression model hierarchy** — new `ExpressionLiteral` abstract base class with `ValueKind` discriminator (`Color`, `Vector2`, `Float`, `String`) and typed subclasses: `ExpressionVector2`, `ExpressionFloat`, `ExpressionString`
+  - `SpriteEntry` gains `ExpressionVectors`, `ExpressionFloats`, `ExpressionStrings` list properties (alongside existing `ExpressionColors`)
+
 ### v1.3.4
 - **Live streaming visual fix** — canvas now shows the full runtime sprite list (correct visual) at all times during streaming, regardless of whether source code is imported
   - Previously the merge-in-place approach showed only the ~27 code-pattern sprites instead of all ~165 runtime sprites, producing incorrect/incomplete visuals
@@ -595,8 +616,14 @@ MIT License
 - **Code Round-Trip** — Paste your full source code, edit sprites visually, and get your original code back with only changed values patched in
   - **Region-based round-trip** for static layouts with literal positions — splices the updated sprite block back into your original code
   - **Per-sprite dynamic round-trip** for code with loops, `switch`/`case`, computed positions — surgically patches individual color, texture, and font string literals while preserving all expressions and control flow
+  - **Expression literal extraction** — scans the 600-char context window around each sprite for all literal values:
+    - `new Color(R,G,B[,A])` and named colors (`Color.White`, `Color.Red`, etc.)
+    - `new Vector2(X, Y)` with property context detection (Position, Size, etc.)
+    - Float assignments like `RotationOrScale = 0.8f` (with `f` suffix, in assignment context only)
+    - Quoted string literals like `Data = "SquareSimple"` with full C# unescape support (`\\`, `\"`, `\uXXXX`)
+  - **Offset-targeted patching** — `PatchColorAtOffset`, `PatchVector2AtOffset`, `PatchFloatAtOffset`, `PatchStringAtOffset` replace a single literal at a known character offset, verified against stored literal text before replacement
+  - **Unified offset management** — `ShiftExpressionOffsets` adjusts all tracked literal positions (across all sprites and all types) after any patch changes source length
   - Tracks source ranges and baseline values per sprite during import
-  - Handles `new Color(R,G,B)`, `Color.White`, and quoted string literals
   - Context detection labels sprites from surrounding `case` statements for easy identification
 - **Layer List Context Menu** — Right-click the layer list (bottom-right) for Move Up, Move Down, Duplicate, and Delete
 - **Sprite Catalog Replace** — Right-click a sprite in the catalog (left panel) to replace the currently selected sprite's texture or glyph, keeping position, size, color, and all other properties

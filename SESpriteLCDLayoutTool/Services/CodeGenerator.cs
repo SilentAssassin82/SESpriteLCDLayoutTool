@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
 using SESpriteLCDLayoutTool.Models;
@@ -562,6 +563,29 @@ namespace SESpriteLCDLayoutTool.Services
                     patched = PatchColorLiteral(patched, bl, sp);
                 }
 
+                // Patch position (literal Vector2)
+                if (Math.Abs(bl.X - sp.X) > 0.05f || Math.Abs(bl.Y - sp.Y) > 0.05f)
+                {
+                    patched = PatchVector2Literal(patched, "Position", sp.X, sp.Y);
+                }
+
+                // Patch size (literal Vector2, texture sprites only)
+                if (sp.Type == SpriteEntryType.Texture &&
+                    (Math.Abs(bl.Width - sp.Width) > 0.05f || Math.Abs(bl.Height - sp.Height) > 0.05f))
+                {
+                    patched = PatchVector2Literal(patched, "Size", sp.Width, sp.Height);
+                }
+
+                // Patch rotation/scale (literal float)
+                if (sp.Type == SpriteEntryType.Texture && Math.Abs(bl.Rotation - sp.Rotation) > 0.0005f)
+                {
+                    patched = PatchFloatLiteral(patched, "RotationOrScale", sp.Rotation, 4);
+                }
+                else if (sp.Type == SpriteEntryType.Text && Math.Abs(bl.Scale - sp.Scale) > 0.005f)
+                {
+                    patched = PatchFloatLiteral(patched, "RotationOrScale", sp.Scale, 2);
+                }
+
                 // Only substitute if something actually changed
                 if (patched != chunk)
                 {
@@ -630,6 +654,39 @@ namespace SESpriteLCDLayoutTool.Services
             if (bl.ColorR == 0 && bl.ColorG == 0 && bl.ColorB == 0 && bl.ColorA == 0)
                 return "Color.Transparent";
             return null;
+        }
+
+        /// <summary>
+        /// Patches a literal Vector2 assignment (e.g. Position = new Vector2(100.0f, 200.0f))
+        /// in a source chunk.  Only replaces when both components are literal numbers.
+        /// </summary>
+        private static string PatchVector2Literal(string text, string propName, float newX, float newY)
+        {
+            var pattern = new Regex(
+                @"(" + Regex.Escape(propName) + @"\s*=\s*new\s+Vector2\s*\(\s*)" +
+                @"-?[\d.]+f?\s*,\s*-?[\d.]+f?" +
+                @"(\s*\))");
+
+            if (!pattern.IsMatch(text)) return text;
+            return pattern.Replace(text, m =>
+                m.Groups[1].Value + $"{newX:F1}f, {newY:F1}f" + m.Groups[2].Value, 1);
+        }
+
+        /// <summary>
+        /// Patches a literal float assignment (e.g. RotationOrScale = 0.5000f)
+        /// in a source chunk.  Only replaces when the value is a literal number.
+        /// </summary>
+        private static string PatchFloatLiteral(string text, string propName, float newValue, int decimals)
+        {
+            var pattern = new Regex(
+                @"(" + Regex.Escape(propName) + @"\s*=\s*)" +
+                @"-?[\d.]+f" +
+                @"(\s*[,;])");
+
+            if (!pattern.IsMatch(text)) return text;
+            string formatted = newValue.ToString($"F{decimals}") + "f";
+            return pattern.Replace(text, m =>
+                m.Groups[1].Value + formatted + m.Groups[2].Value, 1);
         }
 
         /// <summary>
@@ -866,6 +923,420 @@ namespace SESpriteLCDLayoutTool.Services
             // Consume trailing newline
             if (pos < code.Length && code[pos] == '\n') pos++;
             return pos;
+        }
+
+        // ── Expression color extraction ──────────────────────────────────────
+
+        /// <summary>
+        /// Scans the source code around a sprite's definition for all Color literals.
+        /// Looks backwards up to 600 chars from SourceStart (to catch variable declarations
+        /// like <c>var tColor = flash ? new Color(0,200,255) : new Color(0,150,210);</c>)
+        /// and within the sprite definition itself.
+        /// Returns an empty list if no literals are found.
+        /// </summary>
+        public static List<ExpressionColor> ExtractColorLiterals(string sourceCode, int sourceStart, int sourceEnd)
+        {
+            var results = new List<ExpressionColor>();
+            if (string.IsNullOrEmpty(sourceCode) || sourceStart < 0 || sourceEnd < 0) return results;
+
+            // Scan window: up to 600 chars before the sprite definition to capture
+            // variable declarations with Color expressions, plus the definition itself.
+            int scanStart = Math.Max(0, sourceStart - 600);
+            int scanEnd = Math.Min(sourceCode.Length, sourceEnd);
+            if (scanEnd <= scanStart) return results;
+
+            string window = sourceCode.Substring(scanStart, scanEnd - scanStart);
+
+            // Match: new Color(R, G, B) and new Color(R, G, B, A) where R/G/B/A are integer literals
+            var colorCtorPattern = new Regex(
+                @"new\s+Color\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*(\d+))?\s*\)");
+
+            foreach (Match m in colorCtorPattern.Matches(window))
+            {
+                int r = int.Parse(m.Groups[1].Value);
+                int g = int.Parse(m.Groups[2].Value);
+                int b = int.Parse(m.Groups[3].Value);
+                int a = m.Groups[4].Success ? int.Parse(m.Groups[4].Value) : 255;
+
+                results.Add(new ExpressionColor
+                {
+                    R = r, G = g, B = b, A = a,
+                    SourceOffset = scanStart + m.Index,
+                    SourceLength = m.Length,
+                    LiteralText = m.Value,
+                });
+            }
+
+            // Match named colors: Color.White, Color.Black, Color.Red, etc.
+            var namedColorPattern = new Regex(@"Color\.(White|Black|Red|Green|Blue|Yellow|Transparent|Cyan|Magenta|Orange|Gray|LightGray|DarkGray)(?!\w)");
+            foreach (Match m in namedColorPattern.Matches(window))
+            {
+                // Skip if this overlaps with a "new Color(" match (unlikely but safe)
+                int absOffset = scanStart + m.Index;
+                bool overlaps = false;
+                foreach (var ec in results)
+                    if (absOffset >= ec.SourceOffset && absOffset < ec.SourceOffset + ec.SourceLength)
+                    { overlaps = true; break; }
+                if (overlaps) continue;
+
+                var rgba = ResolveNamedColor(m.Groups[1].Value);
+                if (rgba == null) continue;
+
+                results.Add(new ExpressionColor
+                {
+                    R = rgba[0], G = rgba[1], B = rgba[2], A = rgba[3],
+                    SourceOffset = absOffset,
+                    SourceLength = m.Length,
+                    LiteralText = m.Value,
+                });
+            }
+
+            // Sort by source offset for consistent display order
+            results.Sort((a, b) => a.SourceOffset.CompareTo(b.SourceOffset));
+            return results;
+        }
+
+        /// <summary>Resolves a named color string to RGBA values.</summary>
+        private static int[] ResolveNamedColor(string name)
+        {
+            switch (name)
+            {
+                case "White":       return new[] { 255, 255, 255, 255 };
+                case "Black":       return new[] { 0, 0, 0, 255 };
+                case "Red":         return new[] { 255, 0, 0, 255 };
+                case "Green":       return new[] { 0, 128, 0, 255 };
+                case "Blue":        return new[] { 0, 0, 255, 255 };
+                case "Yellow":      return new[] { 255, 255, 0, 255 };
+                case "Transparent": return new[] { 0, 0, 0, 0 };
+                case "Cyan":        return new[] { 0, 255, 255, 255 };
+                case "Magenta":     return new[] { 255, 0, 255, 255 };
+                case "Orange":      return new[] { 255, 165, 0, 255 };
+                case "Gray":        return new[] { 128, 128, 128, 255 };
+                case "LightGray":   return new[] { 211, 211, 211, 255 };
+                case "DarkGray":    return new[] { 169, 169, 169, 255 };
+                default: return null;
+            }
+        }
+
+        /// <summary>
+        /// Patches a specific Color literal in OriginalSourceCode at a known offset.
+        /// Returns the updated source code, or null if the offset is out of range.
+        /// </summary>
+        public static string PatchColorAtOffset(string sourceCode, ExpressionColor expr, int newR, int newG, int newB, int newA)
+        {
+            if (sourceCode == null || expr == null) return null;
+            if (expr.SourceOffset < 0 || expr.SourceOffset + expr.SourceLength > sourceCode.Length) return null;
+
+            // Verify the literal text still matches at the expected offset
+            string actual = sourceCode.Substring(expr.SourceOffset, expr.SourceLength);
+            if (actual != expr.LiteralText) return null;
+
+            string replacement = newA != 255
+                ? $"new Color({newR}, {newG}, {newB}, {newA})"
+                : $"new Color({newR}, {newG}, {newB})";
+
+            return sourceCode.Substring(0, expr.SourceOffset)
+                 + replacement
+                 + sourceCode.Substring(expr.SourceOffset + expr.SourceLength);
+        }
+
+        // ── Expression Vector2 extraction ────────────────────────────────────
+
+        /// <summary>
+        /// Scans the source code around a sprite's definition for all <c>new Vector2(X, Y)</c> literals.
+        /// Looks backwards up to 600 chars from SourceStart and within the definition itself.
+        /// </summary>
+        public static List<ExpressionVector2> ExtractVector2Literals(string sourceCode, int sourceStart, int sourceEnd)
+        {
+            var results = new List<ExpressionVector2>();
+            if (string.IsNullOrEmpty(sourceCode) || sourceStart < 0 || sourceEnd < 0) return results;
+
+            int scanStart = Math.Max(0, sourceStart - 600);
+            int scanEnd = Math.Min(sourceCode.Length, sourceEnd);
+            if (scanEnd <= scanStart) return results;
+
+            string window = sourceCode.Substring(scanStart, scanEnd - scanStart);
+
+            // Match: new Vector2(X, Y) where X and Y are integer or float literals (with optional f suffix)
+            var pattern = new Regex(
+                @"new\s+Vector2\s*\(\s*(-?[\d.]+)f?\s*,\s*(-?[\d.]+)f?\s*\)");
+
+            // Also try to detect property context from "PropertyName = new Vector2(...)"
+            var ctxPattern = new Regex(
+                @"(\w+)\s*=\s*new\s+Vector2\s*\(");
+
+            foreach (Match m in pattern.Matches(window))
+            {
+                if (!float.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float x)) continue;
+                if (!float.TryParse(m.Groups[2].Value, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float y)) continue;
+
+                // Look for property context
+                string propCtx = null;
+                var ctxMatch = ctxPattern.Match(window, Math.Max(0, m.Index - 80), Math.Min(80, m.Index));
+                foreach (Match cm in ctxPattern.Matches(window))
+                {
+                    // The "new Vector2(" in the context match should align with this match
+                    if (cm.Index + cm.Length >= m.Index && cm.Index <= m.Index)
+                    {
+                        propCtx = cm.Groups[1].Value;
+                        break;
+                    }
+                }
+
+                results.Add(new ExpressionVector2
+                {
+                    X = x,
+                    Y = y,
+                    PropertyContext = propCtx,
+                    SourceOffset = scanStart + m.Index,
+                    SourceLength = m.Length,
+                    LiteralText = m.Value,
+                });
+            }
+
+            results.Sort((a, b) => a.SourceOffset.CompareTo(b.SourceOffset));
+            return results;
+        }
+
+        // ── Expression float extraction ──────────────────────────────────────
+
+        /// <summary>
+        /// Scans the source code around a sprite's definition for float literal assignments
+        /// (e.g. <c>RotationOrScale = 0.8f</c>).  Only matches floats that appear as
+        /// property/variable assignments to reduce false positives.
+        /// </summary>
+        public static List<ExpressionFloat> ExtractFloatLiterals(string sourceCode, int sourceStart, int sourceEnd)
+        {
+            var results = new List<ExpressionFloat>();
+            if (string.IsNullOrEmpty(sourceCode) || sourceStart < 0 || sourceEnd < 0) return results;
+
+            int scanStart = Math.Max(0, sourceStart - 600);
+            int scanEnd = Math.Min(sourceCode.Length, sourceEnd);
+            if (scanEnd <= scanStart) return results;
+
+            string window = sourceCode.Substring(scanStart, scanEnd - scanStart);
+
+            // Match: PropertyName = <float>f  (requires trailing 'f' and assignment context)
+            var pattern = new Regex(
+                @"(\w+)\s*=\s*(-?[\d.]+)f\s*[,;\r\n]");
+
+            foreach (Match m in pattern.Matches(window))
+            {
+                string propName = m.Groups[1].Value;
+
+                // Skip assignments that are part of Vector2/Color constructors by checking
+                // if this is inside parens — we only want standalone assignments
+                // Simple heuristic: skip if propName is a type keyword
+                if (propName == "new" || propName == "var" || propName == "int" ||
+                    propName == "float" || propName == "double") continue;
+
+                if (!float.TryParse(m.Groups[2].Value, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float val)) continue;
+
+                // The literal is just the number+f portion
+                string literalText = m.Groups[2].Value + "f";
+                int literalOffset = scanStart + m.Index + m.Value.IndexOf(m.Groups[2].Value);
+
+                results.Add(new ExpressionFloat
+                {
+                    Value = val,
+                    PropertyContext = propName,
+                    SourceOffset = literalOffset,
+                    SourceLength = literalText.Length,
+                    LiteralText = literalText,
+                });
+            }
+
+            results.Sort((a, b) => a.SourceOffset.CompareTo(b.SourceOffset));
+            return results;
+        }
+
+        // ── Expression string extraction ─────────────────────────────────────
+
+        /// <summary>
+        /// Scans the source code around a sprite's definition for quoted string literals
+        /// in property assignments (e.g. <c>Data = "SquareSimple"</c>, <c>FontId = "White"</c>).
+        /// </summary>
+        public static List<ExpressionString> ExtractStringLiterals(string sourceCode, int sourceStart, int sourceEnd)
+        {
+            var results = new List<ExpressionString>();
+            if (string.IsNullOrEmpty(sourceCode) || sourceStart < 0 || sourceEnd < 0) return results;
+
+            int scanStart = Math.Max(0, sourceStart - 600);
+            int scanEnd = Math.Min(sourceCode.Length, sourceEnd);
+            if (scanEnd <= scanStart) return results;
+
+            string window = sourceCode.Substring(scanStart, scanEnd - scanStart);
+
+            // Match: PropertyName = "value"  (standard quoted string literal in assignment)
+            var pattern = new Regex(
+                @"(\w+)\s*=\s*""((?:[^""\\]|\\.)*)""");
+
+            foreach (Match m in pattern.Matches(window))
+            {
+                string propName = m.Groups[1].Value;
+                string rawValue = m.Groups[2].Value;
+
+                // Unescape the string value (basic C# unescaping)
+                string value = rawValue
+                    .Replace("\\\\", "\x01")    // placeholder for backslash
+                    .Replace("\\\"", "\"")
+                    .Replace("\\n", "\n")
+                    .Replace("\\r", "\r")
+                    .Replace("\\t", "\t")
+                    .Replace("\x01", "\\");
+
+                // Also handle \uXXXX escapes
+                value = Regex.Replace(value, @"\\u([0-9A-Fa-f]{4})",
+                    em => ((char)Convert.ToInt32(em.Groups[1].Value, 16)).ToString());
+
+                // The literal includes the quotes
+                string literalText = "\"" + rawValue + "\"";
+                int literalOffset = scanStart + m.Index + m.Value.IndexOf('"');
+
+                results.Add(new ExpressionString
+                {
+                    Value = value,
+                    PropertyContext = propName,
+                    SourceOffset = literalOffset,
+                    SourceLength = literalText.Length,
+                    LiteralText = literalText,
+                });
+            }
+
+            results.Sort((a, b) => a.SourceOffset.CompareTo(b.SourceOffset));
+            return results;
+        }
+
+        // ── Offset-targeted patchers ─────────────────────────────────────────
+
+        /// <summary>
+        /// Patches a specific Vector2 literal in OriginalSourceCode at a known offset.
+        /// Returns the updated source code, or null if the offset is out of range or text doesn't match.
+        /// </summary>
+        public static string PatchVector2AtOffset(string sourceCode, ExpressionVector2 expr, float newX, float newY)
+        {
+            if (sourceCode == null || expr == null) return null;
+            if (expr.SourceOffset < 0 || expr.SourceOffset + expr.SourceLength > sourceCode.Length) return null;
+
+            string actual = sourceCode.Substring(expr.SourceOffset, expr.SourceLength);
+            if (actual != expr.LiteralText) return null;
+
+            string replacement = $"new Vector2({newX:F1}f, {newY:F1}f)";
+
+            return sourceCode.Substring(0, expr.SourceOffset)
+                 + replacement
+                 + sourceCode.Substring(expr.SourceOffset + expr.SourceLength);
+        }
+
+        /// <summary>
+        /// Patches a specific float literal in OriginalSourceCode at a known offset.
+        /// Returns the updated source code, or null if the offset is out of range or text doesn't match.
+        /// </summary>
+        public static string PatchFloatAtOffset(string sourceCode, ExpressionFloat expr, float newValue, int decimals = 4)
+        {
+            if (sourceCode == null || expr == null) return null;
+            if (expr.SourceOffset < 0 || expr.SourceOffset + expr.SourceLength > sourceCode.Length) return null;
+
+            string actual = sourceCode.Substring(expr.SourceOffset, expr.SourceLength);
+            if (actual != expr.LiteralText) return null;
+
+            string replacement = newValue.ToString($"F{decimals}") + "f";
+
+            return sourceCode.Substring(0, expr.SourceOffset)
+                 + replacement
+                 + sourceCode.Substring(expr.SourceOffset + expr.SourceLength);
+        }
+
+        /// <summary>
+        /// Patches a specific string literal in OriginalSourceCode at a known offset.
+        /// Returns the updated source code, or null if the offset is out of range or text doesn't match.
+        /// </summary>
+        public static string PatchStringAtOffset(string sourceCode, ExpressionString expr, string newValue)
+        {
+            if (sourceCode == null || expr == null || newValue == null) return null;
+            if (expr.SourceOffset < 0 || expr.SourceOffset + expr.SourceLength > sourceCode.Length) return null;
+
+            string actual = sourceCode.Substring(expr.SourceOffset, expr.SourceLength);
+            if (actual != expr.LiteralText) return null;
+
+            string replacement = $"\"{Esc(newValue)}\"";
+
+            return sourceCode.Substring(0, expr.SourceOffset)
+                 + replacement
+                 + sourceCode.Substring(expr.SourceOffset + expr.SourceLength);
+        }
+
+        // ── Unified offset management ────────────────────────────────────────
+
+        /// <summary>
+        /// Shifts source offsets for all expression literals across all sprites after a patch
+        /// at <paramref name="patchedOffset"/> that changed source length by <paramref name="delta"/>.
+        /// Also adjusts SourceStart/SourceEnd for sprites after the patch point.
+        /// </summary>
+        /// <param name="sprites">All sprites in the layout.</param>
+        /// <param name="patchedOffset">Character offset where the patch was applied.</param>
+        /// <param name="delta">Change in source length (newLength - oldLength). Can be negative.</param>
+        /// <param name="excludeLiteral">The literal that was patched (skip it during shifting).</param>
+        public static void ShiftExpressionOffsets(
+            IList<SpriteEntry> sprites, int patchedOffset, int delta, ExpressionLiteral excludeLiteral = null)
+        {
+            if (delta == 0 || sprites == null) return;
+
+            foreach (var sprite in sprites)
+            {
+                // Shift color expression offsets
+                if (sprite.ExpressionColors != null)
+                {
+                    foreach (var ec in sprite.ExpressionColors)
+                    {
+                        if (ec.SourceOffset > patchedOffset)
+                            ec.SourceOffset += delta;
+                    }
+                }
+
+                // Shift Vector2 expression offsets
+                if (sprite.ExpressionVectors != null)
+                {
+                    foreach (var ev in sprite.ExpressionVectors)
+                    {
+                        if (ReferenceEquals(ev, excludeLiteral)) continue;
+                        if (ev.SourceOffset > patchedOffset)
+                            ev.SourceOffset += delta;
+                    }
+                }
+
+                // Shift float expression offsets
+                if (sprite.ExpressionFloats != null)
+                {
+                    foreach (var ef in sprite.ExpressionFloats)
+                    {
+                        if (ReferenceEquals(ef, excludeLiteral)) continue;
+                        if (ef.SourceOffset > patchedOffset)
+                            ef.SourceOffset += delta;
+                    }
+                }
+
+                // Shift string expression offsets
+                if (sprite.ExpressionStrings != null)
+                {
+                    foreach (var es in sprite.ExpressionStrings)
+                    {
+                        if (ReferenceEquals(es, excludeLiteral)) continue;
+                        if (es.SourceOffset > patchedOffset)
+                            es.SourceOffset += delta;
+                    }
+                }
+
+                // Shift SourceStart/SourceEnd for sprites after the patch point
+                if (sprite.SourceStart > patchedOffset)
+                {
+                    sprite.SourceStart += delta;
+                    sprite.SourceEnd += delta;
+                }
+            }
         }
 
         private static int FindMatchingBrace(string code, int openPos)

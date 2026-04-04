@@ -30,6 +30,8 @@ namespace SESpriteLCDLayoutTool
         private Panel         _colorPreview;
         private TrackBar      _trackAlpha;
         private Label         _lblAlpha;
+        private FlowLayoutPanel _exprColorPanel;
+        private Label           _exprColorLabel;
         private GroupBox      _grpText;
         private TextBox       _txtText;
         private ComboBox      _cmbFont;
@@ -41,6 +43,7 @@ namespace SESpriteLCDLayoutTool
         private ComboBox    _cmbCodeStyle;
         private TextBox     _execCallBox;
         private Label       _execResultLabel;
+        private ListBox     _lstDetectedCalls;
 
         // ── Split containers (distances set on Load) ──────────────────────────────
         private SplitContainer _mainSplit, _workSplit, _topSplit;
@@ -59,6 +62,8 @@ namespace SESpriteLCDLayoutTool
         private LivePipeListener _pipeListener;
         private ToolStripMenuItem _mnuListenToggle;
         private ToolStripMenuItem _mnuPauseToggle;
+        private ToolStripMenuItem _mnuCaptureSnapshot;
+        private Button _btnCaptureSnapshot;
 
         // ── File-based live stream ───────────────────────────────────────────────
         private LiveFileWatcher _fileWatcher;
@@ -76,6 +81,14 @@ namespace SESpriteLCDLayoutTool
         // patcher can work.  Cleared when streaming stops entirely.
         private List<SpriteEntry> _preLiveCodeSprites;
         private List<SpriteEntry> _lastLiveFrame;
+
+        // ── Isolated call view ────────────────────────────────────────────────
+        // When the user double-clicks a detected call, we execute just that call
+        // and dim all other sprites.  _fullFrameSprites holds the complete set so
+        // "Show All" can restore the full view.
+        private List<SpriteEntry> _fullFrameSprites;
+        private HashSet<SpriteEntry> _isolatedCallSprites;
+        private Button _btnShowAll;
 
         // ─────────────────────────────────────────────────────────────────────────
         public MainForm()
@@ -147,6 +160,7 @@ namespace SESpriteLCDLayoutTool
                 BorderStyle = BorderStyle.None,
             };
             Controls.Add(mainSplit);
+            mainSplit.BringToFront();   // Ensure Fill is laid out after Top/Bottom docked controls
 
             mainSplit.Panel1.Controls.Add(BuildLeftPanel());
 
@@ -218,6 +232,8 @@ namespace SESpriteLCDLayoutTool
             edit.DropDownItems.Add(_mnuListenToggle);
             _mnuPauseToggle = new ToolStripMenuItem("Pause Live Stream", null, (s, e) => ToggleLivePause()) { Enabled = false };
             edit.DropDownItems.Add(_mnuPauseToggle);
+            _mnuCaptureSnapshot = new ToolStripMenuItem("Capture Live Snapshot", null, (s, e) => ApplyLiveSnapshot()) { Enabled = false };
+            edit.DropDownItems.Add(_mnuCaptureSnapshot);
             _mnuFileWatchToggle = new ToolStripMenuItem("Watch Snapshot File…", null, (s, e) => ToggleFileWatching());
             edit.DropDownItems.Add(_mnuFileWatchToggle);
             _mnuClipboardToggle = new ToolStripMenuItem("Watch Clipboard (PB)…", null, (s, e) => ToggleClipboardWatching());
@@ -487,6 +503,23 @@ namespace SESpriteLCDLayoutTool
             alphaRow.Controls.Add(_lblAlpha);
             flow.Controls.Add(alphaRow);
 
+            // ── Expression Colors (source-code color literals) ───────────────────
+            _exprColorLabel = SectionLabel("SOURCE COLORS", 230);
+            _exprColorLabel.Visible = false;
+            flow.Controls.Add(_exprColorLabel);
+            _exprColorPanel = new FlowLayoutPanel
+            {
+                Width         = 230,
+                AutoSize      = true,
+                MinimumSize   = new Size(230, 0),
+                MaximumSize   = new Size(230, 200),
+                BackColor     = Color.Transparent,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents  = true,
+                Visible       = false,
+            };
+            flow.Controls.Add(_exprColorPanel);
+
             // ── Text Properties ───────────────────────────────────────────────────
             _grpText = new GroupBox
             {
@@ -604,6 +637,45 @@ namespace SESpriteLCDLayoutTool
             _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
 
             PushUndo();
+
+            // When source-tracked sprites exist, merge execution results as a
+            // snapshot so round-trip editing and click-to-jump continue to work.
+            if (_layout.OriginalSourceCode != null)
+            {
+                var editable = new List<SpriteEntry>();
+                foreach (var sp in _layout.Sprites)
+                    if (!sp.IsReferenceLayout && sp.SourceStart >= 0 && sp.ImportBaseline != null)
+                        editable.Add(sp);
+
+                if (editable.Count > 0)
+                {
+                    var mergeResult = SnapshotMerger.Merge(editable, result.Sprites, applyColors: true);
+
+                    // Update baselines to lock in executed positions for round-trip code generation
+                    foreach (var sp in editable)
+                    {
+                        if (sp.ImportBaseline != null)
+                            sp.ImportBaseline = sp.CloneValues();
+                    }
+
+                    // Add orphan sprites (loop/expression-generated) as untracked entries
+                    foreach (var orphan in mergeResult.UnmatchedSnapshots)
+                    {
+                        orphan.SourceStart = -1;
+                        orphan.SourceEnd   = -1;
+                        _layout.Sprites.Add(orphan);
+                    }
+
+                    _canvas.SelectedSprite = editable.Count > 0 ? editable[0] : null;
+                    _canvas.Invalidate();
+                    RefreshLayerList();
+                    RefreshCode();
+                    SetStatus($"Executed — {mergeResult.Summary}");
+                    return;
+                }
+            }
+
+            // No source tracking — full replacement
             _layout.Sprites.Clear();
             foreach (var sp in result.Sprites)
                 _layout.Sprites.Add(sp);
@@ -611,6 +683,7 @@ namespace SESpriteLCDLayoutTool
             _canvas.SelectedSprite = result.Sprites.Count > 0 ? result.Sprites[0] : null;
             _canvas.Invalidate();
             RefreshLayerList();
+            RefreshCode();
             SetStatus($"Executed — {result.Sprites.Count} sprite(s) captured.");
         }
 
@@ -664,11 +737,23 @@ namespace SESpriteLCDLayoutTool
             _cmbCodeStyle.SelectedIndex = 0;
             _cmbCodeStyle.SelectedIndexChanged += (s, e) => RefreshCode();
 
+            _btnCaptureSnapshot = DarkButton("📷 Capture Snapshot", Color.FromArgb(140, 90, 0));
+            _btnCaptureSnapshot.Size = new Size(140, 26);
+            _btnCaptureSnapshot.Visible = false;
+            _btnCaptureSnapshot.Click += (s, e) => ApplyLiveSnapshot();
+
+            _btnShowAll = DarkButton("👁 Show All", Color.FromArgb(40, 110, 60));
+            _btnShowAll.Size = new Size(100, 26);
+            _btnShowAll.Visible = false;
+            _btnShowAll.Click += (s, e) => RestoreFullView();
+
             toolbar.Controls.Add(lblCode);
             toolbar.Controls.Add(btnCopy);
             toolbar.Controls.Add(btnRefresh);
             toolbar.Controls.Add(btnResetSource);
             toolbar.Controls.Add(_cmbCodeStyle);
+            toolbar.Controls.Add(_btnCaptureSnapshot);
+            toolbar.Controls.Add(_btnShowAll);
 
             _codeBox = new RichTextBox
             {
@@ -731,6 +816,40 @@ namespace SESpriteLCDLayoutTool
             execBar.Controls.Add(btnExecCode);
             execBar.Controls.Add(lblExecPrefix);
             panel.Controls.Add(execBar);
+
+            // ── Detected calls list (bottom of code panel, above exec bar) ────────
+            var lblDetected = new Label
+            {
+                Text      = "Detected methods (double-click to execute):",
+                Dock      = DockStyle.Bottom,
+                Height    = 18,
+                ForeColor = Color.FromArgb(130, 180, 230),
+                Font      = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                Padding   = new Padding(4, 3, 0, 0),
+            };
+            _lstDetectedCalls = new ListBox
+            {
+                Dock        = DockStyle.Bottom,
+                Height      = 52,
+                BackColor   = Color.FromArgb(22, 26, 38),
+                ForeColor   = Color.FromArgb(160, 220, 255),
+                BorderStyle = BorderStyle.None,
+                Font        = new Font("Consolas", 9f),
+            };
+            _lstDetectedCalls.SelectedIndexChanged += (s, e) =>
+            {
+                if (_lstDetectedCalls.SelectedItem != null)
+                    _execCallBox.Text = _lstDetectedCalls.SelectedItem.ToString();
+            };
+            _lstDetectedCalls.MouseDoubleClick += (s, e) =>
+            {
+                if (_lstDetectedCalls.SelectedItem == null) return;
+                string call = _lstDetectedCalls.SelectedItem.ToString();
+                _execCallBox.Text = call;
+                IsolateCallSprites(call);
+            };
+            panel.Controls.Add(_lstDetectedCalls);
+            panel.Controls.Add(lblDetected);
 
             return panel;
         }
@@ -836,6 +955,11 @@ namespace SESpriteLCDLayoutTool
         {
             _layout       = new LcdLayout();
             _currentFile  = null;
+            _lastLiveFrame = null;
+            _fullFrameSprites = null;
+            _isolatedCallSprites = null;
+            _canvas.HighlightedSprites = null;
+            if (_btnShowAll != null) _btnShowAll.Visible = false;
             _canvas.CanvasLayout = _layout;
             RefreshLayerList();
             RefreshCode();
@@ -981,6 +1105,7 @@ namespace SESpriteLCDLayoutTool
             }
             finally { _updatingProps = false; }
 
+            RefreshExpressionColors();
             RefreshCode();
             UpdateStatus();
         }
@@ -1088,32 +1213,212 @@ namespace SESpriteLCDLayoutTool
             }
         }
 
+        /// <summary>
+        /// Populates the expression color swatch panel for the currently selected sprite.
+        /// Shows all Color literals found in the source context around the sprite's definition.
+        /// </summary>
+        private void RefreshExpressionColors()
+        {
+            _exprColorPanel.Controls.Clear();
+            var sp = _canvas?.SelectedSprite;
+            if (sp == null || _layout?.OriginalSourceCode == null || sp.SourceStart < 0)
+            {
+                _exprColorPanel.Visible = false;
+                _exprColorLabel.Visible = false;
+                return;
+            }
+
+            var colors = CodeGenerator.ExtractColorLiterals(_layout.OriginalSourceCode, sp.SourceStart, sp.SourceEnd);
+            sp.ExpressionColors = colors;
+
+            if (colors == null || colors.Count == 0)
+            {
+                _exprColorPanel.Visible = false;
+                _exprColorLabel.Visible = false;
+                return;
+            }
+
+            foreach (var ec in colors)
+            {
+                var swatch = new Panel
+                {
+                    Width       = 24,
+                    Height      = 24,
+                    BackColor   = ec.Color,
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Cursor      = Cursors.Hand,
+                    Margin      = new Padding(2),
+                    Tag         = ec,
+                };
+                var tip = new ToolTip();
+                tip.SetToolTip(swatch, ec.LiteralText);
+                swatch.Click += OnExpressionColorClick;
+                _exprColorPanel.Controls.Add(swatch);
+            }
+
+            _exprColorPanel.Visible = true;
+            _exprColorLabel.Visible = true;
+        }
+
+        private void OnExpressionColorClick(object sender, EventArgs e)
+        {
+            var swatch = sender as Panel;
+            var ec = swatch?.Tag as ExpressionColor;
+            if (ec == null || _layout?.OriginalSourceCode == null) return;
+
+            using (var dlg = new ColorDialog { Color = ec.Color, FullOpen = true })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                PushUndo();
+
+                string patched = CodeGenerator.PatchColorAtOffset(
+                    _layout.OriginalSourceCode, ec, dlg.Color.R, dlg.Color.G, dlg.Color.B, dlg.Color.A);
+
+                if (patched == null) return;
+
+                // Calculate the offset delta so we can adjust all ExpressionColor offsets
+                int oldLen = ec.SourceLength;
+                string newLiteral = dlg.Color.A != 255
+                    ? $"new Color({dlg.Color.R}, {dlg.Color.G}, {dlg.Color.B}, {dlg.Color.A})"
+                    : $"new Color({dlg.Color.R}, {dlg.Color.G}, {dlg.Color.B})";
+                int delta = newLiteral.Length - oldLen;
+
+                _layout.OriginalSourceCode = patched;
+
+                // Update this expression color entry
+                int patchedOffset = ec.SourceOffset;
+                ec.R = dlg.Color.R;
+                ec.G = dlg.Color.G;
+                ec.B = dlg.Color.B;
+                ec.A = dlg.Color.A;
+                ec.LiteralText = newLiteral;
+                ec.SourceLength = newLiteral.Length;
+
+                // Shift offsets of all expression colors (on all sprites) after the patched position
+                if (delta != 0)
+                {
+                    foreach (var sprite in _layout.Sprites)
+                    {
+                        if (sprite.ExpressionColors == null) continue;
+                        foreach (var other in sprite.ExpressionColors)
+                        {
+                            if (other == ec) continue;
+                            if (other.SourceOffset > patchedOffset)
+                                other.SourceOffset += delta;
+                        }
+                        // Also shift SourceStart/SourceEnd for sprites after the patch
+                        if (sprite.SourceStart > patchedOffset)
+                        {
+                            sprite.SourceStart += delta;
+                            sprite.SourceEnd += delta;
+                        }
+                    }
+                }
+
+                // Update the swatch
+                swatch.BackColor = ec.Color;
+
+                // Re-execute the code to get updated sprite values on the canvas
+                TryReExecuteCode();
+            }
+        }
+
+        /// <summary>
+        /// Re-executes the current OriginalSourceCode to refresh sprite values on the canvas.
+        /// Used after expression color edits.
+        /// </summary>
+        private void TryReExecuteCode()
+        {
+            if (_layout?.OriginalSourceCode == null) return;
+
+            var callExpr = _execCallBox?.Text?.Trim();
+            if (string.IsNullOrEmpty(callExpr)) callExpr = null;
+
+            try
+            {
+                var result = CodeExecutor.Execute(_layout.OriginalSourceCode, callExpr);
+                if (result.Success && result.Sprites.Count > 0)
+                {
+                    // Collect source-tracked sprites for merge
+                    var editable = new List<SpriteEntry>();
+                    foreach (var sp in _layout.Sprites)
+                        if (!sp.IsReferenceLayout && sp.SourceStart >= 0 && sp.ImportBaseline != null)
+                            editable.Add(sp);
+
+                    if (editable.Count > 0)
+                    {
+                        SnapshotMerger.Merge(editable, result.Sprites, applyColors: true);
+
+                        // Update baselines to lock in executed positions
+                        foreach (var sp in editable)
+                        {
+                            if (sp.ImportBaseline != null)
+                                sp.ImportBaseline = sp.CloneValues();
+                        }
+                    }
+
+                    _canvas.Invalidate();
+                    RefreshLayerList();
+                    RefreshCode();
+                    RefreshExpressionColors();
+                }
+            }
+            catch
+            {
+                // Execution failed — just refresh the code display
+                RefreshCode();
+            }
+        }
+
+        /// <summary>
+        /// Maps a layer list index to the actual SpriteEntry, accounting for
+        /// isolation mode where the list only shows highlighted sprites.
+        /// </summary>
+        private SpriteEntry SpriteFromLayerIndex(int listIdx)
+        {
+            if (_layout == null || listIdx < 0) return null;
+            var highlighted = _canvas.HighlightedSprites;
+            if (highlighted == null)
+            {
+                // Normal mode — list index == sprite index
+                return listIdx < _layout.Sprites.Count ? _layout.Sprites[listIdx] : null;
+            }
+            // Isolation mode — count only highlighted sprites
+            int cur = 0;
+            foreach (var sp in _layout.Sprites)
+            {
+                if (!highlighted.Contains(sp)) continue;
+                if (cur == listIdx) return sp;
+                cur++;
+            }
+            return null;
+        }
+
         private void OnLayerListSelectionChanged(object sender, EventArgs e)
         {
             if (_updatingProps || _layout == null) return;
             int idx = _lstLayers.SelectedIndex;
-            if (idx >= 0 && idx < _layout.Sprites.Count)
-                _canvas.SelectedSprite = _layout.Sprites[idx];
+            var sprite = SpriteFromLayerIndex(idx);
+            if (sprite != null)
+                _canvas.SelectedSprite = sprite;
         }
 
         private void OnLayerListDoubleClick(object sender, MouseEventArgs e)
         {
             if (_layout == null || _codeBox.TextLength == 0) return;
             int listIdx = _lstLayers.IndexFromPoint(e.Location);
-            if (listIdx < 0 || listIdx >= _layout.Sprites.Count) return;
+            var sprite = SpriteFromLayerIndex(listIdx);
+            if (sprite == null) return;
 
-            var sprite = _layout.Sprites[listIdx];
+            int spriteIdx = _layout.Sprites.IndexOf(sprite);
             string code = _codeBox.Text;
             int targetPos = -1;
 
             // Count non-ref, source-tracked sprites before this one (for round-trip ordinal)
             int nonRefOrdinal = 0;
-            for (int i = 0; i < listIdx; i++)
+            for (int i = 0; i < spriteIdx; i++)
                 if (!_layout.Sprites[i].IsReferenceLayout && _layout.Sprites[i].SourceStart >= 0)
                     nonRefOrdinal++;
-
-            // Orphan sprites (SourceStart < 0) have no source position to navigate to
-            if (sprite.SourceStart < 0 && !sprite.IsReferenceLayout) return;
 
             // Strategy 1: GenerateRoundTrip comment marker  // [nonRefOrd+1] DisplayName
             if (!sprite.IsReferenceLayout)
@@ -1122,21 +1427,23 @@ namespace SESpriteLCDLayoutTool
                 targetPos = code.IndexOf(marker, StringComparison.Ordinal);
             }
 
-            // Strategy 2: Generate comment marker  // [listIdx+1] DisplayName
+            // Strategy 2: Generate comment marker  // [spriteIdx+1] DisplayName
             if (targetPos < 0)
             {
-                string marker = $"// [{listIdx + 1}] {sprite.DisplayName}";
+                string marker = $"// [{spriteIdx + 1}] {sprite.DisplayName}";
                 targetPos = code.IndexOf(marker, StringComparison.Ordinal);
             }
 
-            // Strategy 3: Nth "new MySprite" occurrence (PatchOriginalSource / no markers)
+            // Strategy 3: Nth "new MySprite" / "MySprite.Create" occurrence (PatchOriginalSource / no markers)
             if (targetPos < 0 && !sprite.IsReferenceLayout && sprite.SourceStart >= 0)
             {
                 int pos = -1;
                 for (int n = 0; n <= nonRefOrdinal; n++)
                 {
-                    pos = code.IndexOf("new MySprite", pos + 1, StringComparison.Ordinal);
-                    if (pos < 0) break;
+                    int a = code.IndexOf("new MySprite", pos + 1, StringComparison.Ordinal);
+                    int b = code.IndexOf("MySprite.Create", pos + 1, StringComparison.Ordinal);
+                    if (a < 0 && b < 0) { pos = -1; break; }
+                    pos = (a >= 0 && b >= 0) ? Math.Min(a, b) : (a >= 0 ? a : b);
                 }
                 if (pos >= 0) targetPos = pos;
             }
@@ -1177,19 +1484,40 @@ namespace SESpriteLCDLayoutTool
             {
                 _lstLayers.Items.Clear();
                 if (_layout == null) return;
+
+                var highlighted = _canvas.HighlightedSprites;
                 foreach (var s in _layout.Sprites)
                 {
-                    string entry = s.IsReferenceLayout ? $"[REF] {s.DisplayName}"
-                        : s.SourceStart < 0 ? $"· {s.DisplayName}"
-                        : s.DisplayName;
-                    _lstLayers.Items.Add(entry);
+                    // During isolation mode, hide dimmed (non-highlighted) sprites from the list
+                    if (highlighted != null && !highlighted.Contains(s))
+                        continue;
+
+                    string prefix = s.IsHidden ? "⊘ "
+                        : s.IsReferenceLayout ? "[REF] "
+                        : s.SourceStart < 0 ? "· "
+                        : "";
+                    _lstLayers.Items.Add(prefix + s.DisplayName);
                 }
 
                 var sel = _canvas.SelectedSprite;
                 if (sel != null)
                 {
                     int idx = _layout.Sprites.IndexOf(sel);
-                    if (idx >= 0) _lstLayers.SelectedIndex = idx;
+                    // During isolation, the layer list index != sprite list index
+                    if (highlighted != null)
+                    {
+                        int listIdx = 0;
+                        foreach (var s in _layout.Sprites)
+                        {
+                            if (!highlighted.Contains(s)) continue;
+                            if (s == sel) { _lstLayers.SelectedIndex = listIdx; break; }
+                            listIdx++;
+                        }
+                    }
+                    else if (idx >= 0)
+                    {
+                        _lstLayers.SelectedIndex = idx;
+                    }
                 }
             }
             finally { _updatingProps = false; }
@@ -1216,7 +1544,7 @@ namespace SESpriteLCDLayoutTool
 
         private void RefreshCode()
         {
-            if (_layout == null) { _codeBox.Text = ""; return; }
+            if (_layout == null) { _codeBox.Text = ""; RefreshDetectedCalls(); return; }
 
             // While any live source is actively streaming, the layout contains
             // runtime-expanded sprites (loops unrolled, expressions resolved)
@@ -1232,6 +1560,7 @@ namespace SESpriteLCDLayoutTool
                 if (patched != null)
                 {
                     _codeBox.Text = patched;
+                    RefreshDetectedCalls();
                     return;
                 }
 
@@ -1240,6 +1569,7 @@ namespace SESpriteLCDLayoutTool
                 if (roundTrip != null)
                 {
                     _codeBox.Text = roundTrip;
+                    RefreshDetectedCalls();
                     return;
                 }
 
@@ -1253,11 +1583,24 @@ namespace SESpriteLCDLayoutTool
                 if (!hasTracking)
                 {
                     _codeBox.Text = _layout.OriginalSourceCode;
+                    RefreshDetectedCalls();
                     return;
                 }
             }
 
             _codeBox.Text = CodeGenerator.Generate(_layout, SelectedCodeStyle);
+            RefreshDetectedCalls();
+        }
+
+        private void RefreshDetectedCalls()
+        {
+            if (_lstDetectedCalls == null) return;
+            var calls = CodeExecutor.DetectAllCallExpressions(_codeBox.Text);
+            _lstDetectedCalls.Items.Clear();
+            foreach (var c in calls)
+                _lstDetectedCalls.Items.Add(c);
+            if (string.IsNullOrWhiteSpace(_execCallBox.Text) && calls.Count > 0)
+                _execCallBox.Text = calls[0];
         }
 
         private void UpdateTitle()
@@ -1282,6 +1625,7 @@ namespace SESpriteLCDLayoutTool
                 _liveUndoPushed = false;
                 RestoreCodeSpritesIfStreamingEnded();
                 RefreshCode();
+                UpdateSnapshotButtonState();
                 SetStatus("Live listening stopped");
                 return;
             }
@@ -1365,6 +1709,7 @@ namespace SESpriteLCDLayoutTool
             // returns false, so RefreshCode will run PatchOriginalSource and show
             // the round-trip patched code based on the frozen live frame.
             RefreshCode();
+            UpdateSnapshotButtonState();
         }
 
         private void ToggleFileWatching()
@@ -1379,6 +1724,7 @@ namespace SESpriteLCDLayoutTool
                 _liveUndoPushed = false;
                 RestoreCodeSpritesIfStreamingEnded();
                 RefreshCode();
+                UpdateSnapshotButtonState();
                 SetStatus("File watching stopped");
                 return;
             }
@@ -1426,6 +1772,7 @@ namespace SESpriteLCDLayoutTool
                 _liveUndoPushed = false;
                 RestoreCodeSpritesIfStreamingEnded();
                 RefreshCode();
+                UpdateSnapshotButtonState();
                 SetStatus("Clipboard watching stopped");
                 return;
             }
@@ -1524,7 +1871,203 @@ namespace SESpriteLCDLayoutTool
             }
 
             _preLiveCodeSprites = null;
-            _lastLiveFrame = null;
+            // Keep _lastLiveFrame so the user can still capture/apply it
+            // after stopping the stream.  It is cleared in NewLayout().
+            UpdateSnapshotButtonState();
+        }
+
+        private void ApplyLiveSnapshot()
+        {
+            if (_lastLiveFrame == null || _lastLiveFrame.Count == 0)
+            {
+                SetStatus("No live frame captured — wait for at least one frame.");
+                return;
+            }
+            if (_layout == null) return;
+
+            var editable = new List<SpriteEntry>();
+            foreach (var sp in _layout.Sprites)
+                if (!sp.IsReferenceLayout) editable.Add(sp);
+
+            if (editable.Count == 0)
+            {
+                SetStatus("No editable sprites to apply snapshot to.");
+                return;
+            }
+
+            PushUndo();
+            var result = SnapshotMerger.Merge(editable, _lastLiveFrame, applyColors: true);
+
+            // Update baselines to lock in the live positions for round-trip code generation
+            foreach (var sp in editable)
+            {
+                if (sp.ImportBaseline != null)
+                    sp.ImportBaseline = sp.CloneValues();
+            }
+
+            _canvas.Invalidate();
+            RefreshLayerList();
+            RefreshCode();
+            SetStatus($"Live snapshot captured — {result.Summary}");
+        }
+
+        private void UpdateSnapshotButtonState()
+        {
+            bool canCapture = _lastLiveFrame != null && _lastLiveFrame.Count > 0 && !IsActivelyStreaming;
+            if (_btnCaptureSnapshot != null) _btnCaptureSnapshot.Visible = canCapture;
+            if (_mnuCaptureSnapshot != null) _mnuCaptureSnapshot.Enabled = canCapture;
+        }
+
+        /// <summary>
+        /// Executes a single detected call, then highlights only its sprites on the
+        /// canvas while dimming the rest of the full frame.  The user can edit the
+        /// isolated sprites and click "Show All" to restore the complete view.
+        /// </summary>
+        private void IsolateCallSprites(string call)
+        {
+            if (_layout == null || string.IsNullOrWhiteSpace(call)) return;
+
+            string code = _codeBox.Text;
+            if (string.IsNullOrWhiteSpace(code)) return;
+
+            // Save the full frame so we can restore it later
+            if (_fullFrameSprites == null)
+            {
+                _fullFrameSprites = new List<SpriteEntry>();
+                foreach (var sp in _layout.Sprites)
+                    _fullFrameSprites.Add(sp);
+            }
+
+            var result = CodeExecutor.Execute(code, call);
+            if (!result.Success)
+            {
+                _execResultLabel.Text      = "✗ Error";
+                _execResultLabel.ForeColor = Color.FromArgb(220, 80, 80);
+                MessageBox.Show(result.Error, "Execution Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (result.Sprites.Count == 0)
+            {
+                SetStatus($"Call returned 0 sprites — nothing to isolate.");
+                return;
+            }
+
+            _execResultLabel.Text      = $"✔ {result.Sprites.Count} (isolated)";
+            _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
+
+            PushUndo();
+
+            // Merge the executed sprites into the full frame using SnapshotMerger
+            // to match them by type+data, then build the highlighted set.
+            var nonRef = new List<SpriteEntry>();
+            foreach (var sp in _layout.Sprites)
+                if (!sp.IsReferenceLayout) nonRef.Add(sp);
+
+            var mergeResult = SnapshotMerger.Merge(nonRef, result.Sprites, applyColors: true);
+
+            // The highlighted set = sprites that matched the executed call
+            _isolatedCallSprites = new HashSet<SpriteEntry>();
+            foreach (var sp in nonRef)
+            {
+                // Check if this sprite was matched (position/color updated from the call)
+                foreach (var execSp in result.Sprites)
+                {
+                    bool typeMatch = (sp.Type == SpriteEntryType.Text && execSp.Type == SpriteEntryType.Text
+                                        && sp.Text == execSp.Text)
+                                   || (sp.Type == SpriteEntryType.Texture && execSp.Type == SpriteEntryType.Texture
+                                        && sp.SpriteName == execSp.SpriteName);
+                    if (typeMatch && Math.Abs(sp.X - execSp.X) < 1f && Math.Abs(sp.Y - execSp.Y) < 1f)
+                    {
+                        _isolatedCallSprites.Add(sp);
+                        break;
+                    }
+                }
+            }
+
+            // Also add any orphan (unmatched) sprites from the execution
+            foreach (var orphan in mergeResult.UnmatchedSnapshots)
+            {
+                orphan.SourceStart = -1;
+                orphan.SourceEnd   = -1;
+                _layout.Sprites.Add(orphan);
+                _isolatedCallSprites.Add(orphan);
+            }
+
+            // If no matches found, highlight all executed sprites directly
+            if (_isolatedCallSprites.Count == 0)
+            {
+                foreach (var sp in result.Sprites)
+                    _isolatedCallSprites.Add(sp);
+            }
+
+            _canvas.HighlightedSprites = _isolatedCallSprites;
+            SpriteEntry firstIsolated = null;
+            foreach (var sp in _isolatedCallSprites) { firstIsolated = sp; break; }
+            _canvas.SelectedSprite = firstIsolated;
+            _canvas.Invalidate();
+            RefreshLayerList();
+            if (_btnShowAll != null) _btnShowAll.Visible = true;
+            SetStatus($"Isolated: {call} — {_isolatedCallSprites.Count} sprite(s). Edit, then click Show All.");
+        }
+
+        /// <summary>
+        /// Restores the full frame view after an isolated call edit session.
+        /// Merges any edits back and removes the dimming.
+        /// </summary>
+        private void RestoreFullView()
+        {
+            _canvas.HighlightedSprites = null;
+            _isolatedCallSprites = null;
+
+            if (_fullFrameSprites != null)
+            {
+                // The sprites in _layout.Sprites may have been edited;
+                // _fullFrameSprites are the originals.  We need to reconcile:
+                // keep the current layout sprites (which include edits) but
+                // clear the isolation state.  The full set is already on canvas
+                // since we never removed non-highlighted sprites.
+                _fullFrameSprites = null;
+            }
+
+            // Unhide all layers when restoring full view
+            if (_layout != null)
+                foreach (var sp in _layout.Sprites)
+                    sp.IsHidden = false;
+
+            if (_btnShowAll != null) _btnShowAll.Visible = false;
+            _canvas.Invalidate();
+            RefreshLayerList();
+            SetStatus("Full view restored.");
+        }
+
+        /// <summary>Hides or shows the currently selected sprite layer.</summary>
+        private void ToggleSelectedLayerVisibility(bool hide)
+        {
+            var sel = _canvas.SelectedSprite;
+            if (sel == null || _layout == null) return;
+
+            sel.IsHidden = hide;
+            if (hide)
+            {
+                // Deselect the hidden sprite so the user can click others
+                _canvas.SelectedSprite = null;
+            }
+            _canvas.Invalidate();
+            RefreshLayerList();
+            SetStatus(hide ? $"Layer hidden: {sel.DisplayName}" : $"Layer shown: {sel.DisplayName}");
+        }
+
+        /// <summary>Shows all hidden layers, restoring full visibility.</summary>
+        private void ShowAllLayers()
+        {
+            if (_layout == null) return;
+            foreach (var sp in _layout.Sprites)
+                sp.IsHidden = false;
+            _canvas.Invalidate();
+            RefreshLayerList();
+            SetStatus("All layers visible.");
         }
 
         private void OnLiveFrameReceived(string frame)
@@ -1892,10 +2435,32 @@ namespace SESpriteLCDLayoutTool
                 pnlExec.Controls.Add(lblExecResult);
                 pnlExec.Controls.Add(lblCallPrefix);
 
+                // ── Detected calls list ───────────────────────────────────────────
+                var lblDetected = new Label
+                {
+                    Text      = "Detected methods (double-click to execute):",
+                    Dock      = DockStyle.Bottom,
+                    Height    = 18,
+                    ForeColor = Color.FromArgb(130, 180, 230),
+                    Font      = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                    Padding   = new Padding(4, 3, 0, 0),
+                };
+                var lstDetectedCalls = new ListBox
+                {
+                    Dock        = DockStyle.Bottom,
+                    Height      = 60,
+                    BackColor   = Color.FromArgb(22, 26, 38),
+                    ForeColor   = Color.FromArgb(160, 220, 255),
+                    BorderStyle = BorderStyle.None,
+                    Font        = new Font("Consolas", 9f),
+                };
+
                 // Snapshot on top (paste first), code editor below with exec bar underneath
                 splitCode.Panel1.Controls.Add(txtSnapshot);
                 splitCode.Panel1.Controls.Add(lblSnapshot);
                 splitCode.Panel2.Controls.Add(txtCode);
+                splitCode.Panel2.Controls.Add(lstDetectedCalls);
+                splitCode.Panel2.Controls.Add(lblDetected);
                 splitCode.Panel2.Controls.Add(pnlExec);
 
                 var chkReplace = new CheckBox
@@ -1985,14 +2550,31 @@ namespace SESpriteLCDLayoutTool
                     lblExecResult.ForeColor = Color.FromArgb(80, 220, 100);
                 };
 
-                // Auto-populate the call expression when the user leaves the code box
+                // Auto-populate the detected calls list when the user leaves the code box
                 txtCode.Leave += (s, e) =>
                 {
-                    if (string.IsNullOrWhiteSpace(txtCallExpr.Text))
-                    {
-                        string detected = CodeExecutor.DetectCallExpression(txtCode.Text);
-                        if (detected != null) txtCallExpr.Text = detected;
-                    }
+                    var calls = CodeExecutor.DetectAllCallExpressions(txtCode.Text);
+                    lstDetectedCalls.Items.Clear();
+                    foreach (var c in calls)
+                        lstDetectedCalls.Items.Add(c);
+                    // Auto-fill the call box with the first detected call if empty
+                    if (string.IsNullOrWhiteSpace(txtCallExpr.Text) && calls.Count > 0)
+                        txtCallExpr.Text = calls[0];
+                };
+
+                // Single-click populates the call box
+                lstDetectedCalls.SelectedIndexChanged += (s, e) =>
+                {
+                    if (lstDetectedCalls.SelectedItem != null)
+                        txtCallExpr.Text = lstDetectedCalls.SelectedItem.ToString();
+                };
+
+                // Double-click executes the selected call
+                lstDetectedCalls.MouseDoubleClick += (s, e) =>
+                {
+                    if (lstDetectedCalls.SelectedItem == null) return;
+                    txtCallExpr.Text = lstDetectedCalls.SelectedItem.ToString();
+                    btnExec.PerformClick();
                 };
 
                 btnImport.Click += (s, e) =>
@@ -2552,6 +3134,10 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add(new ToolStripSeparator());
             ctx.Items.Add("Duplicate",  null, (s, e) => DuplicateSelected());
             ctx.Items.Add("Delete",     null, (s, e) => DeleteSelected());
+            ctx.Items.Add(new ToolStripSeparator());
+            var hideItem    = ctx.Items.Add("Hide Layer",       null, (s, e) => ToggleSelectedLayerVisibility(true));
+            var showItem    = ctx.Items.Add("Show Layer",       null, (s, e) => ToggleSelectedLayerVisibility(false));
+            var showAllItem = ctx.Items.Add("Show All Layers",  null, (s, e) => ShowAllLayers());
 
             ctx.Opening += (s, e) =>
             {
@@ -2563,6 +3149,15 @@ namespace SESpriteLCDLayoutTool
                 int idx = _layout.Sprites.IndexOf(_canvas.SelectedSprite);
                 moveUp.Enabled   = idx < _layout.Sprites.Count - 1;
                 moveDown.Enabled = idx > 0;
+
+                bool hidden = _canvas.SelectedSprite.IsHidden;
+                hideItem.Visible = !hidden;
+                showItem.Visible = hidden;
+
+                bool anyHidden = false;
+                foreach (var sp in _layout.Sprites)
+                    if (sp.IsHidden) { anyHidden = true; break; }
+                showAllItem.Enabled = anyHidden;
             };
 
             return ctx;
