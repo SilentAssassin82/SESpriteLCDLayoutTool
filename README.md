@@ -615,6 +615,18 @@ MIT License
 
 ## 📝 Changelog
 
+### v1.11.0
+- **Advancing `ElapsedPlayTime` for animations** — `MyAPIGateway.Session.ElapsedPlayTime` now advances with real wall-clock delta each animation frame, so time-based animations (radar sweeps, oscilloscopes, gauge bars, etc.) that use `ElapsedPlayTime.TotalSeconds` animate correctly in the built-in executor
+  - `StubSession._elapsedTotalSeconds` is a mutable static field (base 120 s) incremented by the frame delta each tick
+  - All three animation builders (PB, Mod/Surface, LCD Helper) generate a `SetElapsedPlayTime(double)` method invoked automatically by the animation host
+  - `AnimInit()` resets the elapsed clock to 120 s at the start of each animation session
+- **Compilation & runtime fixes for mod session components:**
+  - **`using Sandbox.ModAPI;` auto-import** — previously listed in `knownUsings` but never emitted; now included in `AppendSharedHeader`
+  - **`IMyCubeGrid` ambiguity resolved** — removed duplicate `IMyCubeGrid` / `StubCubeGrid` from `Sandbox.ModAPI.Ingame`; canonical definition kept in `VRage.Game.ModAPI` only; all `CubeGrid` property types fully qualified
+  - **`Vector2(float)` constructor** — single-argument constructor added for `new Vector2(size)` patterns
+  - **`DetectSurfaceCalls` namespace-aware** — now strips namespace prefixes from parameter types and matches both `IMyTextSurface` and `IMyTextPanel`, preventing NRE from unrecognised fully-qualified type names
+  - **`LcdRunner` base class preserved** — `StripClassWrapper` `baseClassName` is carried through so `LcdRunner : MySessionComponentBase` compiles when user code overrides session methods
+
 ### v1.10.0
 - **Expanded SE mod/session component stubs** — the built-in code executor now compiles and runs full SE **mod session components** (`MySessionComponentBase` subclasses) in addition to PB and LCD helper scripts:
   - **Session component infrastructure:** `MySessionComponentBase` abstract class, `MySessionComponentDescriptor` attribute, `MyUpdateOrder` enum (`VRage.Game.Components`)

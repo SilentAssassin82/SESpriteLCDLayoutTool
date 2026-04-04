@@ -211,7 +211,9 @@ namespace SESpriteLCDLayoutTool.Services
                     string typeName = parts[0];
                     string paramName = parts[parts.Length - 1].ToLowerInvariant().TrimStart('_');
 
-                    if (typeName == "IMyTextSurface")
+                    // Match IMyTextSurface / IMyTextPanel with or without namespace qualification
+                    string bareType = typeName.Contains(".") ? typeName.Substring(typeName.LastIndexOf('.') + 1) : typeName;
+                    if (bareType == "IMyTextSurface" || bareType == "IMyTextPanel")
                         args.Add("surface");
                     else
                         args.Add(GuessDefaultArg(typeName.ToLowerInvariant(), paramName));
@@ -346,6 +348,7 @@ namespace SESpriteLCDLayoutTool.Services
             internal MethodInfo FrameMethod;
             internal MethodInfo GetFreqMethod;
             internal MethodInfo SetElapsedMethod;
+            internal MethodInfo SetElapsedPlayTimeMethod;
             public ScriptType ScriptType { get; internal set; }
 
             public void Dispose()
@@ -431,6 +434,7 @@ namespace SESpriteLCDLayoutTool.Services
                 FrameMethod = runnerType.GetMethod("RunFrame"),
                 GetFreqMethod = runnerType.GetMethod("GetUpdateFrequency"),      // null for non-PB
                 SetElapsedMethod = runnerType.GetMethod("SetTimeSinceLastRun"),   // null for non-PB
+                SetElapsedPlayTimeMethod = runnerType.GetMethod("SetElapsedPlayTime"),
                 ScriptType = scriptType,
             };
             return ctx;
@@ -472,6 +476,8 @@ namespace SESpriteLCDLayoutTool.Services
 
             if (ctx.SetElapsedMethod != null)
                 ctx.SetElapsedMethod.Invoke(ctx.Runner, new object[] { elapsedSeconds });
+            if (ctx.SetElapsedPlayTimeMethod != null)
+                ctx.SetElapsedPlayTimeMethod.Invoke(ctx.Runner, new object[] { elapsedSeconds });
 
             string[][] rawData = null;
             Exception runEx = null;
@@ -568,6 +574,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("    using VRage.Utils;");
             sb.AppendLine("    using VRageMath;");
             sb.AppendLine("    using Sandbox.ModAPI.Ingame;");
+            sb.AppendLine("    using Sandbox.ModAPI;");
             sb.AppendLine("    using Sandbox.Game.GameSystems;");
             foreach (string u in userUsings)
                 if (!knownUsings.Contains(u))
@@ -787,6 +794,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("        public void AnimInit() {");
             sb.AppendLine("            _InitStubs();");
             sb.AppendLine("            SpriteCollector.Reset();");
+            sb.AppendLine("            Sandbox.ModAPI.StubSession._elapsedTotalSeconds = 120.0;");
             if (!string.IsNullOrWhiteSpace(ctorBody))
             {
                 sb.AppendLine("            {");
@@ -814,6 +822,12 @@ namespace SESpriteLCDLayoutTool.Services
             // SetTimeSinceLastRun — allows the host to feed realistic elapsed time
             sb.AppendLine("        public void SetTimeSinceLastRun(double elapsed) {");
             sb.AppendLine("            ((StubRuntime)Runtime).TimeSinceLastRun = elapsed;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // SetElapsedPlayTime — advances MyAPIGateway.Session.ElapsedPlayTime each frame
+            sb.AppendLine("        public void SetElapsedPlayTime(double elapsed) {");
+            sb.AppendLine("            Sandbox.ModAPI.StubSession._elapsedTotalSeconds += elapsed;");
             sb.AppendLine("        }");
 
             sb.AppendLine("    }"); // class LcdRunner
@@ -885,6 +899,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             // AnimInit
             sb.AppendLine("        public void AnimInit() {");
+            sb.AppendLine("            Sandbox.ModAPI.StubSession._elapsedTotalSeconds = 120.0;");
             if (!string.IsNullOrWhiteSpace(ctorBody))
             {
                 sb.AppendLine("            {");
@@ -913,6 +928,12 @@ namespace SESpriteLCDLayoutTool.Services
             foreach (string cl in callLines)
                 sb.AppendLine("            " + cl);
             AppendSpriteSerialisation(sb, "sprites");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // SetElapsedPlayTime — advances MyAPIGateway.Session.ElapsedPlayTime each frame
+            sb.AppendLine("        public void SetElapsedPlayTime(double elapsed) {");
+            sb.AppendLine("            Sandbox.ModAPI.StubSession._elapsedTotalSeconds += elapsed;");
             sb.AppendLine("        }");
 
             sb.AppendLine("    }"); // class LcdRunner
@@ -979,6 +1000,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             // AnimInit
             sb.AppendLine("        public void AnimInit() {");
+            sb.AppendLine("            Sandbox.ModAPI.StubSession._elapsedTotalSeconds = 120.0;");
             if (!string.IsNullOrWhiteSpace(ctorBody))
             {
                 sb.AppendLine("            {");
@@ -1006,6 +1028,12 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.AppendLine("            " + cl);
             sb.AppendLine("            var sprites = SpriteCollector.Captured;");
             AppendSpriteSerialisation(sb, "sprites");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // SetElapsedPlayTime — advances MyAPIGateway.Session.ElapsedPlayTime each frame
+            sb.AppendLine("        public void SetElapsedPlayTime(double elapsed) {");
+            sb.AppendLine("            Sandbox.ModAPI.StubSession._elapsedTotalSeconds += elapsed;");
             sb.AppendLine("        }");
 
             sb.AppendLine("    }"); // class LcdRunner
@@ -1600,6 +1628,7 @@ namespace VRageMath
     {
         public float X, Y;
         public Vector2(float x, float y) { X = x; Y = y; }
+        public Vector2(float v) { X = v; Y = v; }
         public static Vector2 operator+(Vector2 a, Vector2 b) { return new Vector2(a.X+b.X, a.Y+b.Y); }
         public static Vector2 operator-(Vector2 a, Vector2 b) { return new Vector2(a.X-b.X, a.Y-b.Y); }
         public static Vector2 operator*(Vector2 a, float f)   { return new Vector2(a.X*f,   a.Y*f);   }
@@ -1820,7 +1849,7 @@ namespace Sandbox.ModAPI.Ingame
         public bool IsWorking { get { return true; } }
         public bool IsFunctional { get { return true; } }
         public long EntityId { get; set; }
-        public IMyCubeGrid CubeGrid { get; set; }
+        public VRage.Game.ModAPI.IMyCubeGrid CubeGrid { get; set; }
         public ITerminalProperty GetProperty(string name) { return new StubTerminalProperty(name); }
         public ITerminalAction GetAction(string name) { return new StubTerminalAction(name); }
         public bool HasInventory { get { return false; } }
@@ -1845,7 +1874,7 @@ namespace Sandbox.ModAPI.Ingame
             CustomData = """";
             DetailedInfo = """";
             EntityId = 2;
-            CubeGrid = new StubCubeGrid();
+            CubeGrid = new VRage.Game.ModAPI.StubModCubeGrid();
         }
     }
 
@@ -1866,7 +1895,7 @@ namespace Sandbox.ModAPI.Ingame
         public bool IsFunctional { get { return true; } }
         public bool Enabled { get; set; }
         public long EntityId { get; set; }
-        public IMyCubeGrid CubeGrid { get; set; }
+        public VRage.Game.ModAPI.IMyCubeGrid CubeGrid { get; set; }
         public VRageMath.Vector3D GetPosition() { return VRageMath.Vector3D.Zero; }
         public int SurfaceCount { get { return _surfaces.Length; } }
         public IMyTextSurface GetSurface(int index) { return _surfaces[index]; }
@@ -1887,7 +1916,7 @@ namespace Sandbox.ModAPI.Ingame
             DetailedInfo = """";
             Enabled = true;
             EntityId = 1;
-            CubeGrid = new StubCubeGrid();
+            CubeGrid = new VRage.Game.ModAPI.StubModCubeGrid();
         }
     }
 
@@ -2020,19 +2049,6 @@ namespace Sandbox.ModAPI.Ingame
         public void Apply(IMyTerminalBlock block) { }
     }
 
-    public interface IMyCubeGrid
-    {
-        string CustomName { get; set; }
-        string DisplayName { get; }
-    }
-
-    public class StubCubeGrid : IMyCubeGrid
-    {
-        public string CustomName { get; set; }
-        public string DisplayName { get { return CustomName; } }
-        public StubCubeGrid() { CustomName = ""My Grid""; }
-    }
-
     public interface IMyTerminalBlock
     {
         string CustomName { get; set; }
@@ -2041,7 +2057,7 @@ namespace Sandbox.ModAPI.Ingame
         bool IsWorking { get; }
         bool IsFunctional { get; }
         long EntityId { get; }
-        IMyCubeGrid CubeGrid { get; }
+        VRage.Game.ModAPI.IMyCubeGrid CubeGrid { get; }
         ITerminalProperty GetProperty(string name);
         ITerminalAction GetAction(string name);
         bool HasInventory { get; }
@@ -2254,7 +2270,7 @@ namespace Sandbox.ModAPI.Ingame
         float TargetVelocityRPM { get; set; }
         float Torque { get; set; }
         bool IsAttached { get; }
-        IMyCubeGrid TopGrid { get; }
+        VRage.Game.ModAPI.IMyCubeGrid TopGrid { get; }
     }
 
     public interface IMyPistonBase : IMyFunctionalBlock
@@ -2345,7 +2361,7 @@ namespace Sandbox.ModAPI
 
     public interface IMyTerminalActionsHelper
     {
-        Sandbox.ModAPI.Ingame.IMyGridTerminalSystem GetTerminalSystemForGrid(Sandbox.ModAPI.Ingame.IMyCubeGrid grid);
+        Sandbox.ModAPI.Ingame.IMyGridTerminalSystem GetTerminalSystemForGrid(VRage.Game.ModAPI.IMyCubeGrid grid);
     }
 
     public interface IMyUtilities
@@ -2359,7 +2375,8 @@ namespace Sandbox.ModAPI
     {
         private readonly StubWeatherEffects _weather = new StubWeatherEffects();
         public IMyWeatherEffects WeatherEffects { get { return _weather; } }
-        public System.TimeSpan ElapsedPlayTime { get { return System.TimeSpan.FromSeconds(120); } }
+        public static double _elapsedTotalSeconds = 120.0;
+        public System.TimeSpan ElapsedPlayTime { get { return System.TimeSpan.FromSeconds(_elapsedTotalSeconds); } }
     }
 
     public class StubWeatherEffects : IMyWeatherEffects
@@ -2379,7 +2396,7 @@ namespace Sandbox.ModAPI
 
     public class StubTerminalActionsHelper : IMyTerminalActionsHelper
     {
-        public Sandbox.ModAPI.Ingame.IMyGridTerminalSystem GetTerminalSystemForGrid(Sandbox.ModAPI.Ingame.IMyCubeGrid grid)
+        public Sandbox.ModAPI.Ingame.IMyGridTerminalSystem GetTerminalSystemForGrid(VRage.Game.ModAPI.IMyCubeGrid grid)
         {
             return new Sandbox.ModAPI.Ingame.StubGridTerminalSystem();
         }
@@ -2406,8 +2423,9 @@ namespace VRage.Game.ModAPI
 {
     using System.Collections.Generic;
 
-    public interface IMyCubeGrid : VRage.ModAPI.IMyEntity, Sandbox.ModAPI.Ingame.IMyCubeGrid
+    public interface IMyCubeGrid : VRage.ModAPI.IMyEntity
     {
+        string CustomName { get; set; }
         void GetBlocks(List<IMySlimBlock> blocks);
     }
 
