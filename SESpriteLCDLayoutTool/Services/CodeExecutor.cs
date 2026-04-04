@@ -253,11 +253,14 @@ namespace SESpriteLCDLayoutTool.Services
             var knownUsings = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
                 "VRage.Game.GUI.TextPanel", "VRageMath", "Sandbox.ModAPI.Ingame",
-                "Sandbox.ModAPI", "System", "System.Collections.Generic",
+                "Sandbox.ModAPI", "VRage", "VRage.Game.ModAPI.Ingame",
+                "System", "System.Collections.Generic",
                 "System.Globalization", "System.Linq", "System.Text", "System.Threading"
             };
             sb.AppendLine("namespace SELcdExec {");
+            sb.AppendLine("    using VRage;");
             sb.AppendLine("    using VRage.Game.GUI.TextPanel;");
+            sb.AppendLine("    using VRage.Game.ModAPI.Ingame;");
             sb.AppendLine("    using VRageMath;");
             sb.AppendLine("    using Sandbox.ModAPI.Ingame;");
             foreach (string u in userUsings)
@@ -932,6 +935,28 @@ namespace VRageMath
 
     public enum TextAlignment { LEFT = 0, CENTER = 1, RIGHT = 2 }
 
+    public struct Vector3D
+    {
+        public double X, Y, Z;
+        public Vector3D(double x, double y, double z) { X = x; Y = y; Z = z; }
+        public static Vector3D operator+(Vector3D a, Vector3D b) { return new Vector3D(a.X+b.X, a.Y+b.Y, a.Z+b.Z); }
+        public static Vector3D operator-(Vector3D a, Vector3D b) { return new Vector3D(a.X-b.X, a.Y-b.Y, a.Z-b.Z); }
+        public static Vector3D operator*(Vector3D a, double f)   { return new Vector3D(a.X*f,   a.Y*f,   a.Z*f);   }
+        public static Vector3D operator*(double f, Vector3D a)   { return new Vector3D(a.X*f,   a.Y*f,   a.Z*f);   }
+        public static Vector3D operator/(Vector3D a, double f)   { return new Vector3D(a.X/f,   a.Y/f,   a.Z/f);   }
+        public static Vector3D operator-(Vector3D a)             { return new Vector3D(-a.X,    -a.Y,    -a.Z);     }
+        public static bool operator==(Vector3D a, Vector3D b)    { return a.X==b.X && a.Y==b.Y && a.Z==b.Z; }
+        public static bool operator!=(Vector3D a, Vector3D b)    { return !(a==b); }
+        public override bool Equals(object obj) { return obj is Vector3D && this==(Vector3D)obj; }
+        public override int GetHashCode() { return X.GetHashCode() ^ Y.GetHashCode() ^ Z.GetHashCode(); }
+        public double Length() { return System.Math.Sqrt(X*X+Y*Y+Z*Z); }
+        public double LengthSquared() { return X*X+Y*Y+Z*Z; }
+        public static Vector3D Zero { get { return new Vector3D(0,0,0); } }
+        public static Vector3D One  { get { return new Vector3D(1,1,1); } }
+        public static Vector3D Normalize(Vector3D v) { double l = v.Length(); return l > 0 ? v / l : Zero; }
+        public override string ToString() { return X+"",""+Y+"",""+Z; }
+    }
+
     // Minimal MathHelper stub used by some PB scripts
     public static class MathHelper
     {
@@ -946,11 +971,102 @@ namespace VRageMath
     }
 }
 
+namespace VRage
+{
+    public struct MyFixedPoint
+    {
+        private long _raw;
+
+        public int RawValue { get { return (int)_raw; } }
+
+        public static implicit operator MyFixedPoint(int v)    { var fp = new MyFixedPoint(); fp._raw = (long)v * 1000000; return fp; }
+        public static implicit operator MyFixedPoint(float v)  { var fp = new MyFixedPoint(); fp._raw = (long)(v * 1000000); return fp; }
+        public static implicit operator MyFixedPoint(double v) { var fp = new MyFixedPoint(); fp._raw = (long)(v * 1000000); return fp; }
+        public static implicit operator float(MyFixedPoint fp)  { return fp._raw / 1000000f; }
+        public static implicit operator double(MyFixedPoint fp) { return fp._raw / 1000000.0; }
+
+        public static MyFixedPoint operator +(MyFixedPoint a, MyFixedPoint b) { var fp = new MyFixedPoint(); fp._raw = a._raw + b._raw; return fp; }
+        public static MyFixedPoint operator -(MyFixedPoint a, MyFixedPoint b) { var fp = new MyFixedPoint(); fp._raw = a._raw - b._raw; return fp; }
+        public static MyFixedPoint operator *(MyFixedPoint a, MyFixedPoint b) { var fp = new MyFixedPoint(); fp._raw = a._raw * b._raw / 1000000; return fp; }
+        public static bool operator >(MyFixedPoint a, MyFixedPoint b)  { return a._raw > b._raw; }
+        public static bool operator <(MyFixedPoint a, MyFixedPoint b)  { return a._raw < b._raw; }
+        public static bool operator >=(MyFixedPoint a, MyFixedPoint b) { return a._raw >= b._raw; }
+        public static bool operator <=(MyFixedPoint a, MyFixedPoint b) { return a._raw <= b._raw; }
+        public static bool operator ==(MyFixedPoint a, MyFixedPoint b) { return a._raw == b._raw; }
+        public static bool operator !=(MyFixedPoint a, MyFixedPoint b) { return a._raw != b._raw; }
+
+        public override bool Equals(object obj) { return obj is MyFixedPoint && this == (MyFixedPoint)obj; }
+        public override int GetHashCode() { return _raw.GetHashCode(); }
+        public override string ToString() { return ((float)this).ToString(); }
+
+        public int ToIntSafe() { return (int)(_raw / 1000000); }
+        public static MyFixedPoint MaxValue { get { MyFixedPoint fp = new MyFixedPoint(); fp._raw = long.MaxValue; return fp; } }
+        public static MyFixedPoint MinValue { get { MyFixedPoint fp = new MyFixedPoint(); fp._raw = long.MinValue; return fp; } }
+    }
+}
+
+namespace VRage.Game.ModAPI.Ingame
+{
+    using VRage;
+
+    public struct MyItemType
+    {
+        public string TypeId { get; private set; }
+        public string SubtypeId { get; private set; }
+        public MyItemType(string typeId, string subtypeId) { TypeId = typeId; SubtypeId = subtypeId; }
+        public static MyItemType Parse(string str)
+        {
+            var parts = str.Split('/');
+            return parts.Length == 2 ? new MyItemType(parts[0], parts[1]) : new MyItemType(str, """");
+        }
+        public static MyItemType MakeOre(string subtype)      { return new MyItemType(""MyObjectBuilder_Ore"", subtype); }
+        public static MyItemType MakeIngot(string subtype)     { return new MyItemType(""MyObjectBuilder_Ingot"", subtype); }
+        public static MyItemType MakeComponent(string subtype) { return new MyItemType(""MyObjectBuilder_Component"", subtype); }
+        public static MyItemType MakeAmmo(string subtype)      { return new MyItemType(""MyObjectBuilder_AmmoMagazine"", subtype); }
+        public static MyItemType MakeTool(string subtype)      { return new MyItemType(""MyObjectBuilder_PhysicalGunObject"", subtype); }
+        public override string ToString() { return TypeId + ""/"" + SubtypeId; }
+    }
+
+    public struct MyInventoryItem
+    {
+        public MyItemType Type { get; set; }
+        public MyFixedPoint Amount { get; set; }
+    }
+
+    public interface IMyInventory
+    {
+        MyFixedPoint CurrentVolume { get; }
+        MyFixedPoint MaxVolume { get; }
+        MyFixedPoint CurrentMass { get; }
+        int ItemCount { get; }
+        void GetItems(System.Collections.Generic.List<MyInventoryItem> items, System.Func<MyInventoryItem, bool> filter = null);
+        MyInventoryItem? GetItemAt(int index);
+        bool CanItemsBeAdded(MyFixedPoint amount, MyItemType type);
+        bool ContainItems(MyFixedPoint amount, MyItemType type);
+        MyFixedPoint GetItemAmount(MyItemType type);
+    }
+
+    public class StubInventory : IMyInventory
+    {
+        public MyFixedPoint CurrentVolume { get { return 0; } }
+        public MyFixedPoint MaxVolume { get { return 1000; } }
+        public MyFixedPoint CurrentMass { get { return 0; } }
+        public int ItemCount { get { return 0; } }
+        public void GetItems(System.Collections.Generic.List<MyInventoryItem> items, System.Func<MyInventoryItem, bool> filter = null) { items.Clear(); }
+        public MyInventoryItem? GetItemAt(int index) { return null; }
+        public bool CanItemsBeAdded(MyFixedPoint amount, MyItemType type) { return true; }
+        public bool ContainItems(MyFixedPoint amount, MyItemType type) { return false; }
+        public MyFixedPoint GetItemAmount(MyItemType type) { return 0; }
+    }
+}
+
 namespace Sandbox.ModAPI.Ingame
 {
     using System;
     using System.Collections.Generic;
+    using VRage;
     using VRage.Game.GUI.TextPanel;
+    using VRage.Game.ModAPI.Ingame;
     using VRageMath;
 
     [Flags] public enum UpdateType { None = 0, Once = 128, Update1 = 16, Update10 = 32, Update100 = 64, Terminal = 256, Trigger = 512 }
@@ -972,6 +1088,8 @@ namespace Sandbox.ModAPI.Ingame
         public ContentType ContentType { get; set; }
         public Color FontColor { get; set; }
         public Color BackgroundColor { get; set; }
+        public Color ScriptBackgroundColor { get; set; }
+        public Color ScriptForegroundColor { get; set; }
         public float FontSize { get; set; }
         public string Font { get; set; }
         public float TextPadding { get; set; }
@@ -992,6 +1110,8 @@ namespace Sandbox.ModAPI.Ingame
             Font = ""White"";
             FontColor = Color.White;
             BackgroundColor = Color.Black;
+            ScriptBackgroundColor = new Color(0, 88, 151);
+            ScriptForegroundColor = Color.White;
         }
     }
 
@@ -1004,14 +1124,22 @@ namespace Sandbox.ModAPI.Ingame
     public class StubTerminalBlock : IMyTerminalBlock, IMyTextSurfaceProvider
     {
         private readonly StubTextSurface[] _surfaces;
+        private readonly StubInventory _inv = new StubInventory();
         public string CustomName { get; set; }
         public string CustomData { get; set; }
         public bool IsWorking { get { return true; } }
         public bool IsFunctional { get { return true; } }
+        public bool Enabled { get; set; }
         public long EntityId { get; set; }
         public IMyCubeGrid CubeGrid { get; set; }
         public int SurfaceCount { get { return _surfaces.Length; } }
         public IMyTextSurface GetSurface(int index) { return _surfaces[index]; }
+        public ITerminalProperty GetProperty(string name) { return new StubTerminalProperty(name); }
+        public ITerminalAction GetAction(string name) { return new StubTerminalAction(name); }
+        public bool HasInventory { get { return true; } }
+        public int InventoryCount { get { return 1; } }
+        public IMyInventory GetInventory() { return _inv; }
+        public IMyInventory GetInventory(int index) { return _inv; }
 
         public StubTerminalBlock(int surfaceCount)
         {
@@ -1020,6 +1148,7 @@ namespace Sandbox.ModAPI.Ingame
                 _surfaces[i] = new StubTextSurface();
             CustomName = ""LCD Panel"";
             CustomData = """";
+            Enabled = true;
             EntityId = 1;
             CubeGrid = new StubCubeGrid();
         }
@@ -1070,6 +1199,54 @@ namespace Sandbox.ModAPI.Ingame
                 if (b.CustomName.Contains(name) && (collect == null || collect(b)))
                     blocks.Add(b);
         }
+
+        private readonly Dictionary<string, StubBlockGroup> _groups = new Dictionary<string, StubBlockGroup>();
+
+        public IMyBlockGroup GetBlockGroupWithName(string name)
+        {
+            StubBlockGroup g;
+            if (!_groups.TryGetValue(name, out g))
+            {
+                g = new StubBlockGroup(name);
+                _groups[name] = g;
+            }
+            return g;
+        }
+
+        public void GetBlockGroups(List<IMyBlockGroup> groups, Func<IMyBlockGroup, bool> collect = null)
+        {
+            groups.Clear();
+            foreach (var g in _groups.Values)
+                if (collect == null || collect(g))
+                    groups.Add(g);
+        }
+    }
+
+    public class StubBlockGroup : IMyBlockGroup
+    {
+        public string Name { get; private set; }
+        private readonly List<IMyTerminalBlock> _blocks = new List<IMyTerminalBlock>();
+
+        public StubBlockGroup(string name) { Name = name; }
+
+        public void GetBlocks(List<IMyTerminalBlock> blocks, Func<IMyTerminalBlock, bool> collect = null)
+        {
+            blocks.Clear();
+            foreach (var b in _blocks)
+                if (collect == null || collect(b))
+                    blocks.Add(b);
+        }
+
+        public void GetBlocksOfType<T>(List<T> blocks, Func<T, bool> collect = null) where T : class
+        {
+            blocks.Clear();
+            foreach (var b in _blocks)
+            {
+                T typed = b as T;
+                if (typed != null && (collect == null || collect(typed)))
+                    blocks.Add(typed);
+            }
+        }
     }
 
     // ── Interfaces ────────────────────────────────────────────────────────
@@ -1080,6 +1257,30 @@ namespace Sandbox.ModAPI.Ingame
         double TimeSinceLastRun { get; }
         double LastRunTimeMs { get; }
         int MaxInstructionCount { get; }
+    }
+
+    public interface ITerminalProperty
+    {
+        string Id { get; }
+    }
+
+    public class StubTerminalProperty : ITerminalProperty
+    {
+        public string Id { get; private set; }
+        public StubTerminalProperty(string id) { Id = id; }
+    }
+
+    public interface ITerminalAction
+    {
+        string Id { get; }
+        void Apply(IMyTerminalBlock block);
+    }
+
+    public class StubTerminalAction : ITerminalAction
+    {
+        public string Id { get; private set; }
+        public StubTerminalAction(string id) { Id = id; }
+        public void Apply(IMyTerminalBlock block) { }
     }
 
     public interface IMyCubeGrid
@@ -1103,6 +1304,24 @@ namespace Sandbox.ModAPI.Ingame
         bool IsFunctional { get; }
         long EntityId { get; }
         IMyCubeGrid CubeGrid { get; }
+        ITerminalProperty GetProperty(string name);
+        ITerminalAction GetAction(string name);
+        bool HasInventory { get; }
+        int InventoryCount { get; }
+        IMyInventory GetInventory();
+        IMyInventory GetInventory(int index);
+    }
+
+    public interface IMyFunctionalBlock : IMyTerminalBlock
+    {
+        bool Enabled { get; set; }
+    }
+
+    public interface IMyBlockGroup
+    {
+        string Name { get; }
+        void GetBlocks(List<IMyTerminalBlock> blocks, Func<IMyTerminalBlock, bool> collect = null);
+        void GetBlocksOfType<T>(List<T> blocks, Func<T, bool> collect = null) where T : class;
     }
 
     public interface IMyTextSurface
@@ -1110,6 +1329,8 @@ namespace Sandbox.ModAPI.Ingame
         ContentType ContentType { get; set; }
         Color FontColor { get; set; }
         Color BackgroundColor { get; set; }
+        Color ScriptBackgroundColor { get; set; }
+        Color ScriptForegroundColor { get; set; }
         float FontSize { get; set; }
         string Font { get; set; }
         float TextPadding { get; set; }
@@ -1144,6 +1365,8 @@ namespace Sandbox.ModAPI.Ingame
         IMyTerminalBlock GetBlockWithId(long id);
         IMyTerminalBlock GetBlockWithName(string name);
         void SearchBlocksOfName(string name, List<IMyTerminalBlock> blocks, Func<IMyTerminalBlock, bool> collect = null);
+        IMyBlockGroup GetBlockGroupWithName(string name);
+        void GetBlockGroups(List<IMyBlockGroup> groups, Func<IMyBlockGroup, bool> collect = null);
     }
 
     public class MyGridProgram
@@ -1189,6 +1412,131 @@ namespace Sandbox.ModAPI.Ingame
             sp.Color=VRageMath.Color.White;
             return sp;
         }
+    }
+
+    // ── Block interfaces ──────────────────────────────────────────────────
+
+    public enum ChargeMode { Auto = 0, Recharge = 1, Discharge = 2 }
+    public enum MyShipConnectorStatus { Unconnected = 0, Connectable = 1, Connected = 2 }
+    public enum DoorStatus { Open = 0, Closed = 1, Opening = 2, Closing = 3 }
+    public enum PistonStatus { Extended = 0, Retracted = 1, Extending = 2, Retracting = 3, Stopped = 4 }
+
+    public interface IMyBatteryBlock : IMyFunctionalBlock
+    {
+        float CurrentStoredPower { get; }
+        float MaxStoredPower { get; }
+        float CurrentInput { get; }
+        float CurrentOutput { get; }
+        ChargeMode ChargeMode { get; set; }
+        bool IsCharging { get; }
+        bool HasCapacityRemaining { get; }
+    }
+
+    public interface IMyGasTank : IMyFunctionalBlock
+    {
+        double FilledRatio { get; }
+        float Capacity { get; }
+        bool AutoRefillBottles { get; set; }
+        bool Stockpile { get; set; }
+    }
+
+    public interface IMyShipConnector : IMyFunctionalBlock
+    {
+        MyShipConnectorStatus Status { get; }
+        bool IsConnected { get; }
+        IMyShipConnector OtherConnector { get; }
+        void Connect();
+        void Disconnect();
+        void ToggleConnect();
+    }
+
+    public interface IMyThrust : IMyFunctionalBlock
+    {
+        float ThrustOverride { get; set; }
+        float ThrustOverridePercentage { get; set; }
+        float MaxThrust { get; }
+        float MaxEffectiveThrust { get; }
+        float CurrentThrust { get; }
+    }
+
+    public interface IMyGyro : IMyFunctionalBlock
+    {
+        bool GyroOverride { get; set; }
+        float Yaw { get; set; }
+        float Pitch { get; set; }
+        float Roll { get; set; }
+        float GyroPower { get; set; }
+    }
+
+    public interface IMySensorBlock : IMyFunctionalBlock
+    {
+        bool IsActive { get; }
+        bool DetectPlayers { get; set; }
+        bool DetectSmallShips { get; set; }
+        bool DetectLargeShips { get; set; }
+        bool DetectStations { get; set; }
+        bool DetectSubgrids { get; set; }
+        bool DetectAsteroids { get; set; }
+        float LeftExtend { get; set; }
+        float RightExtend { get; set; }
+        float TopExtend { get; set; }
+        float BottomExtend { get; set; }
+        float FrontExtend { get; set; }
+        float BackExtend { get; set; }
+    }
+
+    public interface IMyDoor : IMyFunctionalBlock
+    {
+        DoorStatus Status { get; }
+        float OpenRatio { get; }
+        void OpenDoor();
+        void CloseDoor();
+        void ToggleDoor();
+    }
+
+    public interface IMyLightingBlock : IMyFunctionalBlock
+    {
+        Color Color { get; set; }
+        float Radius { get; set; }
+        float Intensity { get; set; }
+        float BlinkIntervalSeconds { get; set; }
+        float BlinkLength { get; set; }
+        float BlinkOffset { get; set; }
+    }
+
+    public interface IMyMotorStator : IMyFunctionalBlock
+    {
+        float Angle { get; }
+        float UpperLimitDeg { get; set; }
+        float LowerLimitDeg { get; set; }
+        float TargetVelocityRPM { get; set; }
+        float Torque { get; set; }
+        bool IsAttached { get; }
+        IMyCubeGrid TopGrid { get; }
+    }
+
+    public interface IMyPistonBase : IMyFunctionalBlock
+    {
+        float CurrentPosition { get; }
+        float MinLimit { get; set; }
+        float MaxLimit { get; set; }
+        float Velocity { get; set; }
+        PistonStatus Status { get; }
+        void Extend();
+        void Retract();
+    }
+
+    public interface IMyShipController : IMyTerminalBlock
+    {
+        Vector3D GetNaturalGravity();
+        Vector3D MoveIndicator { get; }
+        Vector2 RotationIndicator { get; }
+        float RollIndicator { get; }
+        bool IsUnderControl { get; }
+        bool CanControlShip { get; set; }
+        bool ShowHorizonIndicator { get; set; }
+        bool HandBrake { get; set; }
+        bool DampenersOverride { get; set; }
     }
 }
 ";

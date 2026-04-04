@@ -62,12 +62,17 @@ Design your screens with drag & drop, preview real in-game textures, then export
 - Uses the **Roslyn C# compiler** (`csc.exe`) from your local Visual Studio installation (auto-detected via `vswhere.exe`)
 - Compiles with `/langversion:7.3` and `/optimize+`, targeting the standard .NET Framework assemblies
 - **Comprehensive Space Engineers type stubs** compiled alongside your code:
-  - Core types: `MySprite`, `Vector2`, `Color`, `SpriteType`, `TextAlignment`, `MySpriteDrawFrame`, `ContentType`
+  - Core types: `MySprite`, `Vector2`, `Vector3D`, `Color`, `SpriteType`, `TextAlignment`, `MySpriteDrawFrame`, `ContentType`
   - PB infrastructure: `MyGridProgram`, `IMyProgrammableBlock`, `IMyRuntime`, `IMyGridTerminalSystem`, `UpdateType`, `UpdateFrequency`
-  - Surface types: `IMyTextSurface`, `IMyTextSurfaceProvider`, `IMyTerminalBlock`
-  - Functional concrete stubs: `StubTextSurface` (working `DrawFrame()`, `WriteText()`, configurable size), `StubProgrammableBlock` (2 surfaces, `GetSurface()`), `StubRuntime` (with `UpdateFrequency`), `StubGridTerminalSystem` (`GetBlocksOfType<T>()`, `GetBlockWithId()`)
+  - Surface types: `IMyTextSurface` (with `ScriptBackgroundColor`/`ScriptForegroundColor`), `IMyTextSurfaceProvider`, `IMyTerminalBlock` (with `GetProperty()`/`GetAction()`/`GetInventory()`)
+  - Block interfaces: `IMyFunctionalBlock`, `IMyBatteryBlock`, `IMyGasTank`, `IMyShipConnector`, `IMyThrust`, `IMyGyro`, `IMySensorBlock`, `IMyDoor`, `IMyLightingBlock`, `IMyMotorStator`, `IMyPistonBase`, `IMyShipController` (with `GetNaturalGravity()`, `MoveIndicator`, `RotationIndicator`)
+  - Block groups: `IMyBlockGroup` (with `GetBlocksOfType<T>()`, `Name`), `IMyGridTerminalSystem.GetBlockGroupWithName()`
+  - Inventory types: `IMyInventory` (with `CurrentVolume`, `MaxVolume`, `GetItems()`), `MyInventoryItem`, `MyFixedPoint`, `MyItemType`
+  - Terminal: `ITerminalProperty`, `ITerminalAction` with stub implementations
+  - Functional concrete stubs: `StubTextSurface` (working `DrawFrame()`, `WriteText()`, configurable size), `StubProgrammableBlock` (2 surfaces, `GetSurface()`), `StubRuntime` (with `UpdateFrequency`), `StubGridTerminalSystem` (`GetBlocksOfType<T>()`, `GetBlockWithId()`, `GetBlockGroupWithName()`), `StubBlockGroup`, `StubInventory`
+  - Enums: `ChargeMode`, `MyShipConnectorStatus`, `DoorStatus`, `PistonStatus`
   - Math helpers: `MathHelper` (Pi, Clamp, Lerp, ToRadians, ToDegrees), extended `Color` constructors (float RGBA, alpha override), additional named colors (Yellow, Cyan, Magenta, Gray, Orange), `Color * float` operator, `MySprite.CreateSprite()`
-  - Scripts using `using VRageMath`, `using VRage.Game.GUI.TextPanel`, or `using Sandbox.ModAPI.Ingame` compile without modification
+  - Scripts using `using VRageMath`, `using VRage.Game.GUI.TextPanel`, `using Sandbox.ModAPI.Ingame`, `using VRage`, or `using VRage.Game.ModAPI.Ingame` compile without modification
 - **Sprite capture via `SpriteCollector`** — `MySpriteDrawFrame.Add()` feeds into a global collector so sprites drawn through the SE surface API (not just `List<MySprite>`) are captured and rendered on the canvas
 - **Automatic entry point detection** adapts to the script type:
   - LCD Helper: scans for methods with `List<MySprite>` first parameter
@@ -597,6 +602,19 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v1.6.0
+- **Expanded SE API stubs** — comprehensive block, inventory, and utility type coverage for PB/mod script compilation:
+  - **Block interfaces:** `IMyFunctionalBlock`, `IMyBatteryBlock`, `IMyGasTank`, `IMyShipConnector`, `IMyThrust`, `IMyGyro`, `IMySensorBlock`, `IMyDoor`, `IMyLightingBlock`, `IMyMotorStator`, `IMyPistonBase` — each with commonly-used properties (e.g. `CurrentStoredPower`, `FilledRatio`, `Status`, `Velocity`, `Angle`)
+  - **`IMyShipController`** — `GetNaturalGravity()`, `MoveIndicator`, `RotationIndicator`, `RollIndicator`, `HandBrake`, `DampenersOverride`
+  - **`IMyBlockGroup`** — `GetBlocksOfType<T>()`, `GetBlocks()`, `Name`; `IMyGridTerminalSystem.GetBlockGroupWithName()` and `GetBlockGroups()` with functional `StubBlockGroup`
+  - **Inventory system:** `IMyInventory` (`CurrentVolume`, `MaxVolume`, `CurrentMass`, `GetItems()`, `GetItemAmount()`), `MyInventoryItem`, `MyItemType` (with `MakeOre()`, `MakeIngot()`, `MakeComponent()` factory helpers), `MyFixedPoint` (full arithmetic + implicit conversions)
+  - **`IMyTerminalBlock` extended** — `GetProperty()`, `GetAction()`, `HasInventory`, `InventoryCount`, `GetInventory()` with `ITerminalProperty`/`ITerminalAction` stub interfaces
+  - **`IMyTextSurface` extended** — `ScriptBackgroundColor`, `ScriptForegroundColor` properties on both interface and `StubTextSurface`
+  - **`Vector3D` struct** — full 3D vector with arithmetic operators, `Normalize()`, `Length()` (used by `IMyShipController.GetNaturalGravity()`)
+  - **Enums:** `ChargeMode`, `MyShipConnectorStatus`, `DoorStatus`, `PistonStatus`
+  - **Auto-imported namespaces:** `VRage` and `VRage.Game.ModAPI.Ingame` now added automatically alongside the existing SE namespace imports
+  - PB scripts using batteries, thrusters, connectors, doors, pistons, gyros, sensors, lights, rotors, ship controllers, block groups, or inventory now compile and execute without missing-type errors
 
 ### v1.5.0
 - **Full Programmable Block script execution**
