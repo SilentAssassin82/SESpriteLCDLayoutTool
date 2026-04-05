@@ -10,6 +10,22 @@ Design your screens with drag & drop, preview real in-game textures, then export
 
 ---
 
+## 📑 Table of Contents
+
+| Section | Description |
+|---|---|
+| [✨ Features](#-features) | Visual canvas, texture previews, sprite catalog, code generation, compiler, animation, snapshots |
+| [🚀 Getting Started](#-getting-started) | Requirements, running the tool, importing sprite names |
+| [📖 Workflow](#-workflow) | Step-by-step usage guide |
+| [📸 Snapshot Helpers & Live Streaming](#-snapshot-helpers--live-lcd-streaming) | PB / Mod / Plugin snapshot code, live streaming setup, merge workflow |
+| [Screenshots](#screenshots) | Editor canvas, catalog, code generation, in-game results, demo videos |
+| [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
+| [Contributing](#contributing) | Bug reports, feature requests, PRs |
+| [License](#license) | MIT |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → latest) |
+
+---
+
 ## ✨ Features
 
 ### 🎨 Visual Canvas Designer
