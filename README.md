@@ -16,9 +16,11 @@ Design your screens with drag & drop, preview real in-game textures, then export
 - **Drag & drop** sprite placement on a pixel-accurate LCD canvas
 - **Zoom & pan** with mouse wheel and middle-click drag
 - **Snap to grid** with configurable grid size
+- **Constrain to surface** — optional toggle to keep sprites within the LCD surface bounds during drag and nudge
 - **Resize handles** for quick sprite scaling
 - **Rotation** support for texture sprites
 - **Layer ordering** — move sprites up/down in the draw order
+- **Layer visibility** — hide individual layers or all layers above a sprite to easily select and edit buried sprites
 - **Undo/Redo** with full history
 - **Dark theme** UI matching the Space Engineers aesthetic
 
@@ -615,6 +617,18 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.0.7
+- **Hide Layers Above** — right-click a sprite in the layer list and choose **Hide Layers Above** to hide all sprites drawn on top of the selected one, making it easy to select and edit buried sprites. Use **Show All Layers** to restore visibility
+- **Constrain to Surface toggle** — new **View → Constrain to Surface** option clamps sprite drag and nudge operations to the LCD surface bounds, preventing sprites from being moved outside the visible area
+- **Deferred code refresh during drag** — the code panel now shows `⟳ dragging…` during mouse drag instead of regenerating code on every pixel move, then refreshes once on mouse-up for smoother canvas interaction
+- **Coding-mode indicator** — a label near the code panel shows the current mode (e.g. round-trip source loaded vs. generated code)
+- **Structural edits invalidate original source** — adding, deleting, or duplicating sprites now clears the round-trip source tracking, since the original source no longer matches the canvas layout
+- **Post-parse sprite validation** — `ValidateAndFixSprites` checks imported sprites for NaN/Infinity and out-of-range values after code parsing, preventing canvas rendering issues from malformed input
+- **Fixed Apply Code button visibility** — `ClearCodeDirty()` no longer hides the Apply Code button when original source code is loaded, so the button persists across all canvas operations in round-trip mode
+- **Fixed glyph replacement overwriting Scale** — replacing a sprite with a glyph from the catalog no longer resets Scale to 1.0, preserving the user's existing text scale value
+- **Fixed layer list selection in isolation mode** — the layer list now correctly tracks the selected sprite index when isolation/filtered mode is active
+- **Fixed color swatch refresh after expression edits** — the color swatch and alpha slider now update immediately after editing a color literal in the SOURCE VALUES panel via auto re-execution
+
 ### v2.0.6
 - **Animation snippet "Replace in Code"** — the **📥 Insert at Cursor** button in the animation snippet dialog (right-click → Add Animation…) now auto-locates the selected sprite's `.Add(new MySprite { … });` block in the code editor and replaces it with the generated animation snippet. When the sprite's code block is found, the button label changes to **📥 Replace in Code** and the status bar confirms the replacement
 - **Fixed selection overwrite bug** — previously, highlighting text in the code editor before clicking Insert had no effect because `SelectionLength` was explicitly zeroed. Manual text selection is now preserved, so highlighting any region and clicking Insert correctly replaces it
@@ -834,7 +848,7 @@ MIT License
   - **Unified offset management** — `ShiftExpressionOffsets` adjusts all tracked literal positions (across all sprites and all types) after any patch changes source length
   - Tracks source ranges and baseline values per sprite during import
   - Context detection labels sprites from surrounding `case` statements for easy identification
-- **Layer List Context Menu** — Right-click the layer list (bottom-right) for Move Up, Move Down, Duplicate, and Delete
+- **Layer List Context Menu** — Right-click the layer list (bottom-right) for Move Up, Move Down, Duplicate, Delete, Hide Layer, Hide Layers Above, and Show All Layers
 - **Sprite Catalog Replace** — Right-click a sprite in the catalog (left panel) to replace the currently selected sprite's texture or glyph, keeping position, size, color, and all other properties
 
 ### v1.1.0
