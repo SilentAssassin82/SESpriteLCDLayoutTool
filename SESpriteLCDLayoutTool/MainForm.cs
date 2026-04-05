@@ -906,6 +906,44 @@ namespace SESpriteLCDLayoutTool
             };
             _codeBox.LostFocus += (s, e) => _autoComplete?.Hide();
 
+            // ── Code editor right-click context menu ──
+            var ctxCode = new ContextMenuStrip();
+            ctxCode.BackColor = Color.FromArgb(30, 30, 30);
+            ctxCode.ForeColor = Color.White;
+            ctxCode.Renderer  = new ToolStripProfessionalRenderer(new DarkColorTable());
+
+            var mnuSelectAll = new ToolStripMenuItem("Select All", null, (s2, e2) => _codeBox.SelectAll());
+            mnuSelectAll.ShortcutKeyDisplayString = "Ctrl+A";
+            ctxCode.Items.Add(mnuSelectAll);
+            ctxCode.Items.Add(new ToolStripSeparator());
+
+            var mnuCut  = new ToolStripMenuItem("Cut",   null, (s2, e2) => _codeBox.Cut());
+            mnuCut.ShortcutKeyDisplayString = "Ctrl+X";
+            var mnuCopy = new ToolStripMenuItem("Copy",  null, (s2, e2) => _codeBox.Copy());
+            mnuCopy.ShortcutKeyDisplayString = "Ctrl+C";
+            var mnuPaste = new ToolStripMenuItem("Paste", null, (s2, e2) => _codeBox.Paste());
+            mnuPaste.ShortcutKeyDisplayString = "Ctrl+V";
+            ctxCode.Items.Add(mnuCut);
+            ctxCode.Items.Add(mnuCopy);
+            ctxCode.Items.Add(mnuPaste);
+
+            ctxCode.Items.Add(new ToolStripSeparator());
+
+            var mnuIndent = new ToolStripMenuItem("Set Indentation");
+            mnuIndent.DropDownItems.Add(new ToolStripMenuItem("2 Spaces", null, (s2, e2) => ReindentCodeBox(2, false)));
+            mnuIndent.DropDownItems.Add(new ToolStripMenuItem("4 Spaces", null, (s2, e2) => ReindentCodeBox(4, false)));
+            mnuIndent.DropDownItems.Add(new ToolStripMenuItem("Tab",      null, (s2, e2) => ReindentCodeBox(0, true)));
+            ctxCode.Items.Add(mnuIndent);
+
+            ctxCode.Opening += (s2, e2) =>
+            {
+                bool hasSel = _codeBox.SelectionLength > 0;
+                mnuCut.Enabled  = hasSel;
+                mnuCopy.Enabled = hasSel;
+                mnuPaste.Enabled = Clipboard.ContainsText();
+            };
+            _codeBox.ContextMenuStrip = ctxCode;
+
             panel.Controls.Add(_codeBox);
             panel.Controls.Add(toolbar);
             _autoComplete = new CodeAutoComplete(_codeBox);
@@ -1866,6 +1904,60 @@ namespace SESpriteLCDLayoutTool
             if (_codeBox.Text != text)
                 _codeBox.Text = text;
             _suppressCodeBoxEvents = false;
+        }
+
+        /// <summary>
+        /// Re-indents all lines in <see cref="_codeBox"/> using the specified style.
+        /// Preserves the relative indentation depth (measured in the smallest indent
+        /// unit detected) and converts it to the chosen style.
+        /// </summary>
+        private void ReindentCodeBox(int spaces, bool useTabs)
+        {
+            if (_codeBox == null || string.IsNullOrEmpty(_codeBox.Text)) return;
+
+            string unit = useTabs ? "\t" : new string(' ', spaces);
+            var lines = _codeBox.Text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var sb = new System.Text.StringBuilder();
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                // Count leading whitespace depth: each tab = 1 level,
+                // consecutive spaces counted as groups of the detected size.
+                int depth = 0;
+                int j = 0;
+                while (j < line.Length)
+                {
+                    if (line[j] == '\t')
+                    {
+                        depth++;
+                        j++;
+                    }
+                    else if (line[j] == ' ')
+                    {
+                        // Count consecutive spaces, treat every 2–4 as one level
+                        int start = j;
+                        while (j < line.Length && line[j] == ' ') j++;
+                        int spaceCount = j - start;
+                        // Detect original indent unit: try 4, then 3, then 2, fallback 1
+                        int origUnit = spaceCount >= 4 ? 4 : spaceCount >= 2 ? 2 : 1;
+                        depth += spaceCount / origUnit;
+                    }
+                    else break;
+                }
+                string content = line.TrimStart(' ', '\t');
+                if (i > 0) sb.AppendLine();
+                if (content.Length > 0)
+                {
+                    for (int k = 0; k < depth; k++) sb.Append(unit);
+                }
+                sb.Append(content);
+            }
+
+            int pos = _codeBox.SelectionStart;
+            _codeBox.Text = sb.ToString();
+            _codeBox.SelectionStart = Math.Min(pos, _codeBox.TextLength);
+            SetStatus($"Indentation set to {(useTabs ? "tabs" : spaces + " spaces")}");
         }
 
         /// <summary>
@@ -4117,165 +4209,200 @@ namespace SESpriteLCDLayoutTool
         }
 
         // ── Animation snippet dialog ──────────────────────────────────────────
+        private Form _snippetDialog;
+
         private void ShowAnimationSnippetDialog(AnimationType animType)
         {
             var sprite = _canvas.SelectedSprite;
             if (sprite == null) { SetStatus("Select a sprite first"); return; }
 
+            // Close any previously open snippet dialog
+            if (_snippetDialog != null && !_snippetDialog.IsDisposed)
+            {
+                _snippetDialog.Close();
+                _snippetDialog.Dispose();
+                _snippetDialog = null;
+            }
+
             var p = new AnimationSnippetGenerator.AnimationParams();
 
-            using (var dlg = new Form())
+            var dlg = new Form();
+            _snippetDialog = dlg;
+
+            dlg.Text = $"Add Animation — {animType}";
+            dlg.Size = new Size(640, 560);
+            dlg.MinimumSize = new Size(500, 400);
+            dlg.StartPosition = FormStartPosition.CenterParent;
+            dlg.BackColor = Color.FromArgb(30, 30, 30);
+            dlg.ForeColor = Color.FromArgb(220, 220, 220);
+            dlg.Font = new Font("Segoe UI", 9f);
+            dlg.FormClosed += (s2, e2) =>
             {
-                dlg.Text = $"Add Animation — {animType}";
-                dlg.Size = new Size(640, 560);
-                dlg.MinimumSize = new Size(500, 400);
-                dlg.StartPosition = FormStartPosition.CenterParent;
-                dlg.BackColor = Color.FromArgb(30, 30, 30);
-                dlg.ForeColor = Color.FromArgb(220, 220, 220);
-                dlg.Font = new Font("Segoe UI", 9f);
+                if (_snippetDialog == dlg) _snippetDialog = null;
+                dlg.Dispose();
+            };
 
-                // ── Header label ──
-                var lblHeader = new Label
-                {
-                    Dock = DockStyle.Top,
-                    Height = 36,
-                    Padding = new Padding(8, 8, 8, 0),
-                    Text = $"Animation: {animType}  |  Sprite: \"{sprite.DisplayName}\"",
-                    ForeColor = Color.FromArgb(180, 200, 255),
-                    Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-                };
+            // ── Header label ──
+            var lblHeader = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = 36,
+                Padding = new Padding(8, 8, 8, 0),
+                Text = $"Animation: {animType}  |  Sprite: \"{sprite.DisplayName}\"",
+                ForeColor = Color.FromArgb(180, 200, 255),
+                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+            };
 
-                // ── Parameter panel ──
-                var pnlParams = new TableLayoutPanel
-                {
-                    Dock = DockStyle.Top,
-                    AutoSize = true,
-                    ColumnCount = 2,
-                    Padding = new Padding(8, 4, 8, 4),
-                };
-                pnlParams.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
-                pnlParams.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            // ── Parameter panel ──
+            var pnlParams = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 2,
+                Padding = new Padding(8, 4, 8, 4),
+            };
+            pnlParams.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
+            pnlParams.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-                // ── Code preview ──
-                var txtCode = new TextBox
-                {
-                    Dock = DockStyle.Fill,
-                    Multiline = true,
-                    ReadOnly = true,
-                    ScrollBars = ScrollBars.Both,
-                    WordWrap = false,
-                    BackColor = Color.FromArgb(20, 20, 20),
-                    ForeColor = Color.FromArgb(200, 220, 200),
-                    Font = new Font("Consolas", 9.5f),
-                    MaxLength = 0,
-                };
+            // ── Code preview ──
+            var txtCode = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Both,
+                WordWrap = false,
+                BackColor = Color.FromArgb(20, 20, 20),
+                ForeColor = Color.FromArgb(200, 220, 200),
+                Font = new Font("Consolas", 9.5f),
+                MaxLength = 0,
+            };
 
-                // Refresh code preview helper
-                Action refreshPreview = () =>
-                {
-                    txtCode.Text = AnimationSnippetGenerator.Generate(sprite, animType, p);
-                };
+            // Refresh code preview helper
+            Action refreshPreview = () =>
+            {
+                txtCode.Text = AnimationSnippetGenerator.Generate(sprite, animType, p);
+            };
 
-                // ── Build parameter controls based on animation type ──
-                int row = 0;
-                switch (animType)
-                {
-                    case AnimationType.Rotate:
-                        AddParamFloat(pnlParams, ref row, "Speed (rad/tick):", p.RotateSpeed,
-                            v => { p.RotateSpeed = v; refreshPreview(); });
-                        AddParamCheckbox(pnlParams, ref row, "Clockwise:", p.Clockwise,
-                            v => { p.Clockwise = v; refreshPreview(); });
-                        break;
+            // ── Build parameter controls based on animation type ──
+            int row = 0;
 
-                    case AnimationType.Oscillate:
-                        AddParamCombo(pnlParams, ref row, "Axis:",
-                            new[] { "X", "Y", "Both" }, (int)p.Axis,
-                            v => { p.Axis = (OscillateAxis)v; refreshPreview(); });
-                        AddParamFloat(pnlParams, ref row, "Amplitude (px):", p.OscillateAmplitude,
-                            v => { p.OscillateAmplitude = v; refreshPreview(); });
-                        AddParamFloat(pnlParams, ref row, "Speed:", p.OscillateSpeed,
-                            v => { p.OscillateSpeed = v; refreshPreview(); });
-                        break;
+            // List variable name selector (shared across all types)
+            AddParamCombo(pnlParams, ref row, "List variable:",
+                new[] { "sprites", "frame" }, 0,
+                v => { p.ListVarName = v == 0 ? "sprites" : "frame"; refreshPreview(); });
 
-                    case AnimationType.Pulse:
-                        AddParamFloat(pnlParams, ref row, "Amplitude (±):", p.PulseAmplitude,
-                            v => { p.PulseAmplitude = v; refreshPreview(); });
-                        AddParamFloat(pnlParams, ref row, "Speed:", p.PulseSpeed,
-                            v => { p.PulseSpeed = v; refreshPreview(); });
-                        break;
+            switch (animType)
+            {
+                case AnimationType.Rotate:
+                    AddParamFloat(pnlParams, ref row, "Speed (rad/tick):", p.RotateSpeed,
+                        v => { p.RotateSpeed = v; refreshPreview(); });
+                    AddParamCheckbox(pnlParams, ref row, "Clockwise:", p.Clockwise,
+                        v => { p.Clockwise = v; refreshPreview(); });
+                    break;
 
-                    case AnimationType.Fade:
-                        AddParamInt(pnlParams, ref row, "Min Alpha:", p.FadeMinAlpha, 0, 255,
-                            v => { p.FadeMinAlpha = v; refreshPreview(); });
-                        AddParamInt(pnlParams, ref row, "Max Alpha:", p.FadeMaxAlpha, 0, 255,
-                            v => { p.FadeMaxAlpha = v; refreshPreview(); });
-                        AddParamFloat(pnlParams, ref row, "Speed:", p.FadeSpeed,
-                            v => { p.FadeSpeed = v; refreshPreview(); });
-                        break;
+                case AnimationType.Oscillate:
+                    AddParamCombo(pnlParams, ref row, "Axis:",
+                        new[] { "X", "Y", "Both" }, (int)p.Axis,
+                        v => { p.Axis = (OscillateAxis)v; refreshPreview(); });
+                    AddParamFloat(pnlParams, ref row, "Amplitude (px):", p.OscillateAmplitude,
+                        v => { p.OscillateAmplitude = v; refreshPreview(); });
+                    AddParamFloat(pnlParams, ref row, "Speed:", p.OscillateSpeed,
+                        v => { p.OscillateSpeed = v; refreshPreview(); });
+                    break;
 
-                    case AnimationType.Blink:
-                        AddParamInt(pnlParams, ref row, "On (ticks):", p.BlinkOnTicks, 1, 600,
-                            v => { p.BlinkOnTicks = v; refreshPreview(); });
-                        AddParamInt(pnlParams, ref row, "Off (ticks):", p.BlinkOffTicks, 1, 600,
-                            v => { p.BlinkOffTicks = v; refreshPreview(); });
-                        break;
+                case AnimationType.Pulse:
+                    AddParamFloat(pnlParams, ref row, "Amplitude (±):", p.PulseAmplitude,
+                        v => { p.PulseAmplitude = v; refreshPreview(); });
+                    AddParamFloat(pnlParams, ref row, "Speed:", p.PulseSpeed,
+                        v => { p.PulseSpeed = v; refreshPreview(); });
+                    break;
 
-                    case AnimationType.ColorCycle:
-                        AddParamFloat(pnlParams, ref row, "Speed (°/tick):", p.CycleSpeed,
-                            v => { p.CycleSpeed = v; refreshPreview(); });
-                        AddParamFloat(pnlParams, ref row, "Brightness:", p.CycleBrightness,
-                            v => { p.CycleBrightness = v; refreshPreview(); });
-                        break;
-                }
+                case AnimationType.Fade:
+                    AddParamInt(pnlParams, ref row, "Min Alpha:", p.FadeMinAlpha, 0, 255,
+                        v => { p.FadeMinAlpha = v; refreshPreview(); });
+                    AddParamInt(pnlParams, ref row, "Max Alpha:", p.FadeMaxAlpha, 0, 255,
+                        v => { p.FadeMaxAlpha = v; refreshPreview(); });
+                    AddParamFloat(pnlParams, ref row, "Speed:", p.FadeSpeed,
+                        v => { p.FadeSpeed = v; refreshPreview(); });
+                    break;
 
-                // ── Bottom toolbar ──
-                var toolbar = new FlowLayoutPanel
-                {
-                    Dock = DockStyle.Bottom,
-                    Height = 38,
-                    FlowDirection = FlowDirection.RightToLeft,
-                    BackColor = Color.FromArgb(30, 30, 30),
-                    Padding = new Padding(4, 4, 8, 4),
-                };
+                case AnimationType.Blink:
+                    AddParamInt(pnlParams, ref row, "On (ticks):", p.BlinkOnTicks, 1, 600,
+                        v => { p.BlinkOnTicks = v; refreshPreview(); });
+                    AddParamInt(pnlParams, ref row, "Off (ticks):", p.BlinkOffTicks, 1, 600,
+                        v => { p.BlinkOffTicks = v; refreshPreview(); });
+                    break;
 
-                var btnClose = DarkButton("Close", Color.FromArgb(70, 70, 70));
-                btnClose.Width = 80;
-                btnClose.Click += (s, e) => dlg.Close();
-
-                var btnCopy = DarkButton("\uD83D\uDCCB Copy to Clipboard", Color.FromArgb(0, 100, 180));
-                btnCopy.Width = 180;
-                btnCopy.Click += (s, e) =>
-                {
-                    Clipboard.SetText(txtCode.Text);
-                    SetStatus("Animation snippet copied to clipboard");
-                };
-
-                toolbar.Controls.Add(btnClose);
-                toolbar.Controls.Add(btnCopy);
-
-                // ── Separator label ──
-                var lblCodeHeader = new Label
-                {
-                    Dock = DockStyle.Top,
-                    Height = 24,
-                    Text = "   Code Preview:",
-                    ForeColor = Color.FromArgb(140, 160, 180),
-                    Font = new Font("Segoe UI", 8.5f),
-                    Padding = new Padding(8, 6, 0, 0),
-                };
-
-                // ── Assemble layout (add in reverse dock order) ──
-                dlg.Controls.Add(txtCode);        // Fill
-                dlg.Controls.Add(lblCodeHeader);   // Top (below params)
-                dlg.Controls.Add(pnlParams);       // Top (below header)
-                dlg.Controls.Add(lblHeader);       // Top
-                dlg.Controls.Add(toolbar);          // Bottom
-
-                // Initial preview
-                refreshPreview();
-
-                dlg.ShowDialog(this);
+                case AnimationType.ColorCycle:
+                    AddParamFloat(pnlParams, ref row, "Speed (°/tick):", p.CycleSpeed,
+                        v => { p.CycleSpeed = v; refreshPreview(); });
+                    AddParamFloat(pnlParams, ref row, "Brightness:", p.CycleBrightness,
+                        v => { p.CycleBrightness = v; refreshPreview(); });
+                    break;
             }
+
+            // ── Bottom toolbar ──
+            var toolbar = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 38,
+                FlowDirection = FlowDirection.RightToLeft,
+                BackColor = Color.FromArgb(30, 30, 30),
+                Padding = new Padding(4, 4, 8, 4),
+            };
+
+            var btnClose = DarkButton("Close", Color.FromArgb(70, 70, 70));
+            btnClose.Width = 80;
+            btnClose.Click += (s, e) => dlg.Close();
+
+            var btnCopy = DarkButton("\uD83D\uDCCB Copy to Clipboard", Color.FromArgb(0, 100, 180));
+            btnCopy.Width = 180;
+            btnCopy.Click += (s, e) =>
+            {
+                Clipboard.SetText(txtCode.Text);
+                SetStatus("Animation snippet copied to clipboard");
+            };
+
+            var btnInsert = DarkButton("📥 Insert at Cursor", Color.FromArgb(0, 130, 80));
+            btnInsert.Width = 160;
+            btnInsert.Click += (s, e) =>
+            {
+                if (_codeBox == null) return;
+                int pos = _codeBox.SelectionStart;
+                _codeBox.Focus();
+                _codeBox.SelectionStart = pos;
+                _codeBox.SelectionLength = 0;
+                _codeBox.SelectedText = txtCode.Text;
+                SetStatus("Animation snippet inserted at cursor");
+            };
+
+            toolbar.Controls.Add(btnClose);
+            toolbar.Controls.Add(btnCopy);
+            toolbar.Controls.Add(btnInsert);
+
+            // ── Separator label ──
+            var lblCodeHeader = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = 24,
+                Text = "   Code Preview:",
+                ForeColor = Color.FromArgb(140, 160, 180),
+                Font = new Font("Segoe UI", 8.5f),
+                Padding = new Padding(8, 6, 0, 0),
+            };
+
+            // ── Assemble layout (add in reverse dock order) ──
+            dlg.Controls.Add(txtCode);        // Fill
+            dlg.Controls.Add(lblCodeHeader);   // Top (below params)
+            dlg.Controls.Add(pnlParams);       // Top (below header)
+            dlg.Controls.Add(lblHeader);       // Top
+            dlg.Controls.Add(toolbar);          // Bottom
+
+            // Initial preview
+            refreshPreview();
+
+            dlg.Show(this);
         }
 
         // ── Dialog parameter helpers ─────────────────────────────────────────────

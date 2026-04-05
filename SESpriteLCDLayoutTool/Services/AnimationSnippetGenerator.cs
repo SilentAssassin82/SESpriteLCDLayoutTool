@@ -48,6 +48,13 @@ namespace SESpriteLCDLayoutTool.Services
 
         public class AnimationParams
         {
+            // Shared
+            /// <summary>
+            /// Variable name for the sprite list: "sprites" for List&lt;MySprite&gt;
+            /// helper methods, "frame" for MySpriteDrawFrame (PB/Mod).
+            /// </summary>
+            public string ListVarName { get; set; } = "sprites";
+
             // Rotate
             public float RotateSpeed { get; set; } = 0.05f;
             public bool Clockwise { get; set; } = true;
@@ -90,7 +97,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("// In your render method:");
             sb.AppendLine("_tick++;");
             sb.AppendLine();
-            AppendSpriteBlock(sb, sp, $"{dir}_tick * {p.RotateSpeed}f", animatedProp: "RotationOrScale");
+            AppendSpriteBlock(sb, sp, $"{dir}_tick * {p.RotateSpeed}f", animatedProp: "RotationOrScale", listVar: p.ListVarName);
             return sb.ToString();
         }
 
@@ -122,7 +129,7 @@ namespace SESpriteLCDLayoutTool.Services
                     break;
             }
 
-            AppendSpriteBlock(sb, sp, posExpr, animatedProp: "Position");
+            AppendSpriteBlock(sb, sp, posExpr, animatedProp: "Position", listVar: p.ListVarName);
             return sb.ToString();
         }
 
@@ -141,7 +148,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine();
 
             string sizeExpr = $"new Vector2({sp.Width:F1}f * pulseScale, {sp.Height:F1}f * pulseScale)";
-            AppendSpriteBlock(sb, sp, sizeExpr, animatedProp: "Size");
+            AppendSpriteBlock(sb, sp, sizeExpr, animatedProp: "Size", listVar: p.ListVarName);
             return sb.ToString();
         }
 
@@ -164,7 +171,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine();
 
             string colorExpr = $"new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, fadeAlpha)";
-            AppendSpriteBlock(sb, sp, colorExpr, animatedProp: "Color");
+            AppendSpriteBlock(sb, sp, colorExpr, animatedProp: "Color", listVar: p.ListVarName);
             return sb.ToString();
         }
 
@@ -185,7 +192,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("if (blinkVisible)");
             sb.AppendLine("{");
 
-            AppendSpriteBlock(sb, sp, null, animatedProp: null, indent: "    ");
+            AppendSpriteBlock(sb, sp, null, animatedProp: null, indent: "    ", listVar: p.ListVarName);
 
             sb.AppendLine("}");
             return sb.ToString();
@@ -223,18 +230,20 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("Color cycleColor = new Color((int)(cr * 255), (int)(cg * 255), (int)(cb * 255), 255);");
             sb.AppendLine();
 
-            AppendSpriteBlock(sb, sp, "cycleColor", animatedProp: "Color");
+            AppendSpriteBlock(sb, sp, "cycleColor", animatedProp: "Color", listVar: p.ListVarName);
             return sb.ToString();
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────────
 
         private static void AppendSpriteBlock(StringBuilder sb, SpriteEntry sp,
-            string animatedValue, string animatedProp, string indent = "")
+            string animatedValue, string animatedProp, string indent = "",
+            string listVar = "sprites")
         {
             bool isText = sp.Type == SpriteEntryType.Text;
+            string alignStr = "TextAlignment." + sp.Alignment.ToString().ToUpperInvariant();
 
-            sb.AppendLine($"{indent}frame.Add(new MySprite");
+            sb.AppendLine($"{indent}{listVar}.Add(new MySprite");
             sb.AppendLine($"{indent}{{");
 
             if (isText)
@@ -244,7 +253,7 @@ namespace SESpriteLCDLayoutTool.Services
                 AppendProp(sb, indent, "Position", $"new Vector2({sp.X:F1}f, {sp.Y:F1}f)", animatedProp, animatedValue);
                 AppendProp(sb, indent, "Color", $"new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA})", animatedProp, animatedValue);
                 sb.AppendLine($"{indent}    FontId         = \"{Esc(sp.FontId)}\",");
-                sb.AppendLine($"{indent}    Alignment      = TextAlignment.{sp.Alignment.ToString().ToUpperInvariant()},");
+                sb.AppendLine($"{indent}    Alignment      = {alignStr},");
                 AppendProp(sb, indent, "RotationOrScale", $"{sp.Scale:F2}f", animatedProp, animatedValue);
             }
             else
@@ -254,7 +263,7 @@ namespace SESpriteLCDLayoutTool.Services
                 AppendProp(sb, indent, "Position", $"new Vector2({sp.X:F1}f, {sp.Y:F1}f)", animatedProp, animatedValue);
                 AppendProp(sb, indent, "Size", $"new Vector2({sp.Width:F1}f, {sp.Height:F1}f)", animatedProp, animatedValue);
                 AppendProp(sb, indent, "Color", $"new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA})", animatedProp, animatedValue);
-                sb.AppendLine($"{indent}    Alignment      = TextAlignment.CENTER,");
+                sb.AppendLine($"{indent}    Alignment      = {alignStr},");
                 AppendProp(sb, indent, "RotationOrScale", $"{sp.Rotation:F4}f", animatedProp, animatedValue);
             }
 

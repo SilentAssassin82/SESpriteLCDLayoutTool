@@ -615,8 +615,17 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.0.3
+- **Animation snippet improvements** — generated code snippets now produce correct, ready-to-paste output:
+  - **List variable selector** — choose between `sprites` (for `List<MySprite>` helper methods) or `frame` (for `MySpriteDrawFrame` PB/Mod code) from a dropdown in the snippet parameter dialog; the generated `.Add(...)` call uses the selected variable name instead of always hardcoding `frame`
+  - **Correct alignment** — texture sprites now use the sprite's actual `TextAlignment` value instead of always emitting `TextAlignment.CENTER`
+- **Insert at Cursor** — the animation snippet dialog is now **non-modal** (stays open alongside the code editor). A new **📥 Insert at Cursor** button inserts the generated snippet directly into the code editor at the current cursor position — no need to copy, close the dialog, and paste manually
+- **Code editor context menu** — right-click the code editor (Paste Layout Code dialog) for:
+  - **Select All** / **Cut** / **Copy** / **Paste** with standard keyboard shortcut hints
+  - **Set Indentation** submenu — convert all indentation in the editor to **2 Spaces**, **4 Spaces**, or **Tabs**
+
 ### v2.0.2
-- **Double-click to jump to method definition** — double-click any detected method in the call list to scroll the code editor directly to its definition and highlight the signature line
+- **Double-click to jump to method definition**
 - **Right-click context menu on detected methods** — right-click a method in the call list for:
   - **▶ Start Focused Animation** — starts animation with the selected method's sprites at full opacity while dimming all other sprites to 20%, making it easy to isolate and preview a single render method in a multi-method scene
   - **↗ Jump to Definition** — same as double-click, scrolls to the method definition
