@@ -1090,13 +1090,13 @@ namespace SESpriteLCDLayoutTool
                     _execCallBox.Text = _lstDetectedCalls.SelectedItem.ToString();
             };
 
-            // Double-click → jump to method definition in the code editor
+            // Double-click → execute the selected call and isolate its sprites
             _lstDetectedCalls.MouseDoubleClick += (s, e) =>
             {
                 if (_lstDetectedCalls.SelectedItem == null) return;
                 string call = _lstDetectedCalls.SelectedItem.ToString();
                 _execCallBox.Text = call;
-                JumpToMethodDefinition(call);
+                IsolateCallSprites(call);
             };
 
             // Right-click → context menu with focused-animation option
@@ -1113,6 +1113,16 @@ namespace SESpriteLCDLayoutTool
                 int idx = _lstDetectedCalls.IndexFromPoint(e.Location);
                 if (idx >= 0) _lstDetectedCalls.SelectedIndex = idx;
             };
+
+            var mnuExecIsolate = new ToolStripMenuItem("▶ Execute & Isolate");
+            mnuExecIsolate.Click += (s2, e2) =>
+            {
+                if (_lstDetectedCalls.SelectedItem == null) return;
+                string call = _lstDetectedCalls.SelectedItem.ToString();
+                _execCallBox.Text = call;
+                IsolateCallSprites(call);
+            };
+            ctxCalls.Items.Add(mnuExecIsolate);
 
             var mnuFocusAnim = new ToolStripMenuItem("▶ Start Focused Animation");
             mnuFocusAnim.Click += (s2, e2) =>
