@@ -1395,10 +1395,10 @@ namespace SESpriteLCDLayoutTool
                         // Isolation mode: find the filtered-list index of the selected sprite
                         int listIdx = 0;
                         bool found = false;
-foreach (var s in _layout.Sprites)
+foreach (var sprite in _layout.Sprites)
 {
-    if (!highlighted.Contains(s)) continue;
-    if (s == sp) { _lstLayers.SelectedIndex = listIdx; found = true; break; }
+    if (!highlighted.Contains(sprite)) continue;
+    if (sprite == sp) { _lstLayers.SelectedIndex = listIdx; found = true; break; }
                             listIdx++;
                         }
                         if (!found) _lstLayers.SelectedIndex = -1;
@@ -2093,7 +2093,7 @@ foreach (var s in _layout.Sprites)
                 if (sp.Height <= 0f || float.IsNaN(sp.Height) || float.IsInfinity(sp.Height))
                 { warnings.Add($"Height invalid on '{sp.DisplayName}' → 10"); sp.Height = 10f; }
                 if (sp.ColorA < 0 || sp.ColorA > 255)
-{ warnings.Add($"Alpha out of range on '{sp.DisplayName}' → clamped"); sp.ColorA = Math.Max(0, Math.Min(255, sp.ColorA)); }
+{ warnings.Add($"Alpha out of range on '{sp.DisplayName}' → clamped"); sp.ColorA = sp.ColorA < 0 ? 0 : 255; }
                 if (sp.Type == SpriteEntryType.Text && (sp.Scale <= 0f || float.IsNaN(sp.Scale) || float.IsInfinity(sp.Scale)))
                 { warnings.Add($"Scale invalid on '{sp.DisplayName}' → 1"); sp.Scale = 1f; }
             }
