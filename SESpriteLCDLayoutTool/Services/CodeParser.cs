@@ -82,10 +82,11 @@ namespace SESpriteLCDLayoutTool.Services
                 var sprite = ParseConstructorArgs(args);
                 if (sprite != null)
                 {
+                    int trailEnd = ApplyTrailingAssignments(code, m.Index, parenEnd + 1, sprite);
                     sprite.SourceStart = m.Index;
-                    sprite.SourceEnd = parenEnd + 1;
+                    sprite.SourceEnd = trailEnd > parenEnd + 1 ? trailEnd : parenEnd + 1;
                     results.Add(sprite);
-                    consumed.Add(new[] { m.Index, parenEnd });
+                    consumed.Add(new[] { m.Index, sprite.SourceEnd - 1 });
                 }
             }
 
@@ -106,11 +107,11 @@ namespace SESpriteLCDLayoutTool.Services
                 if (sprite != null)
                 {
                     // Check for subsequent .Position assignment on the same variable
-                    ApplyTrailingAssignments(code, m.Index, parenEnd, sprite);
+                    int trailEnd = ApplyTrailingAssignments(code, m.Index, parenEnd + 1, sprite);
                     sprite.SourceStart = m.Index;
-                    sprite.SourceEnd = parenEnd + 1;
+                    sprite.SourceEnd = trailEnd > parenEnd + 1 ? trailEnd : parenEnd + 1;
                     results.Add(sprite);
-                    consumed.Add(new[] { m.Index, parenEnd });
+                    consumed.Add(new[] { m.Index, sprite.SourceEnd - 1 });
                 }
             }
 
@@ -130,11 +131,11 @@ namespace SESpriteLCDLayoutTool.Services
                 var sprite = ParseCreateSpriteArgs(args);
                 if (sprite != null)
                 {
-                    ApplyTrailingAssignments(code, m.Index, parenEnd, sprite);
+                    int trailEnd = ApplyTrailingAssignments(code, m.Index, parenEnd + 1, sprite);
                     sprite.SourceStart = m.Index;
-                    sprite.SourceEnd = parenEnd + 1;
+                    sprite.SourceEnd = trailEnd > parenEnd + 1 ? trailEnd : parenEnd + 1;
                     results.Add(sprite);
-                    consumed.Add(new[] { m.Index, parenEnd });
+                    consumed.Add(new[] { m.Index, sprite.SourceEnd - 1 });
                 }
             }
 
@@ -454,13 +455,18 @@ namespace SESpriteLCDLayoutTool.Services
         ///   s.Position = new Vector2(100, 200);
         ///   s.Color = new Color(255, 0, 0);
         /// </summary>
-        private static void ApplyTrailingAssignments(string code, int exprStart, int exprEnd, SpriteEntry sprite)
+        /// <summary>
+        /// Returns the absolute end position (in <paramref name="code"/>) of the
+        /// last matched trailing assignment, or -1 when no trailing assignments
+        /// were found.  Callers can use this to extend <c>SourceEnd</c>.
+        /// </summary>
+        private static int ApplyTrailingAssignments(string code, int exprStart, int exprEnd, SpriteEntry sprite)
         {
             // Walk backwards from the expression to find the variable name:
             // "var s = MySprite.CreateText(...)" or "s = MySprite.CreateText(...)"
             string before = code.Substring(0, exprStart);
             var varMatch = Regex.Match(before, @"(?:var\s+)?(\w+)\s*=\s*$");
-            if (!varMatch.Success) return;
+            if (!varMatch.Success) return -1;
 
             string varName = varMatch.Groups[1].Value;
 
@@ -469,6 +475,7 @@ namespace SESpriteLCDLayoutTool.Services
             var propPattern = new Regex(
                 @"(?<!\w)" + Regex.Escape(varName) + @"\s*\.\s*(\w+)\s*=\s*(.+?)\s*;");
 
+            int lastAbsEnd = -1;
             foreach (Match pm in propPattern.Matches(after))
             {
                 string prop = pm.Groups[1].Value;
@@ -500,8 +507,44 @@ namespace SESpriteLCDLayoutTool.Services
                         else
                             sprite.Rotation = rv;
                         break;
+                    case "Alignment":
+                        if (val.IndexOf("LEFT", StringComparison.OrdinalIgnoreCase) >= 0)
+                            sprite.Alignment = SpriteTextAlignment.Left;
+                        else if (val.IndexOf("RIGHT", StringComparison.OrdinalIgnoreCase) >= 0)
+                            sprite.Alignment = SpriteTextAlignment.Right;
+                        else
+                            sprite.Alignment = SpriteTextAlignment.Center;
+                        break;
+                    case "FontId":
+                        var fM = Regex.Match(val, @"""((?:[^""\\]|\\.)*)""");
+                        if (fM.Success)
+                            sprite.FontId = UnescapeCSharpString(fM.Groups[1].Value);
+                        break;
+                    case "Data":
+                        var dM = Regex.Match(val, @"""((?:[^""\\]|\\.)*)""");
+                        if (dM.Success)
+                        {
+                            string s = UnescapeCSharpString(dM.Groups[1].Value);
+                            if (sprite.Type == SpriteEntryType.Text)
+                                sprite.Text = s;
+                            else
+                                sprite.SpriteName = s;
+                        }
+                        break;
+                    case "Type":
+                        if (val.IndexOf("TEXT", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                            val.IndexOf("TEXTURE", StringComparison.OrdinalIgnoreCase) < 0)
+                            sprite.Type = SpriteEntryType.Text;
+                        else
+                            sprite.Type = SpriteEntryType.Texture;
+                        break;
+                    default:
+                        continue; // unknown property — don't extend range
                 }
+                int absEnd = exprEnd + pm.Index + pm.Length;
+                if (absEnd > lastAbsEnd) lastAbsEnd = absEnd;
             }
+            return lastAbsEnd;
         }
 
         /// <summary>

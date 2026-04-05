@@ -615,6 +615,11 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.0.5
+- **Fixed round-trip patching for constructor + trailing-assignment sprites** — sprites created with `var s = new MySprite(SpriteType.TEXTURE, "name"); s.Size = new Vector2(…); s.Color = new Color(…);` style code now have their trailing property assignments included in the tracked source range, so canvas edits to Size, Position, Color, RotationOrScale, Alignment, FontId, and Data are correctly patched back into the original source
+- **Fixed `RefreshCode` unconditional sync** — `RefreshCode()` now always updates the code panel regardless of the dirty flag state, so all canvas operations (nudge, layer reorder, duplicate, center, catalog replace, undo/redo, stretch to surface) reliably sync to the code panel
+- **Apply Code button persists in round-trip mode** — the **📥 Apply Code** button now remains visible whenever original source code is loaded, so you can re-import the patched code to sync canvas sprites at any time (e.g. after replacing a sprite via the catalog or stretching to surface)
+
 ### v2.0.4
 - **Fixed canvas-edit-to-code sync** — editing sprites on the canvas (dragging, resizing, changing properties, colors, alpha, deleting) now always updates the generated code in the text editor panel. Previously, if the code panel's dirty flag was set (e.g. by inserting an animation snippet), all subsequent canvas edits silently stopped syncing to the code panel
 - **Fixed detected methods desync** — the detected methods/calls list now stays in sync with the code after any canvas modification, so **Jump to Definition** and **▶ Execute** always target the correct method

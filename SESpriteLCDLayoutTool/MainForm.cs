@@ -1850,8 +1850,14 @@ namespace SESpriteLCDLayoutTool
         {
             if (_layout == null) { SetCodeText(""); RefreshDetectedCalls(); return; }
 
-            // User has manually edited the code panel — don't overwrite their work.
-            if (_codeBoxDirty) return;
+            // Clear the "user has manually edited" state — any action that calls
+            // RefreshCode wants the code panel to reflect the current layout.
+            ClearCodeDirty();
+
+            // In round-trip mode keep the Apply Code button visible so the user
+            // can re-import the patched code to sync canvas sprites at any time.
+            if (_btnApplyCode != null && _layout.OriginalSourceCode != null)
+                _btnApplyCode.Visible = true;
 
             // While any live source is actively streaming, the layout contains
             // runtime-expanded sprites (loops unrolled, expressions resolved)
@@ -3697,6 +3703,7 @@ namespace SESpriteLCDLayoutTool
             sp.Y = _layout.SurfaceHeight / 2f;
             _canvas.Invalidate();
             OnSelectionChanged(_canvas, EventArgs.Empty);
+            ClearCodeDirty();
             RefreshCode();
             SetStatus("Stretched to surface");
         }
