@@ -17,7 +17,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [✨ Features](#-features) | Visual canvas, texture previews, sprite catalog, code generation, compiler, animation, snapshots |
 | [🚀 Getting Started](#-getting-started) | Requirements, running the tool, importing sprite names |
 | [📖 Workflow](#-workflow) | Step-by-step usage guide |
-| [📸 Snapshot Helpers & Live Streaming](#-snapshot-helpers--live-lcd-streaming) | PB / Mod / Plugin snapshot code, live streaming setup, merge workflow |
+| [📸 Snapshot Helpers & Live Streaming](#-snapshot-helpers--live-lcd-streaming) | Optional — mostly superseded by the built-in compiler; still useful without Roslyn or for live streaming |
 | [Screenshots](#screenshots) | Editor canvas, catalog, code generation, in-game results, demo videos |
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
@@ -195,7 +195,7 @@ Copy the Custom Data, then in the tool: **Edit → Import Sprite Names** and pas
 
 ## 📸 Snapshot Helpers & Live LCD Streaming
 
-> **Note:** This section is completely optional. The layout tool works standalone — you do **not** need any plugin, mod, or the Inventory Manager to use it. These snippets show how you *could* wire up snapshot capture or live streaming in your own code.
+> **Note:** This section is completely optional. Since v2.0.0 the tool has a **built-in Roslyn compiler** that can compile and execute your SE LCD code directly — paste your script, press **▶ Execute Code**, and the resulting sprites appear on the canvas with their true runtime positions. **If you have Visual Studio (or the Build Tools) installed, you likely don't need snapshots at all.** Snapshots remain useful if you don't have Roslyn available, or if you want to capture frames from a *live running game* (e.g. live LCD streaming over a named pipe).
 
 > **Important:** The snapshot helper snippet must be added **inside the plugin or mod that actually renders the LCD** you want to capture. Sprites are drawn by that plugin's own code, so a separate script or programmable block cannot read them — you can only capture what the owning plugin writes to the surface.
 
