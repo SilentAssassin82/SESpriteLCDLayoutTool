@@ -722,6 +722,8 @@ namespace SESpriteLCDLayoutTool.Controls
             for (int i = _layout.Sprites.Count - 1; i >= 0; i--)
             {
                 if (_layout.Sprites[i].IsHidden) continue;
+                // During isolation, skip dimmed (non-highlighted) sprites
+                if (HighlightedSprites != null && !HighlightedSprites.Contains(_layout.Sprites[i])) continue;
                 var rect = GetSpriteScreenRect(_layout.Sprites[i], scale, origin);
                 if (rect.Contains(pt))
                 {

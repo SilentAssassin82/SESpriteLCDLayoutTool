@@ -511,16 +511,38 @@ namespace SESpriteLCDLayoutTool
                 Padding   = new Padding(2, 6, 0, 0),
             };
 
-            // Layer list at bottom
+            // Layer list at bottom — header panel with label + Show All button
+            var layerHeader = new Panel
+            {
+                Dock      = DockStyle.Bottom,
+                Height    = 24,
+                BackColor = Color.FromArgb(45, 45, 48),
+            };
             var lblLayers = new Label
             {
                 Text      = "LAYER ORDER (bottom → top)",
-                Dock      = DockStyle.Bottom,
-                Height    = 18,
+                Dock      = DockStyle.Fill,
                 ForeColor = Color.FromArgb(140, 140, 140),
                 Font      = new Font("Segoe UI", 7.5f, FontStyle.Bold),
                 Padding   = new Padding(2, 4, 0, 0),
+                TextAlign = ContentAlignment.MiddleLeft,
             };
+            _btnShowAll = new Button
+            {
+                Text      = "👁 Show All",
+                Dock      = DockStyle.Right,
+                Width     = 85,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(40, 110, 60),
+                ForeColor = Color.White,
+                Font      = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                Visible   = false,
+                Cursor    = Cursors.Hand,
+            };
+            _btnShowAll.FlatAppearance.BorderSize = 0;
+            _btnShowAll.Click += (s, e) => RestoreFullView();
+            layerHeader.Controls.Add(lblLayers);
+            layerHeader.Controls.Add(_btnShowAll);
             _lstLayers = new ListBox
             {
                 Dock        = DockStyle.Bottom,
@@ -694,7 +716,7 @@ namespace SESpriteLCDLayoutTool
 
             outer.Controls.Add(scroll);
             outer.Controls.Add(_lstLayers);
-            outer.Controls.Add(lblLayers);
+            outer.Controls.Add(layerHeader);
             outer.Controls.Add(header);
             return outer;
         }
@@ -882,11 +904,6 @@ namespace SESpriteLCDLayoutTool
             _btnCaptureSnapshot.Visible = false;
             _btnCaptureSnapshot.Click += (s, e) => ApplyLiveSnapshot();
 
-            _btnShowAll = DarkButton("👁 Show All", Color.FromArgb(40, 110, 60));
-            _btnShowAll.Size = new Size(100, 26);
-            _btnShowAll.Visible = false;
-            _btnShowAll.Click += (s, e) => RestoreFullView();
-
             _btnApplyCode = DarkButton("📥 Apply Code", Color.FromArgb(160, 100, 0));
             _btnApplyCode.Size = new Size(110, 26);
             _btnApplyCode.Visible = false;
@@ -905,7 +922,6 @@ namespace SESpriteLCDLayoutTool
             toolbar.Controls.Add(_cmbCodeStyle);
             toolbar.Controls.Add(_btnApplyCode);
             toolbar.Controls.Add(_btnCaptureSnapshot);
-            toolbar.Controls.Add(_btnShowAll);
 
             _codeBox = new RichTextBox
             {
@@ -1724,7 +1740,9 @@ namespace SESpriteLCDLayoutTool
         private SpriteEntry SpriteFromLayerIndex(int listIdx)
         {
             if (_layout == null || listIdx < 0) return null;
-            var highlighted = _canvas.HighlightedSprites;
+            var highlighted = _canvas.HighlightedSprites
+                              ?? (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0
+                                  ? _isolatedCallSprites : null);
             if (highlighted == null)
             {
                 // Normal mode — list index == sprite index
@@ -1865,7 +1883,15 @@ namespace SESpriteLCDLayoutTool
                 _lstLayers.Items.Clear();
                 if (_layout == null) return;
 
+                // Safety: if isolation is active but HighlightedSprites was
+                // cleared by another path, re-sync from _isolatedCallSprites.
                 var highlighted = _canvas.HighlightedSprites;
+                if (highlighted == null && _isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                {
+                    _canvas.HighlightedSprites = _isolatedCallSprites;
+                    highlighted = _isolatedCallSprites;
+                }
+
                 foreach (var s in _layout.Sprites)
                 {
                     // During isolation mode, hide dimmed (non-highlighted) sprites from the list
