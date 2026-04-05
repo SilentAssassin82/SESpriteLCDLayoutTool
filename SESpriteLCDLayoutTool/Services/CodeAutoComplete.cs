@@ -331,12 +331,12 @@ namespace SESpriteLCDLayoutTool.Services
         /// <summary>
         /// Regex matching common C# local/field declarations:
         ///   TypeName varName
-        ///   TypeName varName =
-        ///   TypeName varName;
+        ///   Namespace.TypeName varName =
+        ///   Sandbox.ModAPI.Ingame.IMyTextPanel varName;
         /// Also matches generic types like List&lt;IMyBatteryBlock&gt;.
         /// </summary>
         private static readonly Regex RxDeclaration = new Regex(
-            @"(?:^|[\s;{(,])([A-Z]\w*(?:<\w+>)?)\s+(\w+)\s*[=;,)\[]",
+            @"(?:^|[\s;{(,])((?:[A-Za-z]\w*\.)*[A-Z]\w*(?:<[\w.]+>)?)\s+(\w+)\s*[=;,)\[]",
             RegexOptions.Compiled);
 
         /// <summary>
@@ -348,18 +348,43 @@ namespace SESpriteLCDLayoutTool.Services
             RegexOptions.Compiled);
 
         /// <summary>
-        /// Regex matching <c>var varName = (TypeName)expr</c> — cast on RHS of var.
+        /// Regex matching <c>var varName = (TypeName)expr</c> or
+        /// <c>var varName = (Namespace.TypeName)expr</c> — cast on RHS of var.
         /// </summary>
         private static readonly Regex RxVarCast = new Regex(
-            @"\bvar\s+(\w+)\s*=\s*\(([A-Z]\w*)\)",
+            @"\bvar\s+(\w+)\s*=\s*\(((?:[A-Za-z]\w*\.)*[A-Z]\w*)\)",
             RegexOptions.Compiled);
 
         /// <summary>
-        /// Regex matching <c>var varName = expr as TypeName</c>.
+        /// Regex matching <c>var varName = expr as TypeName</c> or
+        /// <c>var varName = expr as Namespace.TypeName</c>.
         /// </summary>
         private static readonly Regex RxVarAs = new Regex(
-            @"\bvar\s+(\w+)\s*=\s*.+\bas\s+([A-Z]\w*)",
+            @"\bvar\s+(\w+)\s*=\s*.+\bas\s+((?:[A-Za-z]\w*\.)*[A-Z]\w*)",
             RegexOptions.Compiled);
+
+        /// <summary>
+        /// Extracts the simple type name from a potentially fully-qualified name.
+        /// e.g. "Sandbox.ModAPI.Ingame.IMyTextSurface" → "IMyTextSurface"
+        /// </summary>
+        private static string SimpleName(string typeName)
+        {
+            int dot = typeName.LastIndexOf('.');
+            return dot >= 0 ? typeName.Substring(dot + 1) : typeName;
+        }
+
+        /// <summary>
+        /// Looks up a type name (possibly fully-qualified) in DotMembers.
+        /// Tries the full name first, then falls back to the simple name.
+        /// </summary>
+        private static bool TryResolveDotMembers(string typeName, out string resolvedKey)
+        {
+            if (DotMembers.ContainsKey(typeName)) { resolvedKey = typeName; return true; }
+            string simple = SimpleName(typeName);
+            if (simple != typeName && DotMembers.ContainsKey(simple)) { resolvedKey = simple; return true; }
+            resolvedKey = null;
+            return false;
+        }
 
         /// <summary>
         /// Attempts to resolve a variable name to a known type name
@@ -369,13 +394,15 @@ namespace SESpriteLCDLayoutTool.Services
         private static string ResolveVariableType(string variableName, string editorText)
         {
             // 1. Explicit type declaration: TypeName varName = ...
+            //    Also handles Sandbox.ModAPI.Ingame.IMyTextPanel lcd
             foreach (Match m in RxDeclaration.Matches(editorText))
             {
                 if (m.Groups[2].Value == variableName)
                 {
                     string typeName = m.Groups[1].Value;
-                    if (typeName != "var" && DotMembers.ContainsKey(typeName))
-                        return typeName;
+                    string resolved;
+                    if (typeName != "var" && TryResolveDotMembers(typeName, out resolved))
+                        return resolved;
                 }
             }
 
@@ -391,25 +418,27 @@ namespace SESpriteLCDLayoutTool.Services
                 }
             }
 
-            // 3. var varName = (TypeName)expr — cast
+            // 3. var varName = (TypeName)expr — cast (may be fully-qualified)
             foreach (Match m in RxVarCast.Matches(editorText))
             {
                 if (m.Groups[1].Value == variableName)
                 {
                     string typeName = m.Groups[2].Value;
-                    if (DotMembers.ContainsKey(typeName))
-                        return typeName;
+                    string resolved;
+                    if (TryResolveDotMembers(typeName, out resolved))
+                        return resolved;
                 }
             }
 
-            // 4. var varName = expr as TypeName
+            // 4. var varName = expr as TypeName (may be fully-qualified)
             foreach (Match m in RxVarAs.Matches(editorText))
             {
                 if (m.Groups[1].Value == variableName)
                 {
                     string typeName = m.Groups[2].Value;
-                    if (DotMembers.ContainsKey(typeName))
-                        return typeName;
+                    string resolved;
+                    if (TryResolveDotMembers(typeName, out resolved))
+                        return resolved;
                 }
             }
 
