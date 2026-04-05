@@ -1395,10 +1395,10 @@ namespace SESpriteLCDLayoutTool
                         // Isolation mode: find the filtered-list index of the selected sprite
                         int listIdx = 0;
                         bool found = false;
-foreach (var sprite in _layout.Sprites)
-{
-    if (!highlighted.Contains(sprite)) continue;
-    if (sprite == sp) { _lstLayers.SelectedIndex = listIdx; found = true; break; }
+                        foreach (var sprite in _layout.Sprites)
+                        {
+                            if (!highlighted.Contains(sprite)) continue;
+                            if (sprite == sp) { _lstLayers.SelectedIndex = listIdx; found = true; break; }
                             listIdx++;
                         }
                         if (!found) _lstLayers.SelectedIndex = -1;
@@ -2060,7 +2060,8 @@ foreach (var sprite in _layout.Sprites)
             _codeBoxDirty = false;
             _lblCodeTitle.Text = "Generated C# Code";
             _lblCodeTitle.ForeColor = Color.FromArgb(150, 200, 255);
-            if (_btnApplyCode != null) _btnApplyCode.Visible = false;
+            if (_btnApplyCode != null && (_layout == null || _layout.OriginalSourceCode == null))
+                _btnApplyCode.Visible = false;
         }
 
         /// <summary>
@@ -3966,7 +3967,6 @@ foreach (var sprite in _layout.Sprites)
                 sprite.SpriteName = null;
                 sprite.Text       = glyph.Character.ToString();
                 sprite.FontId     = font;
-                sprite.Scale      = 1.0f;
                 UpdateImportLabel(sprite, "Text");
                 OnSelectionChanged(_canvas, EventArgs.Empty);
                 _canvas.Invalidate();
