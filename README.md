@@ -615,6 +615,11 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.0.4
+- **Fixed canvas-edit-to-code sync** — editing sprites on the canvas (dragging, resizing, changing properties, colors, alpha, deleting) now always updates the generated code in the text editor panel. Previously, if the code panel's dirty flag was set (e.g. by inserting an animation snippet), all subsequent canvas edits silently stopped syncing to the code panel
+- **Fixed detected methods desync** — the detected methods/calls list now stays in sync with the code after any canvas modification, so **Jump to Definition** and **▶ Execute** always target the correct method
+- **Fixed Insert at Cursor dirty flag** — the **📥 Insert at Cursor** button in the animation snippet dialog no longer marks the code panel as user-edited, which previously blocked all canvas-to-code synchronization until manually reset
+
 ### v2.0.3
 - **Animation snippet improvements** — generated code snippets now produce correct, ready-to-paste output:
   - **List variable selector** — choose between `sprites` (for `List<MySprite>` helper methods) or `frame` (for `MySpriteDrawFrame` PB/Mod code) from a dropdown in the snippet parameter dialog; the generated `.Add(...)` call uses the selected variable name instead of always hardcoding `frame`

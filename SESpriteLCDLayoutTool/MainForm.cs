@@ -1248,6 +1248,7 @@ namespace SESpriteLCDLayoutTool
             PushUndo();
             _canvas.DeleteSelected();
             RefreshLayerList();
+            ClearCodeDirty();
             RefreshCode();
         }
 
@@ -1391,6 +1392,7 @@ namespace SESpriteLCDLayoutTool
             }
             finally { _updatingProps = false; }
 
+            ClearCodeDirty();
             RefreshCode();
             UpdateStatus();
         }
@@ -1449,6 +1451,7 @@ namespace SESpriteLCDLayoutTool
 
             _canvas.Invalidate();
             RefreshLayerList();
+            ClearCodeDirty();
             RefreshCode();
         }
 
@@ -1459,6 +1462,7 @@ namespace SESpriteLCDLayoutTool
             PushUndo();
             _canvas.SelectedSprite.ColorA = _trackAlpha.Value;
             _canvas.Invalidate();
+            ClearCodeDirty();
             RefreshCode();
         }
 
@@ -1475,6 +1479,7 @@ namespace SESpriteLCDLayoutTool
                 // Preserve alpha
                 _colorPreview.BackColor = _canvas.SelectedSprite.Color;
                 _canvas.Invalidate();
+                ClearCodeDirty();
                 RefreshCode();
             }
         }
@@ -3619,6 +3624,7 @@ namespace SESpriteLCDLayoutTool
         {
             // Undo snapshot was pushed in BeginDrag via OnMouseDown;
             // nothing extra needed here — the drag's final state is the "current" state.
+            ClearCodeDirty();
             RefreshCode();
             RefreshDebugStats();
         }
@@ -4373,7 +4379,9 @@ namespace SESpriteLCDLayoutTool
                 _codeBox.Focus();
                 _codeBox.SelectionStart = pos;
                 _codeBox.SelectionLength = 0;
-                _codeBox.SelectedText = txtCode.Text;
+                _suppressCodeBoxEvents = true;
+                try { _codeBox.SelectedText = txtCode.Text; }
+                finally { _suppressCodeBoxEvents = false; }
                 SetStatus("Animation snippet inserted at cursor");
             };
 
