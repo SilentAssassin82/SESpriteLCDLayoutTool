@@ -106,6 +106,13 @@ namespace SESpriteLCDLayoutTool
         private ToolStripMenuItem _mnuOverlayHeatmap;
         private ToolStripMenuItem _mnuSizeWarnings;
 
+        // ── Editable code panel ──────────────────────────────────────────────
+        private bool  _codeBoxDirty;
+        private bool  _suppressCodeBoxEvents;
+        private Label _lblCodeTitle;
+        private Button _btnApplyCode;
+        private CodeAutoComplete _autoComplete;
+
         /// <summary>
         /// Pre-animation layout sprites saved before playback starts.
         /// Used as a position reference: each animation frame's sprites are merged
@@ -806,7 +813,7 @@ namespace SESpriteLCDLayoutTool
                 Padding       = new Padding(4, 4, 4, 0),
             };
 
-            var lblCode = new Label { Text = "Generated C# Code", Width = 150, Height = 26, ForeColor = Color.FromArgb(150, 200, 255), TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 9f, FontStyle.Bold) };
+            _lblCodeTitle = new Label { Text = "Generated C# Code", Width = 150, Height = 26, ForeColor = Color.FromArgb(150, 200, 255), TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 9f, FontStyle.Bold) };
 
             var btnCopy = DarkButton("Copy to Clipboard", Color.FromArgb(0, 100, 180));
             btnCopy.Size   = new Size(140, 26);
@@ -819,13 +826,14 @@ namespace SESpriteLCDLayoutTool
 
             var btnRefresh = DarkButton("⟳ Generate Code", Color.FromArgb(0, 122, 60));
             btnRefresh.Size   = new Size(120, 26);
-            btnRefresh.Click += (s, e) => RefreshCode();
+            btnRefresh.Click += (s, e) => { ClearCodeDirty(); RefreshCode(); };
 
             var btnResetSource = DarkButton("Reset Source", Color.FromArgb(120, 60, 0));
             btnResetSource.Size = new Size(95, 26);
             btnResetSource.Click += (s, e) =>
             {
                 if (_layout != null) _layout.OriginalSourceCode = null;
+                ClearCodeDirty();
                 RefreshCode();
                 SetStatus("Round-trip source cleared — using generated template.");
             };
@@ -853,11 +861,22 @@ namespace SESpriteLCDLayoutTool
             _btnShowAll.Visible = false;
             _btnShowAll.Click += (s, e) => RestoreFullView();
 
-            toolbar.Controls.Add(lblCode);
+            _btnApplyCode = DarkButton("📥 Apply Code", Color.FromArgb(160, 100, 0));
+            _btnApplyCode.Size = new Size(110, 26);
+            _btnApplyCode.Visible = false;
+            _btnApplyCode.Click += (s, e) => ApplyCodeFromPanel();
+
+            var btnPaste = DarkButton("📋 Paste Code", Color.FromArgb(100, 60, 140));
+            btnPaste.Size = new Size(110, 26);
+            btnPaste.Click += (s, e) => ShowPasteLayoutDialog();
+
+            toolbar.Controls.Add(_lblCodeTitle);
+            toolbar.Controls.Add(btnPaste);
             toolbar.Controls.Add(btnCopy);
             toolbar.Controls.Add(btnRefresh);
             toolbar.Controls.Add(btnResetSource);
             toolbar.Controls.Add(_cmbCodeStyle);
+            toolbar.Controls.Add(_btnApplyCode);
             toolbar.Controls.Add(_btnCaptureSnapshot);
             toolbar.Controls.Add(_btnShowAll);
 
@@ -867,15 +886,27 @@ namespace SESpriteLCDLayoutTool
                 BackColor     = Color.FromArgb(14, 14, 14),
                 ForeColor     = Color.FromArgb(212, 212, 212),
                 Font          = new Font("Consolas", 9f),
-                ReadOnly      = true,
+                ReadOnly      = false,
                 BorderStyle   = BorderStyle.None,
                 ScrollBars    = RichTextBoxScrollBars.Both,
                 WordWrap      = false,
                 HideSelection = false,
+                AcceptsTab    = true,
             };
+            _codeBox.TextChanged += (s, e) =>
+            {
+                if (_suppressCodeBoxEvents) return;
+                _codeBoxDirty = true;
+                _lblCodeTitle.Text = "✏ Code (edited)";
+                _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);
+                if (_btnApplyCode != null) _btnApplyCode.Visible = true;
+                _autoComplete?.OnTextChanged();
+            };
+            _codeBox.LostFocus += (s, e) => _autoComplete?.Hide();
 
             panel.Controls.Add(_codeBox);
             panel.Controls.Add(toolbar);
+            _autoComplete = new CodeAutoComplete(_codeBox);
 
             // ── Execute-code bar (bottom of code panel) ───────────────────────────
             var lblExecPrefix = new Label
@@ -1121,6 +1152,7 @@ namespace SESpriteLCDLayoutTool
             UpdateActionBarVisibility();
             _canvas.CanvasLayout = _layout;
             RefreshLayerList();
+            ClearCodeDirty();
             RefreshCode();
             UpdateTitle();
             SetStatus("New layout — surface 512 × 512. Double-click a sprite in the palette or use Add buttons.");
@@ -1704,7 +1736,10 @@ namespace SESpriteLCDLayoutTool
 
         private void RefreshCode()
         {
-            if (_layout == null) { _codeBox.Text = ""; RefreshDetectedCalls(); return; }
+            if (_layout == null) { SetCodeText(""); RefreshDetectedCalls(); return; }
+
+            // User has manually edited the code panel — don't overwrite their work.
+            if (_codeBoxDirty) return;
 
             // While any live source is actively streaming, the layout contains
             // runtime-expanded sprites (loops unrolled, expressions resolved)
@@ -1719,7 +1754,7 @@ namespace SESpriteLCDLayoutTool
                 string patched = CodeGenerator.PatchOriginalSource(_layout);
                 if (patched != null)
                 {
-                    _codeBox.Text = patched;
+                    SetCodeText(patched);
                     RefreshDetectedCalls();
                     return;
                 }
@@ -1728,7 +1763,7 @@ namespace SESpriteLCDLayoutTool
                 string roundTrip = CodeGenerator.GenerateRoundTrip(_layout);
                 if (roundTrip != null)
                 {
-                    _codeBox.Text = roundTrip;
+                    SetCodeText(roundTrip);
                     RefreshDetectedCalls();
                     return;
                 }
@@ -1742,14 +1777,105 @@ namespace SESpriteLCDLayoutTool
 
                 if (!hasTracking)
                 {
-                    _codeBox.Text = _layout.OriginalSourceCode;
+                    SetCodeText(_layout.OriginalSourceCode);
                     RefreshDetectedCalls();
                     return;
                 }
             }
 
-            _codeBox.Text = CodeGenerator.Generate(_layout, SelectedCodeStyle);
+            SetCodeText(CodeGenerator.Generate(_layout, SelectedCodeStyle));
             RefreshDetectedCalls();
+        }
+
+        /// <summary>
+        /// Sets <see cref="_codeBox"/> text without triggering the dirty flag.
+        /// </summary>
+        private void SetCodeText(string text)
+        {
+            _suppressCodeBoxEvents = true;
+            _codeBox.Text = text;
+            _suppressCodeBoxEvents = false;
+        }
+
+        /// <summary>
+        /// Clears the dirty flag and restores the code panel header to its default state.
+        /// </summary>
+        private void ClearCodeDirty()
+        {
+            _codeBoxDirty = false;
+            _lblCodeTitle.Text = "Generated C# Code";
+            _lblCodeTitle.ForeColor = Color.FromArgb(150, 200, 255);
+            if (_btnApplyCode != null) _btnApplyCode.Visible = false;
+        }
+
+        /// <summary>
+        /// Parses the manually edited code in <see cref="_codeBox"/> and imports
+        /// the resulting sprites onto the canvas, replacing the current layout.
+        /// </summary>
+        private void ApplyCodeFromPanel()
+        {
+            if (_layout == null) { SetStatus("No layout loaded."); return; }
+
+            string sourceCode = _codeBox.Text;
+            if (string.IsNullOrWhiteSpace(sourceCode))
+            {
+                SetStatus("Code panel is empty — nothing to apply.");
+                return;
+            }
+
+            var sprites = CodeParser.Parse(sourceCode);
+            if (sprites.Count == 0)
+            {
+                MessageBox.Show(
+                    "No MySprite definitions found in the code panel.\n\n"
+                    + "Supported patterns:\n"
+                    + "  new MySprite { Type = SpriteType.TEXTURE, ... }\n"
+                    + "  new MySprite(SpriteType.TEXTURE, \"data\", ...)\n"
+                    + "  MySprite.CreateText(\"text\", ...)\n"
+                    + "  sprite.Type = SpriteType.TEXTURE; sprite.Data = ...;",
+                    "Nothing Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Per-sprite source tracking for round-trip patching
+            var contextCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var sprite in sprites)
+            {
+                string ctx = sprite.SourceStart >= 0
+                    ? CodeGenerator.DetectSpriteContext(sourceCode, sprite.SourceStart)
+                    : null;
+
+                string typeHint = sprite.Type == SpriteEntryType.Text
+                    ? "Text"
+                    : sprite.SpriteName ?? "Texture";
+
+                string label = ctx != null ? $"{ctx}: {typeHint}" : typeHint;
+
+                if (!contextCounts.TryGetValue(label, out int count))
+                    count = 0;
+                contextCounts[label] = count + 1;
+                if (count > 0)
+                    label += $".{count + 1}";
+
+                sprite.ImportLabel = label;
+                sprite.ImportBaseline = sprite.CloneValues();
+            }
+
+            PushUndo();
+
+            _layout.Sprites.Clear();
+            foreach (var sprite in sprites)
+                _layout.Sprites.Add(sprite);
+
+            _layout.OriginalSourceCode = sourceCode;
+
+            _canvas.SelectedSprite = sprites.Count > 0 ? sprites[0] : null;
+            _canvas.Invalidate();
+            RefreshLayerList();
+            ClearCodeDirty();
+            RefreshCode();
+            RefreshDebugStats();
+            SetStatus($"Applied {sprites.Count} sprite(s) from the code panel.");
         }
 
         private void RefreshDetectedCalls()
@@ -2321,6 +2447,7 @@ namespace SESpriteLCDLayoutTool
                     _currentFile   = dlg.FileName;
                     _canvas.CanvasLayout = _layout;
                     RefreshLayerList();
+                    ClearCodeDirty();
                     RefreshCode();
                     UpdateTitle();
                     SetStatus($"Opened: {Path.GetFileName(_currentFile)}");
@@ -2920,6 +3047,7 @@ namespace SESpriteLCDLayoutTool
                     _canvas.SelectedSprite = sprites.Count > 0 ? sprites[0] : null;
                     _canvas.Invalidate();
                     RefreshLayerList();
+                    ClearCodeDirty();
                     RefreshCode();
 
                     string refNote = isReference ? " as reference" : "";
@@ -3215,6 +3343,24 @@ namespace SESpriteLCDLayoutTool
         // ── Keyboard shortcuts ────────────────────────────────────────────────────
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            // Let text-editing keys pass through when a text control is focused
+            if ((_codeBox != null && _codeBox.Focused) ||
+                (_execCallBox != null && _execCallBox.Focused))
+            {
+                // Autocomplete popup intercepts Up/Down/Enter/Tab/Escape
+                if (_autoComplete != null && _autoComplete.IsActive && _autoComplete.HandleKey(keyData))
+                    return true;
+
+                switch (keyData)
+                {
+                    case Keys.Control | Keys.S:
+                    case Keys.Control | Keys.N:
+                        break; // fall through to global handler
+                    default:
+                        return base.ProcessCmdKey(ref msg, keyData);
+                }
+            }
+
             switch (keyData)
             {
                 case Keys.Delete:
@@ -4213,6 +4359,7 @@ namespace SESpriteLCDLayoutTool
                 _fileWatcher?.Dispose();
                 _clipboardTimer?.Dispose();
                 _textureCache?.Dispose();
+                _autoComplete?.Dispose();
             }
             base.Dispose(disposing);
         }

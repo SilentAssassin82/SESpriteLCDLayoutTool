@@ -615,6 +615,20 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.0.1
+- **Context-aware code autocomplete** — new `CodeAutoComplete` service provides intelligent suggestions as you type in the code editor panel:
+  - **Dot-access completion** — type any known SE type or enum followed by `.` to get member suggestions (e.g. `SpriteType.`, `IMyTextSurface.`, `Color.`, `MathHelper.`)
+  - **Variable-type resolution** — autocomplete works with variable names, not just type names. Typing `lcd.` where `lcd` is declared as `IMyTextSurfaceProvider` resolves the type and suggests `GetSurface()`, `SurfaceCount`, etc.
+    - Supports explicit type declarations (`IMyTextSurfaceProvider lcd = ...`)
+    - Supports `var` with method return types (`var surf = lcd.GetSurface(0)` → resolves to `IMyTextSurface`)
+    - Supports `var` with cast expressions (`var bat = (IMyBatteryBlock)block`)
+    - Supports `var` with `as` patterns (`var bat = block as IMyBatteryBlock`)
+  - **Sprite name completion** — inside `Data = "..."` suggests all built-in and user-imported sprite names
+  - **Font name completion** — inside `FontId = "..."` suggests available SE fonts
+  - **30+ SE types covered** — all block interfaces, PB shorthands (`Me`, `Runtime`, `GridTerminalSystem`), inventory, surfaces, draw frame, math, session/multiplayer/entities, and common .NET types (`StringBuilder`, `Math`, `TimeSpan`)
+  - **All SE enums** — `SpriteType`, `TextAlignment`, `ContentType`, `UpdateType`, `UpdateFrequency`, `ChargeMode`, `DoorStatus`, `PistonStatus`, `MyShipConnectorStatus`, `MyUpdateOrder`
+  - Keyboard navigation (Up/Down/Tab/Enter/Escape) and double-click commit
+
 ### v2.0.0
 - **Debug analysis tools** — a new suite of layout debugging and performance analysis features accessible from the **View** menu:
   - **Debug Stats Panel** (`View → Show Debug Stats Panel`) — collapsible bottom panel showing sprite count, texture/text breakdown, unique textures, estimated draw calls, predicted game thread load (ms/frame), and a load rating (🟢 Light / 🟡 Moderate / 🟠 Heavy / 🔴 Extreme)
