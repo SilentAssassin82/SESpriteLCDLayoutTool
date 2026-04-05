@@ -144,6 +144,15 @@ namespace SESpriteLCDLayoutTool.Controls
         /// <summary>Cached size warnings, refreshed externally when layout changes.</summary>
         internal List<Services.DebugAnalyzer.SizeWarning> SizeWarnings { get; set; }
 
+        /// <summary>True while the user is actively dragging a sprite (move or resize).</summary>
+        public bool IsDragging => _dragMode != DragMode.None;
+
+        /// <summary>
+        /// When true, sprite centres are clamped to [0, SurfaceWidth] × [0, SurfaceHeight]
+        /// during drag and nudge operations so sprites cannot be moved off the LCD surface.
+        /// </summary>
+        public bool ConstrainToSurface { get; set; }
+
         // ── Constructor ───────────────────────────────────────────────────────────
         public LcdCanvas()
         {
@@ -771,6 +780,11 @@ namespace SESpriteLCDLayoutTool.Controls
                 case DragMode.Move:
                     s.X = Snap(_dragOrigX + dx);
                     s.Y = Snap(_dragOrigY + dy);
+                    if (ConstrainToSurface && _layout != null)
+                    {
+                        s.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  s.X));
+                        s.Y = Math.Max(0f, Math.Min(_layout.SurfaceHeight, s.Y));
+                    }
                     break;
                 case DragMode.ResizeNW:
                     s.Width  = Math.Max(10f, Snap(_dragOrigW - dx * 2f));
@@ -908,6 +922,11 @@ namespace SESpriteLCDLayoutTool.Controls
             if (_selectedSprite == null) return;
             _selectedSprite.X = Snap(_selectedSprite.X + dx);
             _selectedSprite.Y = Snap(_selectedSprite.Y + dy);
+            if (ConstrainToSurface && _layout != null)
+            {
+                _selectedSprite.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  _selectedSprite.X));
+                _selectedSprite.Y = Math.Max(0f, Math.Min(_layout.SurfaceHeight, _selectedSprite.Y));
+            }
             SpriteModified?.Invoke(this, EventArgs.Empty);
             Invalidate();
         }
@@ -937,6 +956,7 @@ namespace SESpriteLCDLayoutTool.Controls
                 _layout.Sprites.RemoveAt(i);
                 _layout.Sprites.Insert(i + 1, _selectedSprite);
                 Invalidate();
+                SelectionChanged?.Invoke(this, EventArgs.Empty);
             }
         }
 
@@ -949,6 +969,7 @@ namespace SESpriteLCDLayoutTool.Controls
                 _layout.Sprites.RemoveAt(i);
                 _layout.Sprites.Insert(i - 1, _selectedSprite);
                 Invalidate();
+                SelectionChanged?.Invoke(this, EventArgs.Empty);
             }
         }
 

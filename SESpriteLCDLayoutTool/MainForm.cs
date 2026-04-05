@@ -112,6 +112,7 @@ namespace SESpriteLCDLayoutTool
         private bool  _codeBoxDirty;
         private bool  _suppressCodeBoxEvents;
         private Label _lblCodeTitle;
+        private Label _lblCodeMode;
         private Button _btnApplyCode;
         private CodeAutoComplete _autoComplete;
 
@@ -306,6 +307,14 @@ namespace SESpriteLCDLayoutTool
             var snapItem = new ToolStripMenuItem("Snap to Grid\tCtrl+G") { CheckOnClick = true };
             snapItem.CheckedChanged += (s, e) => { _canvas.SnapToGrid = snapItem.Checked; SetStatus(snapItem.Checked ? "Snap to grid enabled" : "Snap to grid disabled"); };
             view.DropDownItems.Add(snapItem);
+
+            var constrainItem = new ToolStripMenuItem("Constrain Sprites to Surface") { CheckOnClick = true };
+            constrainItem.CheckedChanged += (s, e) =>
+            {
+                _canvas.ConstrainToSurface = constrainItem.Checked;
+                SetStatus(constrainItem.Checked ? "Constrain to surface enabled — sprites cannot be dragged/nudged off the LCD area" : "Constrain to surface disabled");
+            };
+            view.DropDownItems.Add(constrainItem);
             view.DropDownItems.Add(new ToolStripSeparator());
             foreach (int gs in new[] { 8, 16, 32, 64 })
             {
@@ -469,6 +478,7 @@ namespace SESpriteLCDLayoutTool
             _btnAddText.Click += (s, e) => {
                 string font = _cmbFont.SelectedItem?.ToString() ?? "White";
                 PushUndo();
+                InvalidateOriginalSourceIfSet();
                 var sp = _canvas.AddSprite("Text", isText: true);
                 if (sp != null) { sp.FontId = font; OnSelectionChanged(_canvas, EventArgs.Empty); }
                 RefreshLayerList(); RefreshCode();
@@ -817,6 +827,16 @@ namespace SESpriteLCDLayoutTool
 
             _lblCodeTitle = new Label { Text = "Generated C# Code", Width = 150, Height = 26, ForeColor = Color.FromArgb(150, 200, 255), TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 9f, FontStyle.Bold) };
 
+            _lblCodeMode = new Label
+            {
+                Text      = "▸ In-Game (PB)",
+                Width     = 110,
+                Height    = 26,
+                ForeColor = Color.FromArgb(140, 210, 140),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Font      = new Font("Segoe UI", 8.5f, FontStyle.Italic),
+            };
+
             var btnCopy = DarkButton("Copy to Clipboard", Color.FromArgb(0, 100, 180));
             btnCopy.Size   = new Size(140, 26);
             btnCopy.Click += (s, e) =>
@@ -851,7 +871,11 @@ namespace SESpriteLCDLayoutTool
             };
             _cmbCodeStyle.Items.AddRange(new object[] { "In-Game (PB)", "Mod", "Plugin / Torch" });
             _cmbCodeStyle.SelectedIndex = 0;
-            _cmbCodeStyle.SelectedIndexChanged += (s, e) => RefreshCode();
+            _cmbCodeStyle.SelectedIndexChanged += (s, e) =>
+            {
+                UpdateCodeModeLabel();
+                RefreshCode();
+            };
 
             _btnCaptureSnapshot = DarkButton("📷 Capture Snapshot", Color.FromArgb(140, 90, 0));
             _btnCaptureSnapshot.Size = new Size(140, 26);
@@ -873,6 +897,7 @@ namespace SESpriteLCDLayoutTool
             btnPaste.Click += (s, e) => ShowPasteLayoutDialog();
 
             toolbar.Controls.Add(_lblCodeTitle);
+            toolbar.Controls.Add(_lblCodeMode);
             toolbar.Controls.Add(btnPaste);
             toolbar.Controls.Add(btnCopy);
             toolbar.Controls.Add(btnRefresh);
@@ -1246,6 +1271,7 @@ namespace SESpriteLCDLayoutTool
         private void DeleteSelected()
         {
             PushUndo();
+            InvalidateOriginalSourceIfSet();
             _canvas.DeleteSelected();
             RefreshLayerList();
             ClearCodeDirty();
@@ -1279,6 +1305,7 @@ namespace SESpriteLCDLayoutTool
                 name = "SquareSimple";
 
             PushUndo();
+            InvalidateOriginalSourceIfSet();
             _canvas.AddSprite(name, isText: false);
             RefreshLayerList();
             RefreshCode();
@@ -1288,6 +1315,7 @@ namespace SESpriteLCDLayoutTool
         {
             string font = _cmbFont.SelectedItem?.ToString() ?? "White";
             PushUndo();
+            InvalidateOriginalSourceIfSet();
             var sprite = _canvas.AddSprite(glyph.Character.ToString(), isText: true);
             if (sprite == null) return;
             sprite.Text   = glyph.Character.ToString();
@@ -1361,9 +1389,25 @@ namespace SESpriteLCDLayoutTool
                 // Sync layer list selection
                 if (sp != null && _layout != null)
                 {
-                    int idx = _layout.Sprites.IndexOf(sp);
-                    if (idx >= 0 && idx < _lstLayers.Items.Count)
-                        _lstLayers.SelectedIndex = idx;
+                    var highlighted = _canvas.HighlightedSprites;
+                    if (highlighted != null)
+                    {
+                        // Isolation mode: find the filtered-list index of the selected sprite
+                        int listIdx = 0;
+                        bool found = false;
+                        foreach (var s in _layout.Sprites)
+                        {
+                            if (!highlighted.Contains(s)) continue;
+                            if (s == sp) { _lstLayers.SelectedIndex = listIdx; found = true; break; }
+                            listIdx++;
+                        }
+                        if (!found) _lstLayers.SelectedIndex = -1;
+                    }
+                    else
+                    {
+                        int idx = _layout.Sprites.IndexOf(sp);
+                        _lstLayers.SelectedIndex = (idx >= 0 && idx < _lstLayers.Items.Count) ? idx : -1;
+                    }
                 }
                 else
                 {
@@ -1391,6 +1435,16 @@ namespace SESpriteLCDLayoutTool
                 _numH.Value = (decimal)Math.Round(ClampF(sp.Height,     1f, 8192f), 1);
             }
             finally { _updatingProps = false; }
+
+            // During a drag the code box is intentionally frozen to avoid constant
+            // regeneration.  OnDragCompleted will refresh it once the drag ends.
+            if (_canvas.IsDragging)
+            {
+                _lblCodeTitle.Text      = "⟳ dragging…";
+                _lblCodeTitle.ForeColor = Color.FromArgb(160, 160, 160);
+                UpdateStatus();
+                return;
+            }
 
             ClearCodeDirty();
             RefreshCode();
@@ -1632,6 +1686,18 @@ namespace SESpriteLCDLayoutTool
                     RefreshLayerList();
                     RefreshCode();
                     RefreshExpressionColors();
+
+                    // Re-sync the colour swatch and alpha slider for the selected sprite
+                    // so the properties panel immediately reflects the updated colour values.
+                    var sel = _canvas.SelectedSprite;
+                    if (sel != null)
+                    {
+                        _updatingProps = true;
+                        _colorPreview.BackColor = sel.Color;
+                        _trackAlpha.Value       = Math.Max(0, Math.Min(255, sel.ColorA));
+                        _lblAlpha.Text          = sel.ColorA.ToString();
+                        _updatingProps = false;
+                    }
                 }
             }
             catch
@@ -1841,6 +1907,21 @@ namespace SESpriteLCDLayoutTool
             }
         }
 
+        /// <summary>
+        /// Refreshes the mode-indicator label next to the code title so the user can
+        /// always see which of the three output formats is currently active.
+        /// </summary>
+        private void UpdateCodeModeLabel()
+        {
+            if (_lblCodeMode == null || _cmbCodeStyle == null) return;
+            switch (_cmbCodeStyle.SelectedIndex)
+            {
+                case 1:  _lblCodeMode.Text = "▸ Mod";            _lblCodeMode.ForeColor = Color.FromArgb(180, 220, 140); break;
+                case 2:  _lblCodeMode.Text = "▸ Plugin / Torch"; _lblCodeMode.ForeColor = Color.FromArgb(220, 180, 100); break;
+                default: _lblCodeMode.Text = "▸ In-Game (PB)";   _lblCodeMode.ForeColor = Color.FromArgb(140, 210, 140); break;
+            }
+        }
+
         private bool IsActivelyStreaming =>
             (_pipeListener != null && _pipeListener.IsListening && !_pipeListener.IsPaused)
             || (_fileWatcher != null && _fileWatcher.IsListening && !_fileWatcher.IsPaused)
@@ -1983,6 +2064,43 @@ namespace SESpriteLCDLayoutTool
         }
 
         /// <summary>
+        /// Clears <see cref="LcdLayout.OriginalSourceCode"/> when a structural canvas
+        /// edit (add / delete / duplicate) would break offset-based round-trip patching.
+        /// Shows a one-time status hint so the user understands why the code resets.
+        /// </summary>
+        private void InvalidateOriginalSourceIfSet()
+        {
+            if (_layout?.OriginalSourceCode == null) return;
+            _layout.OriginalSourceCode = null;
+            SetStatus("Round-trip source cleared — canvas structure change replaced pasted code. Use 'Reset Source' if needed.");
+        }
+
+        /// <summary>
+        /// Validates and clamps property values on a set of parsed sprites.
+        /// Returns a list of human-readable correction descriptions.
+        /// </summary>
+        private static List<string> ValidateAndFixSprites(List<SpriteEntry> sprites)
+        {
+            var warnings = new List<string>();
+            foreach (var sp in sprites)
+            {
+                if (float.IsNaN(sp.X) || float.IsInfinity(sp.X))
+                { warnings.Add($"X invalid on '{sp.DisplayName}' → 0"); sp.X = 0f; }
+                if (float.IsNaN(sp.Y) || float.IsInfinity(sp.Y))
+                { warnings.Add($"Y invalid on '{sp.DisplayName}' → 0"); sp.Y = 0f; }
+                if (sp.Width <= 0f || float.IsNaN(sp.Width) || float.IsInfinity(sp.Width))
+                { warnings.Add($"Width invalid on '{sp.DisplayName}' → 10"); sp.Width = 10f; }
+                if (sp.Height <= 0f || float.IsNaN(sp.Height) || float.IsInfinity(sp.Height))
+                { warnings.Add($"Height invalid on '{sp.DisplayName}' → 10"); sp.Height = 10f; }
+                if (sp.ColorA < 0 || sp.ColorA > 255)
+                { warnings.Add($"Alpha out of range on '{sp.DisplayName}' → clamped"); sp.ColorA = Math.Max(0, Math.Min(255, sp.ColorA)); }
+                if (sp.Type == SpriteEntryType.Text && (sp.Scale <= 0f || float.IsNaN(sp.Scale) || float.IsInfinity(sp.Scale)))
+                { warnings.Add($"Scale invalid on '{sp.DisplayName}' → 1"); sp.Scale = 1f; }
+            }
+            return warnings;
+        }
+
+        /// <summary>
         /// Parses the manually edited code in <see cref="_codeBox"/> and imports
         /// the resulting sprites onto the canvas, replacing the current layout.
         /// </summary>
@@ -2010,6 +2128,9 @@ namespace SESpriteLCDLayoutTool
                     "Nothing Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+
+            // Validate and clamp any out-of-range values produced by the parser
+            var warnings = ValidateAndFixSprites(sprites);
 
             // Per-sprite source tracking for round-trip patching
             var contextCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -2049,7 +2170,10 @@ namespace SESpriteLCDLayoutTool
             ClearCodeDirty();
             RefreshCode();
             RefreshDebugStats();
-            SetStatus($"Applied {sprites.Count} sprite(s) from the code panel.");
+            if (warnings.Count > 0)
+                SetStatus($"Applied {sprites.Count} sprite(s) — {warnings.Count} value(s) corrected: {string.Join("; ", warnings)}");
+            else
+                SetStatus($"Applied {sprites.Count} sprite(s) from the code panel.");
         }
 
         private void RefreshDetectedCalls()
@@ -3676,6 +3800,7 @@ namespace SESpriteLCDLayoutTool
         {
             if (_canvas.SelectedSprite == null) { SetStatus("Nothing selected to duplicate."); return; }
             PushUndo();
+            InvalidateOriginalSourceIfSet();
             _canvas.DuplicateSelected();
             RefreshLayerList();
             RefreshCode();
