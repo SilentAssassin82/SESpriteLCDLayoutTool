@@ -254,6 +254,41 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
+        /// Given a call expression like <c>"RenderStarfield(sprites, 512f, 512f, 1f)"</c>,
+        /// finds the character offset of the method definition in <paramref name="userCode"/>.
+        /// Returns -1 if not found.
+        /// </summary>
+        public static int FindMethodDefinitionOffset(string userCode, string callExpression)
+        {
+            if (string.IsNullOrWhiteSpace(userCode) || string.IsNullOrWhiteSpace(callExpression))
+                return -1;
+
+            // Extract method name from call expression:
+            //   "RenderStarfield(sprites, 512f, 512f, 1f)"  → "RenderStarfield"
+            //   "sprites = BuildSprites(...)"                → "BuildSprites"
+            //   "Main(\"\", UpdateType.None)"                → "Main"
+            string methodName = callExpression;
+            int eq = methodName.IndexOf('=');
+            if (eq >= 0) methodName = methodName.Substring(eq + 1).Trim();
+            int paren = methodName.IndexOf('(');
+            if (paren > 0) methodName = methodName.Substring(0, paren).Trim();
+            // Strip any leading object reference: "surface.DrawHUD" → "DrawHUD"
+            int lastDot = methodName.LastIndexOf('.');
+            if (lastDot >= 0) methodName = methodName.Substring(lastDot + 1);
+
+            if (string.IsNullOrEmpty(methodName)) return -1;
+
+            // Search for a method definition: look for the method signature pattern
+            // "void MethodName(" or "List<MySprite> MethodName(" etc.
+            var rxDef = new Regex(
+                @"(?:void|List\s*<\s*MySprite\s*>)\s+" + Regex.Escape(methodName) + @"\s*\(",
+                RegexOptions.Compiled);
+
+            Match match = rxDef.Match(userCode);
+            return match.Success ? match.Index : -1;
+        }
+
+        /// <summary>
         /// Detects methods that RETURN <c>List&lt;MySprite&gt;</c> — these are
         /// orchestrators (e.g. <c>BuildSprites(Vector2 surfaceSize)</c>) that call
         /// render methods internally with correct positions.  When found, these
@@ -330,6 +365,38 @@ namespace SESpriteLCDLayoutTool.Services
             catch (Exception ex)
             {
                 return Fail(ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Compiles using the animation pipeline (which runs the constructor body)
+        /// and executes a single frame.  Use this instead of <see cref="Execute"/>
+        /// when the script has class-level fields initialised in the constructor
+        /// (e.g. arrays, RNG seeds, phase offsets).
+        /// </summary>
+        public static ExecutionResult ExecuteWithInit(string userCode, string callExpression)
+        {
+            if (string.IsNullOrWhiteSpace(userCode))
+                return Fail("No code provided.");
+            if (string.IsNullOrWhiteSpace(callExpression))
+                return Fail("No call expression provided.");
+
+            AnimationContext ctx = null;
+            try
+            {
+                ctx = CompileForAnimation(userCode, callExpression);
+                InitAnimation(ctx);
+                var result = RunAnimationFrame(ctx, 32, 0, 0.016);
+                result.ScriptType = ctx.ScriptType;
+                return result;
+            }
+            catch (Exception ex)
+            {
+                return Fail(ex.Message);
+            }
+            finally
+            {
+                ctx?.Dispose();
             }
         }
 

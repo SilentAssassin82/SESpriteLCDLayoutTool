@@ -615,8 +615,16 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.0.2
+- **Double-click to jump to method definition** — double-click any detected method in the call list to scroll the code editor directly to its definition and highlight the signature line
+- **Right-click context menu on detected methods** — right-click a method in the call list for:
+  - **▶ Start Focused Animation** — starts animation with the selected method's sprites at full opacity while dimming all other sprites to 20%, making it easy to isolate and preview a single render method in a multi-method scene
+  - **↗ Jump to Definition** — same as double-click, scrolls to the method definition
+- **Constructor-aware code execution** — `ExecuteWithInit` uses the animation pipeline (`CompileForAnimation` → `InitAnimation` → `RunAnimationFrame`) for single-shot execution, so scripts with class-level fields initialised in the constructor (arrays, RNG seeds, phase offsets) now work correctly with both **▶ Execute Code** and **focused animation**
+- **Focused animation mode** — during animation playback, sprites from non-focused methods are rendered at 20% opacity via `ColorMatrix` dimming, with a 🔍 indicator in the animation tick label
+
 ### v2.0.1
-- **Context-aware code autocomplete** — new `CodeAutoComplete` service provides intelligent suggestions as you type in the code editor panel:
+- **Context-aware code autocomplete**
   - **Dot-access completion** — type any known SE type or enum followed by `.` to get member suggestions (e.g. `SpriteType.`, `IMyTextSurface.`, `Color.`, `MathHelper.`)
   - **Variable-type resolution** — autocomplete works with variable names, not just type names. Typing `lcd.` where `lcd` is declared as `IMyTextSurfaceProvider` resolves the type and suggests `GetSurface()`, `SurfaceCount`, etc.
     - Supports explicit type declarations (`IMyTextSurfaceProvider lcd = ...`)

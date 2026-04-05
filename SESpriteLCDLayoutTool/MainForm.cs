@@ -93,6 +93,8 @@ namespace SESpriteLCDLayoutTool
 
         // ── Animation playback ────────────────────────────────────────────────
         private AnimationPlayer _animPlayer;
+        private string _animFocusCall;                // non-null = focused animation mode
+        private HashSet<string> _animFocusSprites;    // Type+Data keys of the focused method's sprites
         private Panel  _animBar;
         private Button _btnAnimPlay, _btnAnimPause, _btnAnimStop, _btnAnimStep;
         private Label  _lblAnimTick;
@@ -730,7 +732,7 @@ namespace SESpriteLCDLayoutTool
             _execResultLabel.ForeColor = Color.FromArgb(200, 180, 60);
             Refresh();
 
-            var result = CodeExecutor.Execute(code, call);
+            var result = CodeExecutor.ExecuteWithInit(code, call);
             if (!result.Success)
             {
                 _execResultLabel.Text      = "✗ Error";
@@ -1024,19 +1026,53 @@ namespace SESpriteLCDLayoutTool
                 if (_lstDetectedCalls.SelectedItem != null)
                     _execCallBox.Text = _lstDetectedCalls.SelectedItem.ToString();
             };
+
+            // Double-click → jump to method definition in the code editor
             _lstDetectedCalls.MouseDoubleClick += (s, e) =>
             {
                 if (_lstDetectedCalls.SelectedItem == null) return;
                 string call = _lstDetectedCalls.SelectedItem.ToString();
                 _execCallBox.Text = call;
-
-                // During animation, don't isolate (which would clear the scene).
-                // The call expression is already set above — it takes effect
-                // the next time the user restarts playback.
-                if (_animPlayer != null && _animPlayer.IsPlaying) return;
-
-                IsolateCallSprites(call);
+                JumpToMethodDefinition(call);
             };
+
+            // Right-click → context menu with focused-animation option
+            var ctxCalls = new ContextMenuStrip();
+            ctxCalls.BackColor = Color.FromArgb(30, 30, 30);
+            ctxCalls.ForeColor = Color.White;
+            ctxCalls.Renderer  = new ToolStripProfessionalRenderer(
+                new DarkColorTable());
+
+            // Right-click should select the item under the cursor first
+            _lstDetectedCalls.MouseDown += (s, e) =>
+            {
+                if (e.Button != MouseButtons.Right) return;
+                int idx = _lstDetectedCalls.IndexFromPoint(e.Location);
+                if (idx >= 0) _lstDetectedCalls.SelectedIndex = idx;
+            };
+
+            var mnuFocusAnim = new ToolStripMenuItem("▶ Start Focused Animation");
+            mnuFocusAnim.Click += (s2, e2) =>
+            {
+                if (_lstDetectedCalls.SelectedItem == null) return;
+                string call = _lstDetectedCalls.SelectedItem.ToString();
+                _execCallBox.Text = call;
+                StartFocusedAnimation(call);
+            };
+            ctxCalls.Items.Add(mnuFocusAnim);
+
+            var mnuJump = new ToolStripMenuItem("↗ Jump to Definition");
+            mnuJump.Click += (s2, e2) =>
+            {
+                if (_lstDetectedCalls.SelectedItem == null) return;
+                string call = _lstDetectedCalls.SelectedItem.ToString();
+                _execCallBox.Text = call;
+                JumpToMethodDefinition(call);
+            };
+            ctxCalls.Items.Add(mnuJump);
+
+            _lstDetectedCalls.ContextMenuStrip = ctxCalls;
+
             panel.Controls.Add(_lstDetectedCalls);
             panel.Controls.Add(lblDetected);
 
@@ -1668,6 +1704,39 @@ namespace SESpriteLCDLayoutTool
             _codeBox.Focus();
         }
 
+        /// <summary>
+        /// Scrolls the code editor to the definition of the method referenced by
+        /// <paramref name="callExpression"/> and briefly highlights the signature line.
+        /// </summary>
+        private void JumpToMethodDefinition(string callExpression)
+        {
+            if (_codeBox == null || string.IsNullOrWhiteSpace(callExpression)) return;
+
+            string code = _codeBox.Text;
+            int offset = CodeExecutor.FindMethodDefinitionOffset(code, callExpression);
+            if (offset < 0) return;
+
+            // Find the start of the line containing the method definition
+            int lineStart = code.LastIndexOf('\n', Math.Max(0, offset - 1));
+            lineStart = lineStart < 0 ? 0 : lineStart + 1;
+
+            // Find the end of the signature line
+            int lineEnd = code.IndexOf('\n', offset);
+            if (lineEnd < 0) lineEnd = code.Length;
+
+            _suppressCodeBoxEvents = true;
+            try
+            {
+                _codeBox.Select(lineStart, lineEnd - lineStart);
+                _codeBox.ScrollToCaret();
+                _codeBox.Focus();
+            }
+            finally
+            {
+                _suppressCodeBoxEvents = false;
+            }
+        }
+
         // ── Refresh helpers ───────────────────────────────────────────────────────
         private void RefreshLayerList()
         {
@@ -1789,11 +1858,13 @@ namespace SESpriteLCDLayoutTool
 
         /// <summary>
         /// Sets <see cref="_codeBox"/> text without triggering the dirty flag.
+        /// If the text hasn't changed, preserves the current scroll position and selection.
         /// </summary>
         private void SetCodeText(string text)
         {
             _suppressCodeBoxEvents = true;
-            _codeBox.Text = text;
+            if (_codeBox.Text != text)
+                _codeBox.Text = text;
             _suppressCodeBoxEvents = false;
         }
 
@@ -2234,7 +2305,7 @@ namespace SESpriteLCDLayoutTool
                     _fullFrameSprites.Add(sp);
             }
 
-            var result = CodeExecutor.Execute(code, call);
+            var result = CodeExecutor.ExecuteWithInit(code, call);
             if (!result.Success)
             {
                 _execResultLabel.Text      = "✗ Error";
@@ -3785,6 +3856,66 @@ namespace SESpriteLCDLayoutTool
 
         // ── Animation playback handlers ───────────────────────────────────────────
 
+        /// <summary>
+        /// Starts (or restarts) animation in focused mode: the full scene plays but
+        /// sprites from other methods are dimmed so only the focused call is prominent.
+        /// </summary>
+        private void StartFocusedAnimation(string call)
+        {
+            if (_layout == null || string.IsNullOrWhiteSpace(call)) return;
+
+            string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
+            if (string.IsNullOrWhiteSpace(code)) return;
+
+            // Determine which sprites belong to the focused call by executing it once
+            // Use ExecuteWithInit so the constructor body runs (field init, arrays, RNG seeds).
+            var result = CodeExecutor.ExecuteWithInit(code, call);
+            if (!result.Success || result.Sprites.Count == 0)
+            {
+                SetStatus($"Could not identify sprites for {call}");
+                return;
+            }
+
+            // Build a set of Type+Data keys to identify the focused method's sprites
+            _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var sp in result.Sprites)
+            {
+                string key = (sp.Type == SpriteEntryType.Text ? "T:" : "X:") +
+                             (sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName);
+                _animFocusSprites.Add(key);
+            }
+            _animFocusCall = call;
+
+            // If animation is already running, just apply the focus — the next
+            // OnAnimFrame will pick up _animFocusSprites and dim accordingly.
+            if (_animPlayer != null && _animPlayer.IsPlaying)
+            {
+                SetStatus($"Focused on: {call}");
+                return;
+            }
+
+            // Otherwise start fresh animation with full scene
+            EnsureAnimPlayer();
+            PushUndo();
+            CaptureAnimPositionSnapshot();
+
+            string error = _animPlayer.Prepare(code, null);
+            if (error != null)
+            {
+                MessageBox.Show(error, "Animation Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _animPositionSnapshot = null;
+                _animFocusCall = null;
+                _animFocusSprites = null;
+                UpdateAnimButtonStates();
+                return;
+            }
+
+            _animPlayer.Play();
+            UpdateAnimButtonStates();
+            SetStatus($"Animation playing — focused on: {call}");
+        }
+
         private void OnAnimPlayClick(object sender, EventArgs e)
         {
             // Resume if paused
@@ -3795,6 +3926,11 @@ namespace SESpriteLCDLayoutTool
                 SetStatus("Animation resumed.");
                 return;
             }
+
+            // Starting from scratch clears any focused mode
+            _animFocusCall = null;
+            _animFocusSprites = null;
+            _canvas.HighlightedSprites = null;
 
             // Prepare + play from scratch
             string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
@@ -3834,6 +3970,8 @@ namespace SESpriteLCDLayoutTool
         private void OnAnimStopClick(object sender, EventArgs e)
         {
             _animPlayer?.Stop();
+            _animFocusCall = null;
+            _canvas.HighlightedSprites = null;
             UpdateAnimButtonStates();
         }
 
@@ -3877,6 +4015,20 @@ namespace SESpriteLCDLayoutTool
             foreach (var sp in sprites)
                 _layout.Sprites.Add(sp);
 
+            // Focused animation mode: dim sprites not belonging to the focused call
+            if (_animFocusCall != null && _animFocusSprites != null && _animFocusSprites.Count > 0)
+            {
+                var highlighted = new HashSet<SpriteEntry>();
+                foreach (var sp in _layout.Sprites)
+                {
+                    string key = (sp.Type == SpriteEntryType.Text ? "T:" : "X:") +
+                                 (sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName);
+                    if (_animFocusSprites.Contains(key))
+                        highlighted.Add(sp);
+                }
+                _canvas.HighlightedSprites = highlighted.Count > 0 ? highlighted : null;
+            }
+
             _canvas.SelectedSprite = null;
             _canvas.Invalidate();
 
@@ -3884,7 +4036,8 @@ namespace SESpriteLCDLayoutTool
                            : _animPlayer?.ScriptType == ScriptType.ModSurface        ? "Mod"
                            : "LCD";
             double ms = _animPlayer?.LastFrameMs ?? 0;
-            _lblAnimTick.Text = $"{typeTag}  Tick: {tick}  ({ms:F1} ms)";
+            string focusTag = _animFocusCall != null ? " 🔍" : "";
+            _lblAnimTick.Text = $"{typeTag}  Tick: {tick}  ({ms:F1} ms){focusTag}";
         }
 
         private void OnAnimError(string error)
@@ -3897,6 +4050,11 @@ namespace SESpriteLCDLayoutTool
 
         private void OnAnimStopped()
         {
+            // Clear focused animation state
+            _animFocusCall = null;
+            _animFocusSprites = null;
+            _canvas.HighlightedSprites = null;
+
             // Restore pre-animation layout so the canvas returns to its
             // editable state with correct source-tracking and positions.
             if (_animPositionSnapshot != null)
