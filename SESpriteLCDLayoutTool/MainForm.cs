@@ -4201,6 +4201,21 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
+            // If a call is currently isolated (via Execute & Isolate), carry
+            // that isolation into focused animation mode so only those sprites
+            // play at full opacity.
+            if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+            {
+                string call = _execCallBox.Text.Trim();
+                if (!string.IsNullOrEmpty(call))
+                {
+                    // Restore full sprite set before starting animation
+                    RestoreFullView();
+                    StartFocusedAnimation(call);
+                    return;
+                }
+            }
+
             // Starting from scratch clears any focused mode
             _animFocusCall = null;
             _animFocusSprites = null;
@@ -4254,6 +4269,22 @@ namespace SESpriteLCDLayoutTool
             // If not yet prepared, prepare first
             if (_animPlayer == null || !_animPlayer.IsPlaying)
             {
+                // If a call is currently isolated, carry that into focused animation
+                if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                {
+                    string isoCall = _execCallBox.Text.Trim();
+                    if (!string.IsNullOrEmpty(isoCall))
+                    {
+                        RestoreFullView();
+                        StartFocusedAnimation(isoCall);
+                        // Now step the freshly started animation
+                        if (_animPlayer != null && _animPlayer.IsPlaying)
+                            _animPlayer.StepForward();
+                        UpdateAnimButtonStates();
+                        return;
+                    }
+                }
+
                 string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
                 if (string.IsNullOrWhiteSpace(code)) { SetStatus("No code to animate."); return; }
 
