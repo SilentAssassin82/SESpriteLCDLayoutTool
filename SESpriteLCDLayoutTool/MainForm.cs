@@ -2667,6 +2667,33 @@ namespace SESpriteLCDLayoutTool
             SetStatus("All layers visible.");
         }
 
+        /// <summary>Hides all sprite layers drawn above (on top of) the selected sprite.</summary>
+        private void HideLayersAbove()
+        {
+            var sel = _canvas.SelectedSprite;
+            if (sel == null || _layout == null) return;
+
+            int idx = _layout.Sprites.IndexOf(sel);
+            if (idx < 0) return;
+
+            int count = 0;
+            for (int i = idx + 1; i < _layout.Sprites.Count; i++)
+            {
+                if (!_layout.Sprites[i].IsHidden)
+                {
+                    _layout.Sprites[i].IsHidden = true;
+                    count++;
+                }
+            }
+
+            if (count > 0)
+            {
+                _canvas.Invalidate();
+                RefreshLayerList();
+                SetStatus($"{count} layer(s) above hidden — use Show All Layers to restore.");
+            }
+        }
+
         private void OnLiveFrameReceived(string frame)
         {
             // Called on background/timer thread — always marshal to UI thread
@@ -3890,9 +3917,10 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add("Duplicate",  null, (s, e) => DuplicateSelected());
             ctx.Items.Add("Delete",     null, (s, e) => DeleteSelected());
             ctx.Items.Add(new ToolStripSeparator());
-            var hideItem    = ctx.Items.Add("Hide Layer",       null, (s, e) => ToggleSelectedLayerVisibility(true));
-            var showItem    = ctx.Items.Add("Show Layer",       null, (s, e) => ToggleSelectedLayerVisibility(false));
-            var showAllItem = ctx.Items.Add("Show All Layers",  null, (s, e) => ShowAllLayers());
+            var hideItem      = ctx.Items.Add("Hide Layer",         null, (s, e) => ToggleSelectedLayerVisibility(true));
+            var showItem      = ctx.Items.Add("Show Layer",         null, (s, e) => ToggleSelectedLayerVisibility(false));
+            var hideAboveItem = ctx.Items.Add("Hide Layers Above",  null, (s, e) => HideLayersAbove());
+            var showAllItem   = ctx.Items.Add("Show All Layers",    null, (s, e) => ShowAllLayers());
 
             ctx.Opening += (s, e) =>
             {
@@ -3908,6 +3936,12 @@ namespace SESpriteLCDLayoutTool
                 bool hidden = _canvas.SelectedSprite.IsHidden;
                 hideItem.Visible = !hidden;
                 showItem.Visible = hidden;
+
+                // Hide Layers Above: only enabled when there are visible layers above
+                bool hasVisibleAbove = false;
+                for (int i = idx + 1; i < _layout.Sprites.Count; i++)
+                    if (!_layout.Sprites[i].IsHidden) { hasVisibleAbove = true; break; }
+                hideAboveItem.Enabled = hasVisibleAbove;
 
                 bool anyHidden = false;
                 foreach (var sp in _layout.Sprites)
