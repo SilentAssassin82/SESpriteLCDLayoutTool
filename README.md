@@ -615,6 +615,10 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.0.6
+- **Animation snippet "Replace in Code"** — the **📥 Insert at Cursor** button in the animation snippet dialog (right-click → Add Animation…) now auto-locates the selected sprite's `.Add(new MySprite { … });` block in the code editor and replaces it with the generated animation snippet. When the sprite's code block is found, the button label changes to **📥 Replace in Code** and the status bar confirms the replacement
+- **Fixed selection overwrite bug** — previously, highlighting text in the code editor before clicking Insert had no effect because `SelectionLength` was explicitly zeroed. Manual text selection is now preserved, so highlighting any region and clicking Insert correctly replaces it
+
 ### v2.0.5
 - **Fixed round-trip patching for constructor + trailing-assignment sprites** — sprites created with `var s = new MySprite(SpriteType.TEXTURE, "name"); s.Size = new Vector2(…); s.Color = new Color(…);` style code now have their trailing property assignments included in the tracked source range, so canvas edits to Size, Position, Color, RotationOrScale, Alignment, FontId, and Data are correctly patched back into the original source
 - **Fixed `RefreshCode` unconditional sync** — `RefreshCode()` now always updates the code panel regardless of the dirty flag state, so all canvas operations (nudge, layer reorder, duplicate, center, catalog replace, undo/redo, stretch to surface) reliably sync to the code panel

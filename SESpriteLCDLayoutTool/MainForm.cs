@@ -4221,6 +4221,125 @@ namespace SESpriteLCDLayoutTool
             _btnAnimPause.Text = paused ? "▶" : "⏸";
         }
 
+        // ── Animation snippet helpers ─────────────────────────────────────────
+
+        /// <summary>
+        /// Tries to locate the enclosing .Add(new MySprite { … }); block for
+        /// <paramref name="sprite"/> inside <see cref="_codeBox"/> text.
+        /// Returns true and sets <paramref name="blockStart"/>/<paramref name="blockLength"/>
+        /// when found; false otherwise (caller should fall back to cursor insertion).
+        /// </summary>
+        private bool TryFindSpriteBlockInCodeBox(SpriteEntry sprite, out int blockStart, out int blockLength)
+        {
+            blockStart = 0;
+            blockLength = 0;
+            if (_codeBox == null || _layout == null) return false;
+
+            string code = _codeBox.Text;
+            if (string.IsNullOrEmpty(code)) return false;
+
+            // Data value to search for in code
+            string dataValue = sprite.Type == SpriteEntryType.Text ? sprite.Text : sprite.SpriteName;
+            if (string.IsNullOrEmpty(dataValue)) return false;
+            string escaped = dataValue.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            string dataLiteral = "\"" + escaped + "\"";
+
+            // Count which occurrence of this Data value this sprite is among layout sprites
+            int targetOcc = 0;
+            foreach (var sp in _layout.Sprites)
+            {
+                if (sp == sprite) break;
+                string d = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
+                if (d == dataValue) targetOcc++;
+            }
+
+            // Find the nth occurrence of the Data literal within a new MySprite block
+            int occ = 0;
+            int nmsPos = -1;
+            int search = 0;
+            while (search < code.Length)
+            {
+                int dPos = code.IndexOf(dataLiteral, search, StringComparison.Ordinal);
+                if (dPos < 0) break;
+
+                // Check it's inside a "new MySprite" block by looking backward
+                int lookStart = Math.Max(0, dPos - 500);
+                int nms = code.LastIndexOf("new MySprite", dPos, dPos - lookStart, StringComparison.Ordinal);
+                if (nms >= 0)
+                {
+                    if (occ == targetOcc) { nmsPos = nms; break; }
+                    occ++;
+                }
+                search = dPos + dataLiteral.Length;
+            }
+
+            if (nmsPos < 0) return false;
+
+            // ── Expand backward to include .Add( wrapper ──
+            blockStart = nmsPos;
+            int lookBackLen = Math.Min(nmsPos, 300);
+            if (lookBackLen > 0)
+            {
+                string before = code.Substring(nmsPos - lookBackLen, lookBackLen);
+                int addIdx = before.LastIndexOf(".Add(", StringComparison.Ordinal);
+                if (addIdx >= 0)
+                {
+                    int addAbs = nmsPos - lookBackLen + addIdx;
+                    int ls = code.LastIndexOf('\n', addAbs);
+                    blockStart = (ls < 0) ? 0 : ls + 1;
+                }
+            }
+
+            // Include preceding comment lines (// …)
+            while (blockStart > 0)
+            {
+                int sf = blockStart - 2;
+                if (sf < 0) break;
+                int nlBefore = code.LastIndexOf('\n', sf);
+                int prevLineStart = (nlBefore < 0) ? 0 : nlBefore + 1;
+                if (prevLineStart >= blockStart) break;
+                string prevLine = code.Substring(prevLineStart, blockStart - prevLineStart)
+                                      .TrimEnd('\r', '\n');
+                if (prevLine.TrimStart().StartsWith("//"))
+                    blockStart = prevLineStart;
+                else
+                    break;
+            }
+
+            // ── Expand forward past closing }); ──
+            // Find the { after "new MySprite"
+            int braceOpen = -1;
+            for (int j = nmsPos + 12; j < code.Length && j < nmsPos + 60; j++)
+            {
+                char c = code[j];
+                if (c == '{') { braceOpen = j; break; }
+                if (c == '(') break; // constructor syntax — not handled here
+                if (!char.IsWhiteSpace(c)) break;
+            }
+            if (braceOpen < 0) return false;
+
+            int depth = 1;
+            int ci = braceOpen + 1;
+            while (ci < code.Length && depth > 0)
+            {
+                if (code[ci] == '{') depth++;
+                else if (code[ci] == '}') depth--;
+                ci++;
+            }
+            if (depth != 0) return false;
+
+            // ci is now past the closing }.  Look for ); 
+            int end = ci;
+            while (end < code.Length && (code[end] == ' ' || code[end] == '\t')) end++;
+            if (end < code.Length && code[end] == ')') end++;
+            if (end < code.Length && code[end] == ';') end++;
+            if (end < code.Length && code[end] == '\r') end++;
+            if (end < code.Length && code[end] == '\n') end++;
+
+            blockLength = end - blockStart;
+            return blockLength > 0;
+        }
+
         // ── Animation snippet dialog ──────────────────────────────────────────
         private Form _snippetDialog;
 
@@ -4377,19 +4496,36 @@ namespace SESpriteLCDLayoutTool
                 SetStatus("Animation snippet copied to clipboard");
             };
 
-            var btnInsert = DarkButton("📥 Insert at Cursor", Color.FromArgb(0, 130, 80));
-            btnInsert.Width = 160;
+            // Auto-find: check whether we can locate the sprite's block in the code editor
+            int autoStart, autoLen;
+            bool canReplace = TryFindSpriteBlockInCodeBox(sprite, out autoStart, out autoLen);
+
+            var btnInsert = DarkButton(
+                canReplace ? "📥 Replace in Code" : "📥 Insert at Cursor",
+                Color.FromArgb(0, 130, 80));
+            btnInsert.Width = canReplace ? 170 : 160;
             btnInsert.Click += (s, e) =>
             {
                 if (_codeBox == null) return;
-                int pos = _codeBox.SelectionStart;
+
                 _codeBox.Focus();
-                _codeBox.SelectionStart = pos;
-                _codeBox.SelectionLength = 0;
+
+                // Try auto-selecting the sprite's existing code block
+                int bs, bl;
+                if (TryFindSpriteBlockInCodeBox(sprite, out bs, out bl))
+                {
+                    _codeBox.SelectionStart = bs;
+                    _codeBox.SelectionLength = bl;
+                }
+
+                // Replace the selection (or insert at cursor if nothing was selected)
                 _suppressCodeBoxEvents = true;
                 try { _codeBox.SelectedText = txtCode.Text; }
                 finally { _suppressCodeBoxEvents = false; }
-                SetStatus("Animation snippet inserted at cursor");
+
+                SetStatus(bl > 0
+                    ? "Animation snippet replaced sprite code"
+                    : "Animation snippet inserted at cursor");
             };
 
             toolbar.Controls.Add(btnClose);
