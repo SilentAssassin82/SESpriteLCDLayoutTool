@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.1.0) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.2.0) |
 
 ---
 
@@ -708,6 +708,13 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.2.0
+- **Script-type aware animation snippets** — both the simple animation dialog (right-click → Add Animation…) and the keyframe animation dialog now read the current **Code Style** dropdown and generate context-appropriate output
+  - **Auto-default `ListVarName`** — PB, Mod, Plugin/Torch, and Pulsar targets default to `frame` (for `MySpriteDrawFrame`); LCD Helper defaults to `sprites` (for `List<MySprite>`)
+  - **Target label in dialog title** — dialog title bar shows the active target (e.g. "Animation Snippet [PB]", "Keyframe Animation [Pulsar]")
+  - **Context-aware comments** — generated snippets include target-specific header labels (`[PB]`, `[Mod]`, `[Plugin]`, `[Pulsar]`, `[LCD]`), field placement hints (e.g. "add to your Program class" vs. "add to your IPlugin class"), and render method hints (e.g. "In your Main() method" vs. "In your Update() loop")
+  - New `TargetScriptType` enum (`LcdHelper`, `ProgrammableBlock`, `Mod`, `Plugin`, `Pulsar`) with `TargetLabel()`, `FieldHint()`, and `RenderHint()` helper methods
 
 ### v2.1.0
 - **Pulsar plugin support** — new `Pulsar` code style for client-side plugins using `VRage.Plugins.IPlugin`

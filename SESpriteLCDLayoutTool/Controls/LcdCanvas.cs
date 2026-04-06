@@ -62,6 +62,9 @@ namespace SESpriteLCDLayoutTool.Controls
         private bool _snapToGrid;
         private int _gridSize = 16;
 
+        // Drag-performance: cached bitmap of everything except the dragged sprite
+        private Bitmap _dragCache;
+
         // ── Events ───────────────────────────────────────────────────────────────
         public event EventHandler SelectionChanged;
         public event EventHandler SpriteModified;
@@ -96,7 +99,7 @@ namespace SESpriteLCDLayoutTool.Controls
         public float Zoom
         {
             get => _zoom;
-            set { _zoom = Math.Max(0.1f, Math.Min(value, 8f)); Invalidate(); }
+            set { _zoom = Math.Max(0.1f, Math.Min(value, 8f)); InvalidateDragCache(); Invalidate(); }
         }
 
         public bool SnapToGrid
@@ -224,12 +227,33 @@ namespace SESpriteLCDLayoutTool.Controls
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            var g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-
             if (_layout == null) return;
 
+            var g = e.Graphics;
+
+            // Fast path: during drag, blit the cached background and draw only the active sprite
+            if (_dragMode != DragMode.None && _selectedSprite != null && _dragCache != null)
+            {
+                g.DrawImageUnscaled(_dragCache, 0, 0);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                ComputeTransform(out float s, out PointF o);
+                DrawSprite(g, _selectedSprite, true, s, o);
+                return;
+            }
+
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            PaintScene(g, null, true);
+        }
+
+        /// <summary>
+        /// Renders the full scene. When <paramref name="excludeSprite"/> is non-null that
+        /// sprite is skipped (used when building the drag background cache).
+        /// When <paramref name="drawOverlays"/> is false, debug overlays are omitted.
+        /// </summary>
+        private void PaintScene(Graphics g, SpriteEntry excludeSprite, bool drawOverlays)
+        {
             ComputeTransform(out float scale, out PointF origin);
             float dw = _layout.SurfaceWidth  * scale;
             float dh = _layout.SurfaceHeight * scale;
@@ -286,28 +310,58 @@ namespace SESpriteLCDLayoutTool.Controls
             foreach (var sprite in _layout.Sprites)
             {
                 if (sprite.IsHidden) continue;
+                if (sprite == excludeSprite) continue;
                 DrawSprite(g, sprite, sprite == _selectedSprite, scale, origin);
             }
 
-            // ── Debug overlays ───────────────────────────────────────────────────
-            if (_overlayMode == DebugOverlayMode.OverdrawHeatmap)
-                DrawOverdrawHeatmap(g, scale, origin, dw, dh);
-            else if (_overlayMode == DebugOverlayMode.BoundingBoxes)
-                DrawBoundingBoxOverlay(g, scale, origin);
+            if (drawOverlays)
+            {
+                // ── Debug overlays ───────────────────────────────────────────────────
+                if (_overlayMode == DebugOverlayMode.OverdrawHeatmap)
+                    DrawOverdrawHeatmap(g, scale, origin, dw, dh);
+                else if (_overlayMode == DebugOverlayMode.BoundingBoxes)
+                    DrawBoundingBoxOverlay(g, scale, origin);
 
-            // Per-sprite size warnings (⚠)
-            if (_showSizeWarnings && SizeWarnings != null)
-                DrawSizeWarnings(g, scale, origin);
+                // Per-sprite size warnings (⚠)
+                if (_showSizeWarnings && SizeWarnings != null)
+                    DrawSizeWarnings(g, scale, origin);
+            }
 
             // Surface size label + zoom
             string zoomLabel = _zoom >= 0.995f && _zoom <= 1.005f ? "" : $"  Zoom: {_zoom:P0}";
-            using (var lf = new Font("Segoe UI", 8f))
-            using (var lb = new SolidBrush(Color.FromArgb(80, 160, 160)))
-                g.DrawString($"{_layout.SurfaceWidth} × {_layout.SurfaceHeight}{zoomLabel}", lf, lb,
-                    origin.X + 3, origin.Y + dh + 3);
-        }
+                 using (var lf = new Font("Segoe UI", 8f))
+                using (var lb = new SolidBrush(Color.FromArgb(80, 160, 160)))
+                    g.DrawString($"{_layout.SurfaceWidth} × {_layout.SurfaceHeight}{zoomLabel}", lf, lb,
+                        origin.X + 3, origin.Y + dh + 3);
+            }
 
-        private void DrawSprite(Graphics g, SpriteEntry sprite, bool selected, float scale, PointF origin)
+            /// <summary>
+            /// Renders everything except the selected sprite into <see cref="_dragCache"/>
+            /// so that OnPaint only needs to blit this bitmap + draw the one active sprite.
+            /// </summary>
+            private void BuildDragCache()
+            {
+                InvalidateDragCache();
+                if (_layout == null || _selectedSprite == null) return;
+                if (Width <= 0 || Height <= 0) return;
+
+                _dragCache = new Bitmap(Width, Height);
+                using (var g = Graphics.FromImage(_dragCache))
+                {
+                    g.Clear(BackColor);
+                    g.SmoothingMode = SmoothingMode.AntiAlias;
+                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                    PaintScene(g, _selectedSprite, false);
+                }
+            }
+
+            private void InvalidateDragCache()
+            {
+                _dragCache?.Dispose();
+                _dragCache = null;
+            }
+
+            private void DrawSprite(Graphics g, SpriteEntry sprite, bool selected, float scale, PointF origin)
         {
             var rect = GetSpriteScreenRect(sprite, scale, origin);
 
@@ -747,6 +801,7 @@ namespace SESpriteLCDLayoutTool.Controls
             _dragOrigW = sprite.Width;
             _dragOrigH = sprite.Height;
             Capture = true;
+            BuildDragCache();
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
@@ -836,6 +891,7 @@ namespace SESpriteLCDLayoutTool.Controls
 
             if (_dragMode != DragMode.None)
             {
+                InvalidateDragCache();
                 DragCompleted?.Invoke(this, EventArgs.Empty);
             }
             Capture = false;
@@ -975,7 +1031,7 @@ namespace SESpriteLCDLayoutTool.Controls
             }
         }
 
-        protected override void OnResize(EventArgs e) { base.OnResize(e); Invalidate(); }
+        protected override void OnResize(EventArgs e) { base.OnResize(e); InvalidateDragCache(); Invalidate(); }
 
         // ── Debug overlay rendering ──────────────────────────────────────────────
 
