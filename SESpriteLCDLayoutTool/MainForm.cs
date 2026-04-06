@@ -545,12 +545,13 @@ namespace SESpriteLCDLayoutTool
             layerHeader.Controls.Add(_btnShowAll);
             _lstLayers = new ListBox
             {
-                Dock        = DockStyle.Bottom,
-                Height      = 100,
-                BackColor   = Color.FromArgb(30, 30, 30),
-                ForeColor   = Color.FromArgb(215, 215, 215),
-                BorderStyle = BorderStyle.None,
-                Font        = new Font("Segoe UI", 8.5f),
+                Dock          = DockStyle.Bottom,
+                Height        = 100,
+                BackColor     = Color.FromArgb(30, 30, 30),
+                ForeColor     = Color.FromArgb(215, 215, 215),
+                BorderStyle   = BorderStyle.None,
+                Font          = new Font("Segoe UI", 8.5f),
+                SelectionMode = SelectionMode.MultiExtended,
             };
             _lstLayers.SelectedIndexChanged += OnLayerListSelectionChanged;
             _lstLayers.MouseDoubleClick  += OnLayerListDoubleClick;
@@ -559,7 +560,12 @@ namespace SESpriteLCDLayoutTool
                 if (e.Button == MouseButtons.Right)
                 {
                     int idx = _lstLayers.IndexFromPoint(e.Location);
-                    if (idx >= 0) _lstLayers.SelectedIndex = idx;
+                    if (idx >= 0 && !_lstLayers.SelectedIndices.Contains(idx))
+                    {
+                        // Right-clicked on an unselected item — select only that one
+                        _lstLayers.SelectedIndex = idx;
+                    }
+                    // If right-clicked on an already-selected item, keep multi-select
                 }
             };
             _lstLayers.ContextMenuStrip = BuildLayerContextMenu();
@@ -891,7 +897,7 @@ namespace SESpriteLCDLayoutTool
                 ForeColor     = Color.FromArgb(220, 220, 220),
                 FlatStyle     = FlatStyle.Flat,
             };
-            _cmbCodeStyle.Items.AddRange(new object[] { "In-Game (PB)", "Mod", "Plugin / Torch" });
+            _cmbCodeStyle.Items.AddRange(new object[] { "In-Game (PB)", "Mod", "Plugin / Torch", "Pulsar" });
             _cmbCodeStyle.SelectedIndex = 0;
             _cmbCodeStyle.SelectedIndexChanged += (s, e) =>
             {
@@ -1296,12 +1302,20 @@ namespace SESpriteLCDLayoutTool
 
         private void DeleteSelected()
         {
+            var selected = GetSelectedSprites();
+            if (selected.Count == 0 && _canvas.SelectedSprite != null)
+                selected.Add(_canvas.SelectedSprite);
+            if (selected.Count == 0) return;
+
             PushUndo();
             InvalidateOriginalSourceIfSet();
-            _canvas.DeleteSelected();
+            foreach (var sp in selected)
+                _layout.Sprites.Remove(sp);
+            _canvas.SelectedSprite = null;
             RefreshLayerList();
             ClearCodeDirty();
             RefreshCode();
+            SetStatus(selected.Count == 1 ? "Deleted sprite" : $"Deleted {selected.Count} sprites");
         }
 
         private void AddSelectedTreeSprite()
@@ -1759,9 +1773,26 @@ namespace SESpriteLCDLayoutTool
             return null;
         }
 
+        /// <summary>
+        /// Returns all sprites currently selected in the layer list.
+        /// </summary>
+        private List<SpriteEntry> GetSelectedSprites()
+        {
+            var list = new List<SpriteEntry>();
+            if (_layout == null) return list;
+            foreach (int idx in _lstLayers.SelectedIndices)
+            {
+                var sp = SpriteFromLayerIndex(idx);
+                if (sp != null) list.Add(sp);
+            }
+            return list;
+        }
+
         private void OnLayerListSelectionChanged(object sender, EventArgs e)
         {
             if (_updatingProps || _layout == null) return;
+            // In multi-select mode, set canvas to the focused item (last clicked)
+            // SelectedIndex still returns the most recently toggled item
             int idx = _lstLayers.SelectedIndex;
             var sprite = SpriteFromLayerIndex(idx);
             if (sprite != null)
@@ -1776,7 +1807,9 @@ namespace SESpriteLCDLayoutTool
             if (sprite == null) return;
 
             int spriteIdx = _layout.Sprites.IndexOf(sprite);
-            string code = _codeBox.Text;
+            // RichTextBox.Text returns \r\n but Select() counts each line break
+            // as a single character.  Strip \r so positions match Select coords.
+            string code = _codeBox.Text.Replace("\r", "");
             int targetPos = -1;
 
             // Count non-ref, source-tracked sprites before this one (for round-trip ordinal)
@@ -1826,7 +1859,6 @@ namespace SESpriteLCDLayoutTool
                 blockEnd += 2;
                 // Include trailing semicolon and newline if present
                 if (blockEnd < code.Length && code[blockEnd] == ';') blockEnd++;
-                if (blockEnd < code.Length && code[blockEnd] == '\r') blockEnd++;
                 if (blockEnd < code.Length && code[blockEnd] == '\n') blockEnd++;
             }
             else
@@ -1836,9 +1868,9 @@ namespace SESpriteLCDLayoutTool
                 else blockEnd++;
             }
 
+            _codeBox.Focus();
             _codeBox.Select(lineStart, blockEnd - lineStart);
             _codeBox.ScrollToCaret();
-            _codeBox.Focus();
         }
 
         /// <summary>
@@ -1849,9 +1881,15 @@ namespace SESpriteLCDLayoutTool
         {
             if (_codeBox == null || string.IsNullOrWhiteSpace(callExpression)) return;
 
-            string code = _codeBox.Text;
+            // RichTextBox.Text returns \r\n but Select() counts each line break
+            // as a single character.  Strip \r so positions match Select coords.
+            string code = _codeBox.Text.Replace("\r", "");
             int offset = CodeExecutor.FindMethodDefinitionOffset(code, callExpression);
-            if (offset < 0) return;
+            if (offset < 0)
+            {
+                SetStatus($"Could not find definition of method in code panel.");
+                return;
+            }
 
             // Find the start of the line containing the method definition
             int lineStart = code.LastIndexOf('\n', Math.Max(0, offset - 1));
@@ -1864,9 +1902,9 @@ namespace SESpriteLCDLayoutTool
             _suppressCodeBoxEvents = true;
             try
             {
+                _codeBox.Focus();
                 _codeBox.Select(lineStart, lineEnd - lineStart);
                 _codeBox.ScrollToCaret();
-                _codeBox.Focus();
             }
             finally
             {
@@ -1880,6 +1918,9 @@ namespace SESpriteLCDLayoutTool
             _updatingProps = true;
             try
             {
+                // Preserve multi-selection state before clearing
+                var prevSelected = GetSelectedSprites();
+
                 _lstLayers.Items.Clear();
                 if (_layout == null) return;
 
@@ -1892,6 +1933,8 @@ namespace SESpriteLCDLayoutTool
                     highlighted = _isolatedCallSprites;
                 }
 
+                // Build a mapping from list index to sprite for re-selection
+                var listSprites = new List<SpriteEntry>();
                 foreach (var s in _layout.Sprites)
                 {
                     // During isolation mode, hide dimmed (non-highlighted) sprites from the list
@@ -1903,26 +1946,27 @@ namespace SESpriteLCDLayoutTool
                         : s.SourceStart < 0 ? "· "
                         : "";
                     _lstLayers.Items.Add(prefix + s.DisplayName);
+                    listSprites.Add(s);
                 }
 
-                var sel = _canvas.SelectedSprite;
-                if (sel != null)
+                // Restore multi-selection
+                if (prevSelected.Count > 0)
                 {
-                    int idx = _layout.Sprites.IndexOf(sel);
-                    // During isolation, the layer list index != sprite list index
-                    if (highlighted != null)
+                    for (int i = 0; i < listSprites.Count; i++)
                     {
-                        int listIdx = 0;
-                        foreach (var s in _layout.Sprites)
-                        {
-                            if (!highlighted.Contains(s)) continue;
-                            if (s == sel) { _lstLayers.SelectedIndex = listIdx; break; }
-                            listIdx++;
-                        }
+                        if (prevSelected.Contains(listSprites[i]))
+                            _lstLayers.SetSelected(i, true);
                     }
-                    else if (idx >= 0)
+                }
+                else
+                {
+                    // Fall back to canvas selection
+                    var sel = _canvas.SelectedSprite;
+                    if (sel != null)
                     {
-                        _lstLayers.SelectedIndex = idx;
+                        int listIdx = listSprites.IndexOf(sel);
+                        if (listIdx >= 0)
+                            _lstLayers.SetSelected(listIdx, true);
                     }
                 }
             }
@@ -1938,6 +1982,7 @@ namespace SESpriteLCDLayoutTool
                 {
                     case 1: return CodeStyle.Mod;
                     case 2: return CodeStyle.Plugin;
+                    case 3: return CodeStyle.Pulsar;
                     default: return CodeStyle.InGame;
                 }
             }
@@ -1954,6 +1999,7 @@ namespace SESpriteLCDLayoutTool
             {
                 case 1:  _lblCodeMode.Text = "▸ Mod";            _lblCodeMode.ForeColor = Color.FromArgb(180, 220, 140); break;
                 case 2:  _lblCodeMode.Text = "▸ Plugin / Torch"; _lblCodeMode.ForeColor = Color.FromArgb(220, 180, 100); break;
+                case 3:  _lblCodeMode.Text = "▸ Pulsar";         _lblCodeMode.ForeColor = Color.FromArgb(100, 180, 255); break;
                 default: _lblCodeMode.Text = "▸ In-Game (PB)";   _lblCodeMode.ForeColor = Color.FromArgb(140, 210, 140); break;
             }
         }
@@ -2675,21 +2721,26 @@ namespace SESpriteLCDLayoutTool
             SetStatus("Full view restored.");
         }
 
-        /// <summary>Hides or shows the currently selected sprite layer.</summary>
+        /// <summary>Hides or shows the selected sprite layer(s).</summary>
         private void ToggleSelectedLayerVisibility(bool hide)
         {
-            var sel = _canvas.SelectedSprite;
-            if (sel == null || _layout == null) return;
-
-            sel.IsHidden = hide;
-            if (hide)
+            var selected = GetSelectedSprites();
+            if (selected.Count == 0)
             {
-                // Deselect the hidden sprite so the user can click others
-                _canvas.SelectedSprite = null;
+                var sel = _canvas.SelectedSprite;
+                if (sel != null) selected.Add(sel);
             }
+            if (selected.Count == 0 || _layout == null) return;
+
+            foreach (var sp in selected)
+                sp.IsHidden = hide;
+            if (hide)
+                _canvas.SelectedSprite = null;
             _canvas.Invalidate();
             RefreshLayerList();
-            SetStatus(hide ? $"Layer hidden: {sel.DisplayName}" : $"Layer shown: {sel.DisplayName}");
+            SetStatus(hide
+                ? (selected.Count == 1 ? $"Layer hidden: {selected[0].DisplayName}" : $"{selected.Count} layers hidden")
+                : (selected.Count == 1 ? $"Layer shown: {selected[0].DisplayName}" : $"{selected.Count} layers shown"));
         }
 
         /// <summary>Shows all hidden layers, restoring full visibility.</summary>
@@ -2738,6 +2789,9 @@ namespace SESpriteLCDLayoutTool
                 var sprites = CodeParser.Parse(frame);
                 if (sprites.Count == 0) return;
 
+                // Extract snapshot tag if present
+                string frameTag = CodeParser.ParseSnapshotTag(frame);
+
                 // Create a default layout if none is loaded so live frames always land somewhere
                 if (_layout == null)
                 {
@@ -2780,7 +2834,9 @@ namespace SESpriteLCDLayoutTool
                 _layout.Sprites.AddRange(sprites);
                 _canvas.CanvasLayout = _layout;
                 RefreshLayerList();
-                SetStatus($"Live frame: {sprites.Count} sprites");
+                SetStatus(frameTag != null
+                    ? $"Live frame [{frameTag}]: {sprites.Count} sprites"
+                    : $"Live frame: {sprites.Count} sprites");
             }));
         }
 
@@ -3190,6 +3246,11 @@ namespace SESpriteLCDLayoutTool
                                 ? "Could not detect a Main() entry point in this PB script.\n\n"
                                   + "Enter the call expression manually, e.g.:\n"
                                   + "  Main(\"\", UpdateType.None)"
+                                : st == ScriptType.PulsarPlugin
+                                ? "Detected a Pulsar IPlugin class but could not find a render method\n"
+                                  + "with an IMyTextSurface/IMyTextPanel parameter.\n\n"
+                                  + "Enter the call expression manually, e.g.:\n"
+                                  + "  DrawLayout(surface)"
                                 : st == ScriptType.ModSurface
                                 ? "Could not detect a render method with an IMyTextSurface parameter.\n\n"
                                   + "Enter the call expression manually, e.g.:\n"
@@ -3222,7 +3283,8 @@ namespace SESpriteLCDLayoutTool
                     executedSprites = execResult.Sprites;
                     string typeTag = execResult.ScriptType == ScriptType.ProgrammableBlock ? " [PB]"
                                    : execResult.ScriptType == ScriptType.ModSurface        ? " [Mod]"
-                                   : "";
+                                   : execResult.ScriptType == ScriptType.PulsarPlugin      ? " [Pulsar]"
+                                   : " [LCD]";
                     lblExecResult.Text = "✔ " + executedSprites.Count + " sprites" + typeTag;
                     lblExecResult.ForeColor = Color.FromArgb(80, 220, 100);
                 };
@@ -3346,11 +3408,13 @@ namespace SESpriteLCDLayoutTool
                         string snapshotCode = txtSnapshot.Text;
                         if (!string.IsNullOrWhiteSpace(snapshotCode))
                         {
+                            string snapTag = CodeParser.ParseSnapshotTag(snapshotCode);
                             var snapshotSprites = CodeParser.Parse(snapshotCode);
                             if (snapshotSprites.Count > 0)
                             {
                                 var mergeResult = SnapshotMerger.Merge(sprites, snapshotSprites);
-                                SetStatus(mergeResult.Summary);
+                                string tagInfo = snapTag != null ? $" [snapshot: {snapTag}]" : "";
+                                SetStatus(mergeResult.Summary + tagInfo);
                                 hasDynamicPositions = false; // snapshot resolved positions
                             }
                         }
@@ -3410,6 +3474,22 @@ namespace SESpriteLCDLayoutTool
                     _canvas.Invalidate();
                     RefreshLayerList();
                     ClearCodeDirty();
+
+                    // Auto-switch code style based on detected script type
+                    var detectedType = CodeExecutor.DetectScriptType(sourceCode);
+                    switch (detectedType)
+                    {
+                        case ScriptType.ProgrammableBlock:
+                            if (_cmbCodeStyle.SelectedIndex != 0) _cmbCodeStyle.SelectedIndex = 0;
+                            break;
+                        case ScriptType.ModSurface:
+                            if (_cmbCodeStyle.SelectedIndex != 1) _cmbCodeStyle.SelectedIndex = 1;
+                            break;
+                        case ScriptType.PulsarPlugin:
+                            if (_cmbCodeStyle.SelectedIndex != 3) _cmbCodeStyle.SelectedIndex = 3;
+                            break;
+                    }
+
                     RefreshCode();
 
                     string refNote = isReference ? " as reference" : "";
@@ -3504,6 +3584,7 @@ namespace SESpriteLCDLayoutTool
                         return;
                     }
 
+                    string applyTag = CodeParser.ParseSnapshotTag(snapCode);
                     var snapshotSprites = CodeParser.Parse(snapCode);
                     if (snapshotSprites.Count == 0)
                     {
@@ -3529,7 +3610,8 @@ namespace SESpriteLCDLayoutTool
                     _canvas.Invalidate();
                     RefreshLayerList();
                     RefreshCode();
-                    SetStatus(result.Summary);
+                    string applyTagInfo = applyTag != null ? $" [snapshot: {applyTag}]" : "";
+                    SetStatus(result.Summary + applyTagInfo);
                     dlg.Close();
                 };
 
@@ -3862,13 +3944,41 @@ namespace SESpriteLCDLayoutTool
 
         private void DuplicateSelected()
         {
-            if (_canvas.SelectedSprite == null) { SetStatus("Nothing selected to duplicate."); return; }
+            var selected = GetSelectedSprites();
+            if (selected.Count == 0 && _canvas.SelectedSprite != null)
+                selected.Add(_canvas.SelectedSprite);
+            if (selected.Count == 0) { SetStatus("Nothing selected to duplicate."); return; }
+
             PushUndo();
             InvalidateOriginalSourceIfSet();
-            _canvas.DuplicateSelected();
+            SpriteEntry lastDup = null;
+            foreach (var src in selected)
+            {
+                var dup = new SpriteEntry
+                {
+                    Type       = src.Type,
+                    SpriteName = src.SpriteName,
+                    X          = src.X + 20f,
+                    Y          = src.Y + 20f,
+                    Width      = src.Width,
+                    Height     = src.Height,
+                    ColorR     = src.ColorR,
+                    ColorG     = src.ColorG,
+                    ColorB     = src.ColorB,
+                    ColorA     = src.ColorA,
+                    Rotation   = src.Rotation,
+                    Text       = src.Text,
+                    FontId     = src.FontId,
+                    Alignment  = src.Alignment,
+                    Scale      = src.Scale,
+                };
+                _layout.Sprites.Add(dup);
+                lastDup = dup;
+            }
+            if (lastDup != null) _canvas.SelectedSprite = lastDup;
             RefreshLayerList();
             RefreshCode();
-            SetStatus("Duplicated sprite");
+            SetStatus(selected.Count == 1 ? "Duplicated sprite" : $"Duplicated {selected.Count} sprites");
         }
 
         private void CenterSelectedOnSurface()
@@ -3950,8 +4060,8 @@ namespace SESpriteLCDLayoutTool
             var moveUp   = ctx.Items.Add("Move Up",    null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); RefreshCode(); });
             var moveDown = ctx.Items.Add("Move Down",  null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); RefreshCode(); });
             ctx.Items.Add(new ToolStripSeparator());
-            ctx.Items.Add("Duplicate",  null, (s, e) => DuplicateSelected());
-            ctx.Items.Add("Delete",     null, (s, e) => DeleteSelected());
+            var dupItem  = ctx.Items.Add("Duplicate",  null, (s, e) => DuplicateSelected());
+            var delItem  = ctx.Items.Add("Delete",     null, (s, e) => DeleteSelected());
             ctx.Items.Add(new ToolStripSeparator());
             var hideItem      = ctx.Items.Add("Hide Layer",         null, (s, e) => ToggleSelectedLayerVisibility(true));
             var showItem      = ctx.Items.Add("Show Layer",         null, (s, e) => ToggleSelectedLayerVisibility(false));
@@ -3965,13 +4075,24 @@ namespace SESpriteLCDLayoutTool
                     e.Cancel = true;
                     return;
                 }
+
+                int selCount = _lstLayers.SelectedIndices.Count;
+                bool multi = selCount > 1;
+
+                // Move up/down only for single selection
                 int idx = _layout.Sprites.IndexOf(_canvas.SelectedSprite);
-                moveUp.Enabled   = idx < _layout.Sprites.Count - 1;
-                moveDown.Enabled = idx > 0;
+                moveUp.Enabled   = !multi && idx < _layout.Sprites.Count - 1;
+                moveDown.Enabled = !multi && idx > 0;
+
+                // Update labels for multi-select
+                dupItem.Text = multi ? $"Duplicate ({selCount} selected)" : "Duplicate";
+                delItem.Text = multi ? $"Delete ({selCount} selected)"    : "Delete";
 
                 bool hidden = _canvas.SelectedSprite.IsHidden;
-                hideItem.Visible = !hidden;
-                showItem.Visible = hidden;
+                hideItem.Text    = multi ? $"Hide Layers ({selCount} selected)" : "Hide Layer";
+                showItem.Text    = multi ? $"Show Layers ({selCount} selected)" : "Show Layer";
+                hideItem.Visible = !hidden || multi;
+                showItem.Visible = hidden  || multi;
 
                 // Hide Layers Above: only enabled when there are visible layers above
                 bool hasVisibleAbove = false;
@@ -4365,6 +4486,7 @@ namespace SESpriteLCDLayoutTool
 
             string typeTag = _animPlayer?.ScriptType == ScriptType.ProgrammableBlock ? "PB"
                            : _animPlayer?.ScriptType == ScriptType.ModSurface        ? "Mod"
+                           : _animPlayer?.ScriptType == ScriptType.PulsarPlugin      ? "Pulsar"
                            : "LCD";
             double ms = _animPlayer?.LastFrameMs ?? 0;
             string focusTag = _animFocusCall != null ? " 🔍" : "";

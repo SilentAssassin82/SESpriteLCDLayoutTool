@@ -15,6 +15,8 @@ namespace SESpriteLCDLayoutTool.Services
         Mod,
         /// <summary>Torch/Plugin — uses Sandbox.ModAPI with full using directives and session context hints.</summary>
         Plugin,
+        /// <summary>Pulsar plugin — uses VRage.Plugins.IPlugin with Init/Update/Dispose lifecycle.</summary>
+        Pulsar,
     }
 
     public static class CodeGenerator
@@ -54,6 +56,28 @@ namespace SESpriteLCDLayoutTool.Services
                     sb.AppendLine("// NOTE: Plugin/Torch code — obtain an IMyTextSurface from a terminal block:");
                     sb.AppendLine("//   var lcd = block as IMyTextSurfaceProvider;");
                     sb.AppendLine("//   var surface = lcd?.GetSurface(0);");
+                    break;
+
+                case CodeStyle.Pulsar:
+                    sb.AppendLine("// Required using directives:");
+                    sb.AppendLine("//   using VRage.Game.GUI.TextPanel;   // SpriteType, MySprite, ContentType");
+                    sb.AppendLine("//   using VRageMath;                  // Vector2, Color");
+                    sb.AppendLine("//   using Sandbox.ModAPI;             // IMyTextPanel");
+                    sb.AppendLine("//   using VRage.Plugins;              // IPlugin");
+                    sb.AppendLine("//");
+                    sb.AppendLine("// NOTE: Pulsar plugin — implement IPlugin with Init/Update/Dispose.");
+                    sb.AppendLine("//   Find your LCD panel by scanning grids via MyEntities.GetEntities():");
+                    sb.AppendLine("//   foreach (MyEntity e in MyEntities.GetEntities())");
+                    sb.AppendLine("//   {");
+                    sb.AppendLine("//       var grid = e as MyCubeGrid;");
+                    sb.AppendLine("//       if (grid == null) continue;");
+                    sb.AppendLine("//       foreach (var slim in grid.CubeBlocks)");
+                    sb.AppendLine("//       {");
+                    sb.AppendLine("//           var panel = slim.FatBlock as IMyTextPanel;");
+                    sb.AppendLine("//           if (panel != null && panel.CustomName == \"YourLCD\")");
+                    sb.AppendLine("//               surface = panel;");
+                    sb.AppendLine("//       }");
+                    sb.AppendLine("//   }");
                     break;
 
                 default: // InGame / PB
@@ -148,6 +172,7 @@ namespace SESpriteLCDLayoutTool.Services
         {
             switch (style)
             {
+                case CodeStyle.Pulsar:  return GenerateSnapshotHelper_Pulsar();
                 case CodeStyle.Plugin:  return GenerateSnapshotHelper_Plugin();
                 case CodeStyle.Mod:     return GenerateSnapshotHelper_Mod();
                 default:                return GenerateSnapshotHelper_PB();
@@ -419,6 +444,205 @@ namespace SESpriteLCDLayoutTool.Services
             return sb.ToString();
         }
 
+        private static string GenerateSnapshotHelper_Pulsar()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("// ─── LCD Snapshot Helper (Pulsar Plugin) ─────────────────────────────");
+            sb.AppendLine("// Add this to your IPlugin class.  Wire up SnapshotLcd() to a chat");
+            sb.AppendLine("// command or call it from your Update() loop.");
+            sb.AppendLine("//");
+            sb.AppendLine("// The snapshot is written to a file and logged via NLog so you can");
+            sb.AppendLine("// grab it from the Pulsar console or the output file.");
+            sb.AppendLine("//");
+            sb.AppendLine("// Live Streaming:  Call StartLcdStream() from a command and the snippet");
+            sb.AppendLine("// will stream frames to the layout tool over a named pipe for 60 seconds,");
+            sb.AppendLine("// then auto-disarm.  The code is completely dormant and causes zero");
+            sb.AppendLine("// overhead when not streaming.");
+            sb.AppendLine("//");
+            sb.AppendLine("// Surface access (Pulsar — no GridTerminalSystem):");
+            sb.AppendLine("//   foreach (MyEntity e in MyEntities.GetEntities())");
+            sb.AppendLine("//   {");
+            sb.AppendLine("//       var grid = e as MyCubeGrid;");
+            sb.AppendLine("//       if (grid == null) continue;");
+            sb.AppendLine("//       foreach (var slim in grid.CubeBlocks)");
+            sb.AppendLine("//       {");
+            sb.AppendLine("//           var panel = slim.FatBlock as IMyTextPanel;");
+            sb.AppendLine("//           if (panel != null && panel.CustomName == \"YourLCD\")");
+            sb.AppendLine("//               surface = panel;");
+            sb.AppendLine("//       }");
+            sb.AppendLine("//   }");
+            sb.AppendLine("// ───────────────────────────────────────────────────────────────────────");
+            sb.AppendLine();
+            sb.AppendLine("// Required usings:");
+            sb.AppendLine("//   using System;");
+            sb.AppendLine("//   using System.Collections.Generic;");
+            sb.AppendLine("//   using System.IO;");
+            sb.AppendLine("//   using System.IO.Pipes;");
+            sb.AppendLine("//   using System.Text;");
+            sb.AppendLine("//   using NLog;");
+            sb.AppendLine("//   using Sandbox.Game.Entities;       // MyCubeGrid, MyEntities");
+            sb.AppendLine("//   using Sandbox.ModAPI;               // IMyTextPanel");
+            sb.AppendLine("//   using VRage.Game.Entity;            // MyEntity");
+            sb.AppendLine("//   using VRage.Game.GUI.TextPanel;     // MySprite, SpriteType, ContentType");
+            sb.AppendLine("//   using VRage.Plugins;                // IPlugin");
+            sb.AppendLine("//   using VRageMath;                    // Vector2, Color");
+            sb.AppendLine();
+            sb.AppendLine("private static readonly Logger Log = LogManager.GetCurrentClassLogger();");
+            sb.AppendLine();
+            AppendSnapshotCore(sb, accessModifier: "public ");
+            sb.AppendLine();
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Snapshots all sprites currently collected and writes them to a file.");
+            sb.AppendLine("/// Call SnapshotCollect(sprites) in your Update() rendering code first,");
+            sb.AppendLine("/// then trigger this via a command or one-shot flag.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine("public void SnapshotLcd(string label = \"LcdSnapshot\")");
+            sb.AppendLine("{");
+            sb.AppendLine("    if (_snapshotSprites.Count == 0)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        Log.Warn(\"SnapshotLcd: no sprites collected — call SnapshotCollect() first\");");
+            sb.AppendLine("        return;");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+            sb.AppendLine("    string output = SerializeSnapshot();");
+            sb.AppendLine("    string dir = Directory.GetCurrentDirectory();");
+            sb.AppendLine("    string path = Path.Combine(dir, $\"{label}_{DateTime.Now:yyyyMMdd_HHmmss}.cs\");");
+            sb.AppendLine();
+            sb.AppendLine("    File.WriteAllText(path, output);");
+            sb.AppendLine("    Log.Info($\"LCD snapshot saved: {path}  ({_snapshotSprites.Count} sprites)\");");
+            sb.AppendLine("}");
+            sb.AppendLine();
+            sb.AppendLine("// ── Live LCD Streaming (self-disarming) ──────────────────────────────");
+            sb.AppendLine();
+            sb.AppendLine("private NamedPipeClientStream _lcdPipe;");
+            sb.AppendLine("private DateTime _lcdStreamExpiry;");
+            sb.AppendLine("private bool _lcdStreamActive;");
+            sb.AppendLine();
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Starts streaming LCD snapshots to the layout tool over a named pipe.");
+            sb.AppendLine("/// The stream auto-disarms after <paramref name=\"seconds\"/> (default 60).");
+            sb.AppendLine("/// The code is completely dormant when not streaming — zero overhead.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine("public void StartLcdStream(int seconds = 60)");
+            sb.AppendLine("{");
+            sb.AppendLine("    StopLcdStream();");
+            sb.AppendLine("    try");
+            sb.AppendLine("    {");
+            sb.AppendLine("        _lcdPipe = new NamedPipeClientStream(\".\", \"SELcdSnapshot\", PipeDirection.Out);");
+            sb.AppendLine("        _lcdPipe.Connect(2000); // 2 s timeout — layout tool must be listening");
+            sb.AppendLine("        _lcdStreamExpiry = DateTime.UtcNow.AddSeconds(seconds);");
+            sb.AppendLine("        _lcdStreamActive = true;");
+            sb.AppendLine("        Log.Info($\"LCD stream started — auto-disarms in {seconds}s\");");
+            sb.AppendLine("    }");
+            sb.AppendLine("    catch (Exception ex)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        Log.Warn($\"LCD stream failed to connect: {ex.Message}\");");
+            sb.AppendLine("        StopLcdStream();");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            sb.AppendLine();
+            sb.AppendLine("/// <summary>Stops the live LCD stream immediately.</summary>");
+            sb.AppendLine("public void StopLcdStream()");
+            sb.AppendLine("{");
+            sb.AppendLine("    _lcdStreamActive = false;");
+            sb.AppendLine("    try { _lcdPipe?.Dispose(); } catch { }");
+            sb.AppendLine("    _lcdPipe = null;");
+            sb.AppendLine("}");
+            sb.AppendLine();
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Sends the current snapshot frame over the pipe if streaming is active.");
+            sb.AppendLine("/// Call this after SnapshotCollect() in your Update() loop.");
+            sb.AppendLine("/// When the timer expires the stream self-disarms automatically.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine("public void StreamFrame()");
+            sb.AppendLine("{");
+            sb.AppendLine("    if (!_lcdStreamActive) return; // dormant — zero overhead");
+            sb.AppendLine();
+            sb.AppendLine("    // Auto-disarm check");
+            sb.AppendLine("    if (DateTime.UtcNow > _lcdStreamExpiry)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        Log.Info(\"LCD stream expired — auto-disarmed\");");
+            sb.AppendLine("        StopLcdStream();");
+            sb.AppendLine("        return;");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+            sb.AppendLine("    if (_snapshotSprites.Count == 0) return;");
+            sb.AppendLine();
+            sb.AppendLine("    try");
+            sb.AppendLine("    {");
+            sb.AppendLine("        string frame = SerializeSnapshot();");
+            sb.AppendLine("        byte[] payload = Encoding.UTF8.GetBytes(frame);");
+            sb.AppendLine("        byte[] header = BitConverter.GetBytes(payload.Length);");
+            sb.AppendLine("        _lcdPipe.Write(header, 0, 4);");
+            sb.AppendLine("        _lcdPipe.Write(payload, 0, payload.Length);");
+            sb.AppendLine("        _lcdPipe.Flush();");
+            sb.AppendLine("    }");
+            sb.AppendLine("    catch (Exception ex)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        Log.Warn($\"LCD stream write failed: {ex.Message}\");");
+            sb.AppendLine("        StopLcdStream();");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            sb.AppendLine();
+            sb.AppendLine("// ── File-Based Live Streaming (alternative to named pipes) ───────────");
+            sb.AppendLine("// Use this when the layout tool is on the same machine as the server.");
+            sb.AppendLine("// The layout tool watches the file via Edit → Watch Snapshot File…");
+            sb.AppendLine();
+            sb.AppendLine("private string _lcdStreamFilePath;");
+            sb.AppendLine("private DateTime _lcdFileStreamExpiry;");
+            sb.AppendLine("private bool _lcdFileStreamActive;");
+            sb.AppendLine();
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Starts writing LCD snapshots to a file on disk at the given path.");
+            sb.AppendLine("/// The stream auto-disarms after <paramref name=\"seconds\"/> (default 60).");
+            sb.AppendLine("/// Point the layout tool's \"Watch Snapshot File\" at this path.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine("public void StartLcdFileStream(string filePath, int seconds = 60)");
+            sb.AppendLine("{");
+            sb.AppendLine("    StopLcdFileStream();");
+            sb.AppendLine("    _lcdStreamFilePath = filePath;");
+            sb.AppendLine("    _lcdFileStreamExpiry = DateTime.UtcNow.AddSeconds(seconds);");
+            sb.AppendLine("    _lcdFileStreamActive = true;");
+            sb.AppendLine("    Log.Info($\"LCD file stream started → {filePath}  (auto-disarms in {seconds}s)\");");
+            sb.AppendLine("}");
+            sb.AppendLine();
+            sb.AppendLine("/// <summary>Stops the file-based LCD stream immediately.</summary>");
+            sb.AppendLine("public void StopLcdFileStream()");
+            sb.AppendLine("{");
+            sb.AppendLine("    _lcdFileStreamActive = false;");
+            sb.AppendLine("    _lcdStreamFilePath = null;");
+            sb.AppendLine("}");
+            sb.AppendLine();
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Writes the current snapshot to the stream file if file streaming is active.");
+            sb.AppendLine("/// Call this after SnapshotCollect() in your Update() loop.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine("public void StreamFrameToFile()");
+            sb.AppendLine("{");
+            sb.AppendLine("    if (!_lcdFileStreamActive) return; // dormant — zero overhead");
+            sb.AppendLine();
+            sb.AppendLine("    if (DateTime.UtcNow > _lcdFileStreamExpiry)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        Log.Info(\"LCD file stream expired — auto-disarmed\");");
+            sb.AppendLine("        StopLcdFileStream();");
+            sb.AppendLine("        return;");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+            sb.AppendLine("    if (_snapshotSprites.Count == 0) return;");
+            sb.AppendLine();
+            sb.AppendLine("    try");
+            sb.AppendLine("    {");
+            sb.AppendLine("        File.WriteAllText(_lcdStreamFilePath, SerializeSnapshot());");
+            sb.AppendLine("    }");
+            sb.AppendLine("    catch (Exception ex)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        Log.Warn($\"LCD file stream write failed: {ex.Message}\");");
+            sb.AppendLine("        StopLcdFileStream();");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            return sb.ToString();
+        }
+
         /// <summary>
         /// Appends the shared SnapshotCollect + SerializeSnapshot methods.
         /// </summary>
@@ -426,6 +650,14 @@ namespace SESpriteLCDLayoutTool.Services
         {
             // The snapshot collector list
             sb.AppendLine($"{accessModifier}List<MySprite> _snapshotSprites = new List<MySprite>();");
+            sb.AppendLine();
+
+            // Snapshot tag — set this to identify which plugin/script produced the snapshot
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Set this to a unique label (e.g. \"MyPulsarHUD\") so the layout tool");
+            sb.AppendLine("/// can distinguish snapshots from different plugins on the same LCD.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine($"{accessModifier}string _snapshotTag = \"\";");
             sb.AppendLine();
 
             // Collect method
@@ -451,6 +683,8 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("    var sb = new StringBuilder();");
             sb.AppendLine("    sb.AppendLine(\"// ── LCD Snapshot ──\");");
             sb.AppendLine("    sb.AppendLine($\"// Captured: {DateTime.Now:yyyy-MM-dd HH:mm}  |  Sprites: {_snapshotSprites.Count}\");");
+            sb.AppendLine("    if (!string.IsNullOrEmpty(_snapshotTag))");
+            sb.AppendLine("        sb.AppendLine($\"// @SnapshotTag: {_snapshotTag}\");");
             sb.AppendLine("    sb.AppendLine();");
             sb.AppendLine("    for (int i = 0; i < _snapshotSprites.Count; i++)");
             sb.AppendLine("    {");

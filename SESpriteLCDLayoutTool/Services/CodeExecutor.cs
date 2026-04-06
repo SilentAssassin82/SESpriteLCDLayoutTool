@@ -19,6 +19,8 @@ namespace SESpriteLCDLayoutTool.Services
         ProgrammableBlock,
         /// <summary>Mod / plugin code with methods that accept <c>IMyTextSurface</c>.</summary>
         ModSurface,
+        /// <summary>Pulsar plugin — implements <c>IPlugin</c> with Init/Update/Dispose lifecycle.</summary>
+        PulsarPlugin,
     }
 
     /// <summary>
@@ -54,6 +56,8 @@ namespace SESpriteLCDLayoutTool.Services
         private static readonly Regex _rxSurfaceMethod = new Regex(
             @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(\w+)\s*\([^)]*(?:IMyTextSurface|IMyTextPanel)\s+\w+[^)]*\)",
             RegexOptions.Compiled);
+        private static readonly Regex _rxPulsarPlugin = new Regex(
+            @"class\s+\w+\s*:\s*IPlugin\b", RegexOptions.Compiled);
         private static readonly Regex _rxSpriteListMethod = new Regex(
             @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(\w+)\s*\(\s*List\s*<\s*MySprite\s*>\s+\w+([^)]*)\)",
             RegexOptions.Compiled);
@@ -84,6 +88,10 @@ namespace SESpriteLCDLayoutTool.Services
             // PB detection: class extending MyGridProgram, or Main() with SE signature
             if (_rxPbClass.IsMatch(userCode) || _rxMainMethod.IsMatch(userCode))
                 return ScriptType.ProgrammableBlock;
+
+            // Pulsar plugin detection: class implementing IPlugin
+            if (_rxPulsarPlugin.IsMatch(userCode))
+                return ScriptType.PulsarPlugin;
 
             // Mod/surface detection: methods accepting IMyTextSurface
             if (_rxSurfaceMethod.IsMatch(userCode))
@@ -125,6 +133,7 @@ namespace SESpriteLCDLayoutTool.Services
                     DetectPbCalls(userCode, results);
                     break;
 
+                case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
                     DetectSurfaceCalls(userCode, results);
                     // Also check for any List<MySprite> helpers in the same file
@@ -478,6 +487,7 @@ namespace SESpriteLCDLayoutTool.Services
                 case ScriptType.ProgrammableBlock:
                     source = BuildPbAnimationSource(userCode);
                     break;
+                case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
                     source = BuildModSurfaceAnimationSource(userCode, callExpression, stateUpdateCalls);
                     break;
@@ -601,6 +611,7 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 case ScriptType.ProgrammableBlock:
                     return BuildPbSource(userCode, callExpression, out hadClassWrapper);
+                case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
                     return BuildModSurfaceSource(userCode, callExpression, out hadClassWrapper);
                 default:

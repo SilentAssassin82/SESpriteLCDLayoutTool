@@ -2,7 +2,7 @@
 
 A powerful **WYSIWYG visual editor** for designing custom LCD sprite layouts in **[Space Engineers](https://store.steampowered.com/app/244850/Space_Engineers/)**.
 
-Design your screens with drag & drop, preview real in-game textures, then export clean, ready-to-paste C# code for **Programmable Blocks**, **mods**, or **Torch/SE plugins**.
+Design your screens with drag & drop, preview real in-game textures, then export clean, ready-to-paste C# code for **Programmable Blocks**, **mods**, **Torch/SE plugins**, or **Pulsar client-side plugins**.
 
 ![.NET Framework 4.8](https://img.shields.io/badge/.NET%20Framework-4.8-blue)
 ![C#](https://img.shields.io/badge/C%23-7.3-brightgreen)
@@ -14,15 +14,15 @@ Design your screens with drag & drop, preview real in-game textures, then export
 
 | Section | Description |
 |---|---|
-| [✨ Features](#-features) | Visual canvas, texture previews, sprite catalog, code generation, compiler, animation, snapshots |
+| [✨ Features](#-features) | Visual canvas, texture previews, sprite catalog, code generation, compiler, animation, snapshots, multi-select layers |
 | [🚀 Getting Started](#-getting-started) | Requirements, running the tool, importing sprite names |
 | [📖 Workflow](#-workflow) | Step-by-step usage guide |
-| [📸 Snapshot Helpers & Live Streaming](#-snapshot-helpers--live-lcd-streaming) | Optional — mostly superseded by the built-in compiler; still useful without Roslyn or for live streaming |
+| [📸 Snapshot Helpers & Live Streaming](#-snapshot-helpers--live-lcd-streaming) | Optional — mostly superseded by the built-in compiler; still useful without Roslyn or for live streaming. Includes snapshot tagging |
 | [Screenshots](#screenshots) | Editor canvas, catalog, code generation, in-game results, demo videos |
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → latest) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.1.0) |
 
 ---
 
@@ -36,6 +36,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 - **Resize handles** for quick sprite scaling
 - **Rotation** support for texture sprites
 - **Layer ordering** — move sprites up/down in the draw order
+- **Multi-select layers** — Shift-click and Ctrl-click in the layer list to select multiple sprites; batch **delete**, **duplicate**, and **hide/show** operations apply to the entire selection
 - **Layer visibility** — hide individual layers or all layers above a sprite to easily select and edit buried sprites
 - **Undo/Redo** with full history
 - **Dark theme** UI matching the Space Engineers aesthetic
@@ -55,10 +56,11 @@ Design your screens with drag & drop, preview real in-game textures, then export
 - **Auto-categorisation** and persistent catalog (`imported_sprites.txt`)
 
 ### 💻 Code Generation & Import
-- **Three output modes:**
+- **Four output modes:**
   - **In-Game (PB)** — `Sandbox.ModAPI.Ingame` (private method)
   - **Mod** — `Sandbox.ModAPI` (public method)
   - **Plugin / Torch** — `Sandbox.ModAPI` with `IMyTextSurfaceProvider` hints
+  - **Pulsar** — `VRage.Plugins.IPlugin` with `Init`/`Update`/`Dispose` lifecycle and `MyEntities`/`MyCubeGrid` surface access pattern
 - Smart **code parser** supporting many C# styles (object initializers, constructors, factory methods, assignments, fully-qualified enums)
 - **Code round-trip** — paste your existing source code, edit visually, and get your original code back with only the changed properties patched in (colors, textures, fonts). Works with both static layouts and dynamic code (loops, switch/case, expressions)
 - **Expression literal editing** — the SOURCE VALUES panel extracts all literal values (Color, Vector2, float, string) from the source context surrounding each sprite and offers type-specific inline editing:
@@ -76,7 +78,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
   - **LCD Helper** — standalone render methods with `List<MySprite>` first parameter (e.g. `RenderPanel(sprites, 512f, 10f, 1f)`)
   - **Programmable Block (PB)** — full PB scripts extending `MyGridProgram` with `Main()` entry point. Paste your entire PB script and the tool detects `Main(string, UpdateType)`, wires up functional stubs for `Me`, `Runtime`, `GridTerminalSystem`, runs the constructor body, calls `Main()`, and captures every sprite drawn via `frame.Add()` — no modifications to your code needed
   - **Mod / Plugin** — scripts with methods that accept `IMyTextSurface`. The tool creates a functional stub surface, passes it to your render method, and captures sprites drawn through `DrawFrame().Add()`
-- The result label shows **`[PB]`** or **`[Mod]`** tags so you always know which script type was detected
+- The result label shows **`[PB]`**, **`[Mod]`**, **`[Pulsar]`**, or **`[LCD]`** tags so you always know which script type was detected
 - Uses the **Roslyn C# compiler** (`csc.exe`) from your local Visual Studio installation (auto-detected via `vswhere.exe`)
 - Compiles with `/langversion:7.3` and `/optimize+`, targeting the standard .NET Framework assemblies
 - **Comprehensive Space Engineers type stubs** compiled alongside your code:
@@ -117,11 +119,11 @@ Design your screens with drag & drop, preview real in-game textures, then export
   - Every subsequent frame applies those offsets so animated movement is preserved while the scene sits at the correct in-game positions
   - Sprites in the snapshot with no animation counterpart remain visible as static elements
 - **Play / Pause / Stop / Step** controls with script-type indicator (`PB`, `Mod`, `LCD`) and tick counter
-- **Works with all three script types** — Programmable Block, Mod, and LCD Helper scripts
+- **Works with all four script types** — Programmable Block, Mod, Pulsar, and LCD Helper scripts
 - Layout is **fully restored** when animation stops — your editable sprites, source tracking, and positions return to their pre-animation state
 
 ### 📸 LCD Snapshot Capture & Live Streaming
-- **Three ready-to-paste helper snippets** generated by the tool — one each for **Programmable Block**, **Mod**, and **Torch/Plugin** targets
+- **Four ready-to-paste helper snippets** generated by the tool — one each for **Programmable Block**, **Mod**, **Torch/Plugin**, and **Pulsar** targets
 - Capture live LCD panels (resolved sprites with final positions, sizes, colors, etc.)
 - Import as a fully **editable layout** or as a visual **reference overlay** (dotted amber border + [REF] tag)
 - **Live LCD Streaming (Plugin only)** — stream frames in real time from a running game to the layout tool over a named pipe
@@ -133,6 +135,8 @@ Design your screens with drag & drop, preview real in-game textures, then export
   - **Snapshot** provides the true runtime-resolved positions and sizes
   - Sprites are matched by **(Type + Data)** in occurrence order, with positional fallback for expression-generated data
   - Import baselines are refreshed after merging, so the round-trip code generator treats snapshot positions as the new baseline (not as user edits)
+- **Snapshot tagging** — the generated helper code includes a `_snapshotTag` field you can set to a label (e.g. `"MyPulsarHUD"`). When set, the serialized output includes a `// @SnapshotTag: MyPulsarHUD` header line. The layout tool parses this tag and displays it in the status bar on import, making it easy to identify which plugin or script produced a given snapshot — especially useful when multiple plugins render to the same LCD
+  - **Dormant sprite awareness** — if a snapshot captures fewer sprites than expected (e.g. 4 sprites missing), this is typically because some sprites were inactive/dormant during the capture frame, not a merge bug. The tag helps you verify which plugin produced the snapshot so you can re-capture at a better moment
 - Standalone **Apply Runtime Snapshot** dialog (**Edit → Apply Runtime Snapshot…**) — apply a snapshot to an already-imported layout at any time
 - Extremely useful for debugging dynamic LCDs or starting from an existing complex display
 
@@ -199,7 +203,7 @@ Copy the Custom Data, then in the tool: **Edit → Import Sprite Names** and pas
 
 > **Important:** The snapshot helper snippet must be added **inside the plugin or mod that actually renders the LCD** you want to capture. Sprites are drawn by that plugin's own code, so a separate script or programmable block cannot read them — you can only capture what the owning plugin writes to the surface.
 
-The tool generates ready-to-paste helper code via the **Copy Snapshot Helper** button. Select your target (In-Game / Mod / Plugin) and copy. All three variants share the same core `SnapshotCollect()` + `SerializeSnapshot()` methods — the differences are in output transport and access modifiers.
+The tool generates ready-to-paste helper code via the **Copy Snapshot Helper** button. Select your target (In-Game / Mod / Plugin / Pulsar) and copy. All four variants share the same core `SnapshotCollect()` + `SerializeSnapshot()` methods (including optional `_snapshotTag` identification) — the differences are in output transport, access modifiers, and surface access patterns.
 
 ---
 
@@ -216,6 +220,12 @@ Drop this into your PB script. After your drawing code, call `SnapshotCollect(my
 
 List<MySprite> _snapshotSprites = new List<MySprite>();
 
+/// <summary>
+/// Set this to identify which script produced the snapshot (e.g. "MyHUD").
+/// The layout tool displays this tag on import.
+/// </summary>
+string _snapshotTag = "";
+
 void SnapshotCollect(List<MySprite> sprites)
 {
     _snapshotSprites.Clear();
@@ -227,6 +237,8 @@ string SerializeSnapshot()
     var sb = new StringBuilder();
     sb.AppendLine("// ── LCD Snapshot ──");
     sb.AppendLine($"// Captured: {DateTime.Now:yyyy-MM-dd HH:mm}  |  Sprites: {_snapshotSprites.Count}");
+    if (!string.IsNullOrEmpty(_snapshotTag))
+        sb.AppendLine($"// @SnapshotTag: {_snapshotTag}");
     sb.AppendLine();
     for (int i = 0; i < _snapshotSprites.Count; i++)
     {
@@ -272,9 +284,10 @@ Add this to your mod's session component or drawing class. Output is shown via t
 //   using VRageMath;
 
 public List<MySprite> _snapshotSprites = new List<MySprite>();
+public string _snapshotTag = ""; // identifies the snapshot source
 
 public void SnapshotCollect(List<MySprite> sprites) { /* ...same as PB... */ }
-public string SerializeSnapshot() { /* ...same serializer... */ }
+public string SerializeSnapshot() { /* ...same serializer, emits @SnapshotTag header when set... */ }
 ```
 
 **Usage:**
@@ -309,8 +322,9 @@ The plugin variant includes everything above *plus*:
 private static readonly Logger Log = LogManager.GetCurrentClassLogger();
 
 public List<MySprite> _snapshotSprites = new List<MySprite>();
+public string _snapshotTag = ""; // identifies the snapshot source
 public void SnapshotCollect(List<MySprite> sprites) { /* ...same... */ }
-public string SerializeSnapshot() { /* ...same... */ }
+public string SerializeSnapshot() { /* ...same, emits @SnapshotTag header when set... */ }
 
 // ── One-shot file snapshot ───────────────────────────────────────────────
 
@@ -428,6 +442,64 @@ StartLcdStream(60);   // streams for 60 seconds then auto-disarms
 
 ---
 
+### Pulsar Plugin
+
+Pulsar (client-side) plugins implement `VRage.Plugins.IPlugin` and don't have access to `GridTerminalSystem`. The generated snippet includes the same snapshot + live streaming code as Torch, but with surface access via `MyEntities` / `MyCubeGrid` iteration.
+
+```csharp
+// ─── LCD Snapshot Helper (Pulsar Plugin) ─────────────────────────────────────────
+// Add this to your IPlugin class.
+// Required usings:
+//   using Sandbox.Game.Entities;       // MyCubeGrid, MyEntities
+//   using Sandbox.ModAPI;               // IMyTextPanel
+//   using VRage.Game.Entity;            // MyEntity
+//   using VRage.Game.GUI.TextPanel;     // MySprite, SpriteType
+//   using VRage.Plugins;                // IPlugin
+//   using VRageMath;                    // Vector2, Color
+
+// Surface access (Pulsar — no GridTerminalSystem):
+foreach (MyEntity e in MyEntities.GetEntities())
+{
+    var grid = e as MyCubeGrid;
+    if (grid == null) continue;
+    foreach (var slim in grid.CubeBlocks)
+    {
+        var panel = slim.FatBlock as IMyTextPanel;
+        if (panel != null && panel.CustomName == "YourLCD")
+            surface = panel;
+    }
+}
+
+public List<MySprite> _snapshotSprites = new List<MySprite>();
+
+/// <summary>
+/// Set this to a unique label (e.g. "MyPulsarHUD") so the layout tool
+/// can distinguish snapshots from different plugins on the same LCD.
+/// </summary>
+public string _snapshotTag = "";
+
+public void SnapshotCollect(List<MySprite> sprites) { /* ...same as Torch... */ }
+public string SerializeSnapshot() { /* ...same serializer, emits @SnapshotTag header when set... */ }
+
+public void SnapshotLcd(string label = "LcdSnapshot") { /* ...same file output via NLog... */ }
+public void StartLcdStream(int seconds = 60) { /* ...same named pipe streaming... */ }
+public void StopLcdStream() { /* ... */ }
+public void StreamFrame() { /* ...same — dormant when not active... */ }
+public void StartLcdFileStream(string path, int seconds = 60) { /* ...same file streaming... */ }
+public void StopLcdFileStream() { /* ... */ }
+public void StreamFrameToFile() { /* ...same... */ }
+```
+
+**Usage in your `Update()` loop:**
+```csharp
+SnapshotCollect(mySprites);   // always — cheap list copy
+StreamFrame();                // no-op when dormant
+```
+
+The full generated snippet (via **Copy Snapshot Helper** with the Pulsar target selected) includes all method bodies, XML doc comments, and the file/pipe streaming code — identical to the Torch variant but with Pulsar-specific usings and surface access guidance.
+
+---
+
 ### Live Streaming — Layout Tool Side
 
 1. **Edit → Start Live Listening** — the tool opens a named pipe server and waits
@@ -468,8 +540,9 @@ Already imported your code but forgot the snapshot? Use **Edit → Apply Runtime
 <summary>📄 Example snapshot output (60 sprites from an IML Ingots panel) — click to expand</summary>
 
 ```csharp
-// Snapshot: 60 sprite(s)
-// Captured: 2026-04-01 21:26:41Z
+// ── LCD Snapshot ──
+// Captured: 2026-04-01 21:26:41Z  |  Sprites: 60
+// @SnapshotTag: IML-Ingots
 
 var sprites = new List<MySprite>
 {
@@ -531,7 +604,7 @@ var sprites = new List<MySprite>
 
 ---
 
-The snippet above drops into **any** Torch plugin, mod, or PB unchanged — just wire `SnapshotCollect()`, `SnapshotLcd()`, `StartLcdStream()`, or `StartLcdFileStream()` to whatever trigger makes sense for your project (chat command, hotkey, timer, etc.).
+The snippet above drops into **any** Torch plugin, Pulsar plugin, mod, or PB unchanged — just wire `SnapshotCollect()`, `SnapshotLcd()`, `StartLcdStream()`, or `StartLcdFileStream()` to whatever trigger makes sense for your project (chat command, hotkey, timer, etc.).
 
 <details>
 <summary>📋 Worked integration example — IML (InventoryManagerLight) Torch plugin</summary>
@@ -584,6 +657,7 @@ IMyTextSurfaceProvider panel = FindPanel(allBlocks, "MyTag", out string foundNam
 ![Code Output — In-Game (PB)](docs/code-generation.png)
 ![Code Output — Mod](docs/code-generation1.png)
 ![Code Output — Plugin / Torch](docs/code-generation2.png)
+![Code Output — Pulsar](docs/code-generation3.png)
 
 ### Snapshot Import
 ![Snapshot Import](docs/snapshot-import.png)
@@ -610,9 +684,11 @@ IMyTextSurfaceProvider panel = FindPanel(allBlocks, "MyTag", out string foundNam
 | `Ctrl+O` | Open layout |
 | `Ctrl+V` | Paste layout code |
 | `Ctrl+C` | Copy generated code |
-| `Ctrl+D` | Duplicate selected sprite |
-| `Delete` | Delete selected sprite |
+| `Ctrl+D` | Duplicate selected sprite(s) |
+| `Delete` | Delete selected sprite(s) |
 | `+` / `-` | Move sprite up/down in layer order |
+| `Shift+Click` | Extend layer list selection |
+| `Ctrl+Click` | Toggle individual layer list selection |
 | `G` | Toggle snap to grid |
 | Mouse wheel | Zoom canvas |
 | Middle-click drag | Pan canvas |
@@ -632,6 +708,24 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.1.0
+- **Pulsar plugin support** — new `Pulsar` code style for client-side plugins using `VRage.Plugins.IPlugin`
+  - Code generation produces Pulsar-specific output with `Init`/`Update`/`Dispose` lifecycle hints and `MyEntities`/`MyCubeGrid` surface access pattern
+  - Snapshot helper generates a complete Pulsar variant with NLog logging, named pipe streaming, file streaming, and surface discovery via entity iteration (no `GridTerminalSystem`)
+  - Auto-detection: pasted code with `IPlugin` or `VRage.Plugins` is automatically recognised as `PulsarPlugin` and switches the code style dropdown
+  - Result labels show `[Pulsar]` tag for detected Pulsar scripts
+- **Multi-select layer list** — Shift-click and Ctrl-click in the layer list to select multiple sprites
+  - Batch **Delete**, **Duplicate**, and **Hide/Show** operations apply to all selected sprites at once
+  - Context menu labels update dynamically (e.g. "Delete (3 selected)")
+  - Move Up/Down disabled during multi-select to prevent layer order confusion
+  - Selection is preserved across layer list rebuilds (e.g. after undo/redo or property changes)
+- **Snapshot tagging** — generated snapshot helper code now includes a `_snapshotTag` field
+  - Set it to a label (e.g. `"MyPulsarHUD"`) and `SerializeSnapshot()` emits a `// @SnapshotTag: MyPulsarHUD` header
+  - The layout tool parses the tag and displays it in the status bar on import (e.g. "Live frame [MyPulsarHUD]: 45 sprites")
+  - Helps identify which plugin or script produced a snapshot, especially when multiple plugins render to the same LCD surface
+  - Note: if a snapshot shows fewer sprites than expected, some sprites were likely dormant/inactive during the capture frame — re-capture at a different moment
+- **Fixed code jumping offset** — `JumpToMethodDefinition` and layer-list double-click now correctly compute RichTextBox selection offsets by stripping `\r` from `Text` before position calculation (RichTextBox returns `\r\n` in `Text` but `Select()` counts each line break as 1 character)
 
 ### v2.0.7
 - **Hide Layers Above** — right-click a sprite in the layer list and choose **Hide Layers Above** to hide all sprites drawn on top of the selected one, making it easy to select and edit buried sprites. Use **Show All Layers** to restore visibility
@@ -775,9 +869,10 @@ MIT License
 ### v1.5.0
 - **Full Programmable Block script execution**
 - **Mod / plugin script execution** — methods that accept `IMyTextSurface` are now detected and executable. The tool creates a functional `StubTextSurface` (512×512, configurable), passes it to your render method, and captures all sprites drawn through `DrawFrame().Add()`
-- **Script type auto-detection** — `DetectScriptType()` classifies pasted code as `LcdHelper`, `ProgrammableBlock`, or `ModSurface` using regex pattern matching:
+- **Script type auto-detection** — `DetectScriptType()` classifies pasted code as `LcdHelper`, `ProgrammableBlock`, `ModSurface`, or `PulsarPlugin` using regex pattern matching:
   - PB: `class ... : MyGridProgram` or `void Main(string...)`
   - Mod: methods with `IMyTextSurface` parameter
+  - Pulsar: `IPlugin` or `VRage.Plugins` references
   - LCD Helper: methods with `List<MySprite>` first parameter (original behavior, unchanged)
 - **Sprite capture via `SpriteCollector`** — `MySpriteDrawFrame.Add()` now feeds into a thread-static global collector instead of being a no-op, so sprites drawn through the SE surface API are captured for canvas rendering
 - **Functional concrete stubs** replace the previous null/interface-only stubs:
@@ -788,7 +883,7 @@ MIT License
   - `StubTerminalBlock` — base class with `IMyTextSurfaceProvider`, configurable surface count
 - **Extended math/color stubs** — `MathHelper` (Pi, Clamp, Lerp, ToRadians, ToDegrees), `Color(float,float,float)` and `Color(Color,float)` constructors, `Color * float` operator, additional named colors (Yellow, Cyan, Magenta, Gray, Orange), `MySprite.CreateSprite()` factory
 - **PB constructor extraction** — `ExtractConstructorBody()` captures the body of the `Program()` constructor and inlines it into the execution harness before `Main()`, so `Runtime.UpdateFrequency` assignments and field initialization work correctly
-- **Script-type-aware UI** — result labels show `[PB]` or `[Mod]` tags; error messages provide context-appropriate hints (e.g. "try `Main(\"\", UpdateType.None)`" for PB scripts, "try `DrawHUD(surface)`" for mod scripts)
+- **Script-type-aware UI** — result labels show `[PB]`, `[Mod]`, `[Pulsar]`, or `[LCD]` tags; error messages provide context-appropriate hints (e.g. "try `Main(\"\", UpdateType.None)`" for PB scripts, "try `DrawHUD(surface)`" for mod scripts)
 - **`MyGridProgram` base class** — `LcdRunner` now extends `MyGridProgram` for PB scripts, so inherited members (`Runtime`, `Me`, `Echo()`, etc.) resolve naturally without field injection
 
 ### v1.3.5
@@ -826,7 +921,7 @@ MIT License
 - **Plugin snippet: FindPanel two-pass search** — `CustomName` is now searched in a complete first pass before falling back to `CustomData`, preventing false positives where an unrelated block name partially matches the tag
 - **Plugin snippet: file-based streaming docs** — `StartLcdFileStream()` / `StreamFrameToFile()` usage documented; the layout tool watches the output file via **Edit → Watch Snapshot File…**
 - **Snapshot file extension** — `SnapshotLcd()` now writes `.cs` instead of `.txt` (file content has always been C# code)
-- **Docs: Pulsar / client-side plugins** — the Mod snippet works unchanged in Pulsar; `MyAPIGateway.Utilities.ShowMissionScreen` or a direct `File.WriteAllText` to AppData are both valid output routes
+- **Docs: Pulsar / client-side plugins** — the Mod snippet works unchanged in Pulsar; `MyAPIGateway.Utilities.ShowMissionScreen` or a direct `File.WriteAllText` to AppData are both valid output routes. *(As of v2.1.0, a dedicated Pulsar snippet is generated with `MyEntities`/`MyCubeGrid` surface access.)*
 
 ### v1.3.0
 - **Live LCD Streaming** — stream frames in real time from a running Torch plugin to the layout tool over a named pipe
@@ -834,7 +929,7 @@ MIT License
   - Pause/Resume editing — freeze a live frame, edit visually, resume the stream
   - **Edit → Start/Stop Live Listening** and **Edit → Pause/Resume Live Stream** menu items
   - Length-prefixed pipe protocol (4-byte LE int32 + UTF-8 payload) on pipe `SELcdSnapshot`
-- **Snapshot Helper Snippets** — three complete ready-to-paste variants (PB, Mod, Plugin) generated by the tool
+- **Snapshot Helper Snippets** — four complete ready-to-paste variants (PB, Mod, Plugin, Pulsar) generated by the tool
   - PB: output via `Me.CustomData`
   - Mod: output via `ShowMissionScreen`
   - Plugin: file output via NLog + live pipe streaming with `StartLcdStream()` / `StreamFrame()`
@@ -884,9 +979,9 @@ MIT License
 - Initial release
 - WYSIWYG canvas with drag, resize, rotate, zoom, pan, grid snap
 - Real SE texture loading (DDS BC1/BC3/BC7, PNG, JPG) from Content + mods
-- Code generation for In-Game (PB), Mod, and Plugin/Torch targets
+- Code generation for In-Game (PB), Mod, Plugin/Torch, and Pulsar targets
 - Smart code parser for importing existing sprite layouts
-- LCD snapshot capture helper for Torch/SE plugins
+- LCD snapshot capture helper for Torch/SE plugins and Pulsar client-side plugins
 - Undo/Redo, layer ordering, dark theme UI
 
 ---

@@ -39,6 +39,16 @@
     <Reference Include="NLog">
       <HintPath>..\..\..\..\..\..\..\..\Torch\NLog.dll</HintPath>
     </Reference>
+    <Reference Include="protobuf-net, Version=2.4.0.0, Culture=neutral, PublicKeyToken=257b51d87d2e4d67, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\..\..\..\..\..\AppData\Roaming\Pulsar\Libraries\Legacy\protobuf-net.dll</HintPath>
+    </Reference>
+    <Reference Include="Pulsar.Compiler">
+      <HintPath>..\..\..\..\..\..\AppData\Roaming\Pulsar\Libraries\Legacy\Pulsar.Compiler.dll</HintPath>
+    </Reference>
+    <Reference Include="Pulsar.Shared">
+      <HintPath>..\..\..\..\..\..\AppData\Roaming\Pulsar\Libraries\Legacy\Pulsar.Shared.dll</HintPath>
+    </Reference>
     <Reference Include="Sandbox.Common">
       <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\Sandbox.Common.dll</HintPath>
     </Reference>

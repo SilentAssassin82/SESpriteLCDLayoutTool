@@ -14,6 +14,17 @@ namespace SESpriteLCDLayoutTool.Services
     public static class CodeParser
     {
         /// <summary>
+        /// Extracts a <c>// @SnapshotTag: {value}</c> comment from snapshot text.
+        /// Returns null if no tag is found.
+        /// </summary>
+        public static string ParseSnapshotTag(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return null;
+            var match = Regex.Match(code, @"//\s*@SnapshotTag:\s*(.+)");
+            return match.Success ? match.Groups[1].Value.Trim() : null;
+        }
+
+        /// <summary>
         /// Parses all MySprite blocks found in the supplied C# source code.
         /// Supports both object-initializer syntax (new MySprite { … }) and any
         /// reasonable formatting/whitespace.
