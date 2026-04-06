@@ -1013,7 +1013,9 @@ namespace SESpriteLCDLayoutTool
             };
             _codeBox.ContextMenuStrip = ctxCode;
 
+            var lineGutter = new Controls.LineNumberGutter(_codeBox);
             panel.Controls.Add(_codeBox);
+            panel.Controls.Add(lineGutter);
             panel.Controls.Add(toolbar);
             _autoComplete = new CodeAutoComplete(_codeBox);
             _codePanel = panel;
@@ -4389,11 +4391,13 @@ namespace SESpriteLCDLayoutTool
 
         private void InitializeComponent()
         {
+            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(MainForm));
             this.SuspendLayout();
             // 
             // MainForm
             // 
             this.ClientSize = new System.Drawing.Size(583, 528);
+            this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.Name = "MainForm";
             this.Load += new System.EventHandler(this.MainForm_Load);
             this.ResumeLayout(false);

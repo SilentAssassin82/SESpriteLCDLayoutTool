@@ -100,6 +100,9 @@
     <Compile Include="Controls\LcdCanvas.cs">
       <SubType>Component</SubType>
     </Compile>
+    <Compile Include="Controls\LineNumberGutter.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Data\AppSettings.cs" />
     <Compile Include="Data\SpriteCatalog.cs" />
     <Compile Include="Data\GlyphCatalog.cs" />
