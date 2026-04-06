@@ -996,6 +996,14 @@ namespace SESpriteLCDLayoutTool
             mnuIndent.DropDownItems.Add(new ToolStripMenuItem("Tab",      null, (s2, e2) => ReindentCodeBox(0, true)));
             ctxCode.Items.Add(mnuIndent);
 
+            ctxCode.Items.Add(new ToolStripSeparator());
+            var mnuIndentSel  = new ToolStripMenuItem("Indent Selection",  null, (s2, e2) => CodeBoxIndentSelection());
+            mnuIndentSel.ShortcutKeyDisplayString = "Tab";
+            var mnuOutdentSel = new ToolStripMenuItem("Outdent Selection", null, (s2, e2) => CodeBoxOutdentSelection());
+            mnuOutdentSel.ShortcutKeyDisplayString = "Shift+Tab";
+            ctxCode.Items.Add(mnuIndentSel);
+            ctxCode.Items.Add(mnuOutdentSel);
+
             ctxCode.Opening += (s2, e2) =>
             {
                 bool hasSel = _codeBox.SelectionLength > 0;
@@ -2097,8 +2105,8 @@ namespace SESpriteLCDLayoutTool
 
         /// <summary>
         /// Re-indents all lines in <see cref="_codeBox"/> using the specified style.
-        /// Preserves the relative indentation depth (measured in the smallest indent
-        /// unit detected) and converts it to the chosen style.
+        /// Scans the entire text to detect the original indent unit, then converts
+        /// every line's leading whitespace to the chosen style at the correct depth.
         /// </summary>
         private void ReindentCodeBox(int spaces, bool useTabs)
         {
@@ -2106,34 +2114,53 @@ namespace SESpriteLCDLayoutTool
 
             string unit = useTabs ? "\t" : new string(' ', spaces);
             var lines = _codeBox.Text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
-            var sb = new System.Text.StringBuilder();
 
+            // ── Pass 1: detect the original indent unit ──
+            // Measure the leading-space count of every indented line and find the
+            // smallest non-zero value that appears.  That is the most likely unit.
+            int detectedUnit = 4; // default fallback
+            int minSpaces = int.MaxValue;
+            foreach (string line in lines)
+            {
+                if (line.Length == 0 || line.TrimStart(' ', '\t').Length == 0) continue;
+
+                int spaceCount = 0;
+                bool hasTabs = false;
+                for (int c = 0; c < line.Length; c++)
+                {
+                    if (line[c] == ' ') spaceCount++;
+                    else if (line[c] == '\t') { hasTabs = true; break; }
+                    else break;
+                }
+
+                // If the file already uses tabs, each tab = 1 level → unit is irrelevant
+                if (hasTabs) { detectedUnit = 1; minSpaces = 1; break; }
+
+                if (spaceCount > 0 && spaceCount < minSpaces)
+                    minSpaces = spaceCount;
+            }
+            if (minSpaces != int.MaxValue && minSpaces > 0)
+                detectedUnit = minSpaces;
+
+            // ── Pass 2: re-indent each line ──
+            var sb = new System.Text.StringBuilder();
             for (int i = 0; i < lines.Length; i++)
             {
                 string line = lines[i];
-                // Count leading whitespace depth: each tab = 1 level,
-                // consecutive spaces counted as groups of the detected size.
                 int depth = 0;
                 int j = 0;
                 while (j < line.Length)
                 {
-                    if (line[j] == '\t')
-                    {
-                        depth++;
-                        j++;
-                    }
+                    if (line[j] == '\t') { depth++; j++; }
                     else if (line[j] == ' ')
                     {
-                        // Count consecutive spaces, treat every 2–4 as one level
                         int start = j;
                         while (j < line.Length && line[j] == ' ') j++;
-                        int spaceCount = j - start;
-                        // Detect original indent unit: try 4, then 3, then 2, fallback 1
-                        int origUnit = spaceCount >= 4 ? 4 : spaceCount >= 2 ? 2 : 1;
-                        depth += spaceCount / origUnit;
+                        depth += (j - start) / detectedUnit;
                     }
                     else break;
                 }
+
                 string content = line.TrimStart(' ', '\t');
                 if (i > 0) sb.AppendLine();
                 if (content.Length > 0)
@@ -2147,6 +2174,118 @@ namespace SESpriteLCDLayoutTool
             _codeBox.Text = sb.ToString();
             _codeBox.SelectionStart = Math.Min(pos, _codeBox.TextLength);
             SetStatus($"Indentation set to {(useTabs ? "tabs" : spaces + " spaces")}");
+        }
+
+        /// <summary>
+        /// Indents all lines covered by the current selection by one level (4 spaces).
+        /// If nothing is selected, inserts 4 spaces at the caret.
+        /// </summary>
+        private void CodeBoxIndentSelection()
+        {
+            const string indent = "    ";
+            if (_codeBox.SelectionLength == 0)
+            {
+                _codeBox.SelectedText = indent;
+                return;
+            }
+
+            string text = _codeBox.Text;
+            int selStart = _codeBox.SelectionStart;
+            int selEnd = selStart + _codeBox.SelectionLength;
+
+            // Expand to full lines
+            int lineStart = selStart;
+            while (lineStart > 0 && text[lineStart - 1] != '\n')
+                lineStart--;
+
+            _codeBox.SelectionStart = lineStart;
+            _codeBox.SelectionLength = selEnd - lineStart;
+            string block = _codeBox.SelectedText;
+            string[] lines = block.Split('\n');
+
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (i > 0) sb.Append('\n');
+                if (lines[i].TrimEnd('\r').Length > 0)
+                    sb.Append(indent);
+                sb.Append(lines[i]);
+            }
+
+            string result = sb.ToString();
+            _codeBox.SelectedText = result;
+            _codeBox.SelectionStart = lineStart;
+            _codeBox.SelectionLength = result.Length;
+        }
+
+        /// <summary>
+        /// Removes up to 4 leading spaces (or one tab) from every selected line.
+        /// Does nothing when there is no selection.
+        /// </summary>
+        private void CodeBoxOutdentSelection()
+        {
+            if (_codeBox.SelectionLength == 0) return;
+
+            string text = _codeBox.Text;
+            int selStart = _codeBox.SelectionStart;
+            int selEnd = selStart + _codeBox.SelectionLength;
+
+            // Expand to full lines
+            int lineStart = selStart;
+            while (lineStart > 0 && text[lineStart - 1] != '\n')
+                lineStart--;
+
+            _codeBox.SelectionStart = lineStart;
+            _codeBox.SelectionLength = selEnd - lineStart;
+            string block = _codeBox.SelectedText;
+            string[] lines = block.Split('\n');
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                int removed = 0;
+                int j = 0;
+                while (j < line.Length && removed < 4)
+                {
+                    if (line[j] == ' ') { removed++; j++; }
+                    else if (line[j] == '\t') { removed = 4; j++; }
+                    else break;
+                }
+                lines[i] = line.Substring(j);
+            }
+
+            string result = string.Join("\n", lines);
+            _codeBox.SelectedText = result;
+            _codeBox.SelectionStart = lineStart;
+            _codeBox.SelectionLength = result.Length;
+        }
+
+        /// <summary>
+        /// Inserts a newline that matches the indentation of the current line.
+        /// Also adds an extra indent level when the line ends with '{'.
+        /// </summary>
+        private void CodeBoxAutoIndentNewline()
+        {
+            string text = _codeBox.Text;
+            int caret = _codeBox.SelectionStart;
+
+            // Find start of current line
+            int lineStart = caret;
+            while (lineStart > 0 && text[lineStart - 1] != '\n')
+                lineStart--;
+
+            // Extract leading whitespace from the current line
+            int ws = lineStart;
+            while (ws < caret && (text[ws] == ' ' || text[ws] == '\t'))
+                ws++;
+            string lineIndent = text.Substring(lineStart, ws - lineStart);
+
+            // If the non-whitespace portion before the caret ends with '{', add an extra level
+            string beforeCaret = text.Substring(ws, caret - ws).TrimEnd();
+            if (beforeCaret.EndsWith("{"))
+                lineIndent += "    ";
+
+            _codeBox.SelectedText = "\n" + lineIndent;
         }
 
         /// <summary>
@@ -3809,6 +3948,23 @@ namespace SESpriteLCDLayoutTool
                 // Autocomplete popup intercepts Up/Down/Enter/Tab/Escape
                 if (_autoComplete != null && _autoComplete.IsActive && _autoComplete.HandleKey(keyData))
                     return true;
+
+                // Code-editor–specific keys (only when the code box itself is focused)
+                if (_codeBox != null && _codeBox.Focused)
+                {
+                    switch (keyData)
+                    {
+                        case Keys.Tab:
+                            CodeBoxIndentSelection();
+                            return true;
+                        case Keys.Shift | Keys.Tab:
+                            CodeBoxOutdentSelection();
+                            return true;
+                        case Keys.Enter:
+                            CodeBoxAutoIndentNewline();
+                            return true;
+                    }
+                }
 
                 switch (keyData)
                 {
