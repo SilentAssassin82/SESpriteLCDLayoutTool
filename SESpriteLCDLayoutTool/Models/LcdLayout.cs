@@ -15,9 +15,9 @@ namespace SESpriteLCDLayoutTool.Models
         /// When a layout is imported from pasted code, the full original source is stored here.
         /// Code generation can then splice updated sprite definitions back into the original,
         /// so the user can paste directly back into their project.
-        /// Null when the layout was created from scratch or loaded from a .seld file.
+        /// Persisted in .seld files so animation/script data survives save/load.
+        /// Null when the layout was created from scratch.
         /// </summary>
-        [System.Xml.Serialization.XmlIgnore]
         public string OriginalSourceCode { get; set; }
     }
 }

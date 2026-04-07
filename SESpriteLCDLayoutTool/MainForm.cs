@@ -69,7 +69,15 @@ namespace SESpriteLCDLayoutTool
 
         // ── File-based live stream ───────────────────────────────────────────────
         private LiveFileWatcher _fileWatcher;
-        private ToolStripMenuItem _mnuFileWatchToggle;
+        private bool _fileWatchBidirectional;           // true = script sync mode, false = one-way LCD output
+        private ToolStripMenuItem _mnuFileWatchToggle;  // "Watch LCD Output File…"
+        private ToolStripMenuItem _mnuScriptWatchToggle; // "Sync Script File (VS Code)…"
+
+        // Bidirectional write-back: when the user modifies sprites on the canvas
+        // the patched code is written back to the watched file after a short
+        // debounce delay so external editors see the change in near-real-time.
+        private System.Windows.Forms.Timer _writeBackTimer;
+        private string _pendingWriteBack;
 
         // ── Clipboard watcher (PB workflow) ──────────────────────────────────────
         private System.Windows.Forms.Timer _clipboardTimer;
@@ -281,6 +289,9 @@ namespace SESpriteLCDLayoutTool
             file.DropDownItems.Add("Import Sprite List...", null, (s, e) => ShowImportSpriteDialog());
             file.DropDownItems.Add("Clear Imported Sprites", null, (s, e) => ClearImportedSprites());
             file.DropDownItems.Add(new ToolStripSeparator());
+            _mnuScriptWatchToggle = new ToolStripMenuItem("Sync Script File (VS Code)…", null, (s, e) => ToggleScriptWatching());
+            file.DropDownItems.Add(_mnuScriptWatchToggle);
+            file.DropDownItems.Add(new ToolStripSeparator());
             file.DropDownItems.Add("Exit",       null, (s, e) => Close());
             ms.Items.Add(file);
 
@@ -297,7 +308,7 @@ namespace SESpriteLCDLayoutTool
             edit.DropDownItems.Add(_mnuPauseToggle);
             _mnuCaptureSnapshot = new ToolStripMenuItem("Capture Live Snapshot", null, (s, e) => ApplyLiveSnapshot()) { Enabled = false };
             edit.DropDownItems.Add(_mnuCaptureSnapshot);
-            _mnuFileWatchToggle = new ToolStripMenuItem("Watch Snapshot File…", null, (s, e) => ToggleFileWatching());
+            _mnuFileWatchToggle = new ToolStripMenuItem("Watch LCD Output File…", null, (s, e) => ToggleFileWatching());
             edit.DropDownItems.Add(_mnuFileWatchToggle);
             _mnuClipboardToggle = new ToolStripMenuItem("Watch Clipboard (PB)…", null, (s, e) => ToggleClipboardWatching());
             edit.DropDownItems.Add(_mnuClipboardToggle);
@@ -799,7 +810,13 @@ namespace SESpriteLCDLayoutTool
 
             // When source-tracked sprites exist, merge execution results as a
             // snapshot so round-trip editing and click-to-jump continue to work.
-            if (_layout.OriginalSourceCode != null)
+            // Skip merge for Pulsar/Mod scripts — their sprites come from runtime
+            // surface.DrawFrame() calls and don't match CodeParser's static analysis,
+            // causing all execution sprites to be added as orphans (doubling).
+            bool useFullReplacement = result.ScriptType == ScriptType.PulsarPlugin
+                                   || result.ScriptType == ScriptType.ModSurface;
+
+            if (!useFullReplacement && _layout.OriginalSourceCode != null)
             {
                 var editable = new List<SpriteEntry>();
                 foreach (var sp in _layout.Sprites)
@@ -978,9 +995,27 @@ namespace SESpriteLCDLayoutTool
             ctxCode.Items.Add(mnuSelectAll);
             ctxCode.Items.Add(new ToolStripSeparator());
 
-            var mnuCut  = new ToolStripMenuItem("Cut",   null, (s2, e2) => _codeBox.Cut());
+            var mnuCut  = new ToolStripMenuItem("Cut",   null, (s2, e2) =>
+            {
+                string sel = _codeBox.SelectedText;
+                if (!string.IsNullOrEmpty(sel))
+                {
+                    string norm = sel.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+                    Clipboard.SetText(norm);
+                    _codeBox.SelectedText = "";
+                }
+            });
             mnuCut.ShortcutKeyDisplayString = "Ctrl+X";
-            var mnuCopy = new ToolStripMenuItem("Copy",  null, (s2, e2) => _codeBox.Copy());
+            var mnuCopy = new ToolStripMenuItem("Copy",  null, (s2, e2) =>
+            {
+                string sel = _codeBox.SelectedText;
+                if (string.IsNullOrEmpty(sel)) sel = _codeBox.Text;
+                if (!string.IsNullOrEmpty(sel))
+                {
+                    string norm = sel.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+                    Clipboard.SetText(norm);
+                }
+            });
             mnuCopy.ShortcutKeyDisplayString = "Ctrl+C";
             var mnuPaste = new ToolStripMenuItem("Paste", null, (s2, e2) => _codeBox.Paste());
             mnuPaste.ShortcutKeyDisplayString = "Ctrl+V";
@@ -2029,6 +2064,27 @@ namespace SESpriteLCDLayoutTool
             }
         }
 
+        /// <summary>
+        /// Auto-switches the code style dropdown based on the detected script type
+        /// of <paramref name="code"/>.  If the type cannot be determined (LcdHelper),
+        /// the dropdown is left unchanged.
+        /// </summary>
+        private void AutoSwitchCodeStyle(string code)
+        {
+            if (_cmbCodeStyle == null || string.IsNullOrWhiteSpace(code)) return;
+            var detectedType = CodeExecutor.DetectScriptType(code);
+            int targetIndex;
+            switch (detectedType)
+            {
+                case ScriptType.ProgrammableBlock: targetIndex = 0; break;
+                case ScriptType.ModSurface:        targetIndex = 1; break;
+                case ScriptType.PulsarPlugin:      targetIndex = 3; break;
+                default: return; // LcdHelper — leave dropdown unchanged
+            }
+            if (_cmbCodeStyle.SelectedIndex != targetIndex)
+                _cmbCodeStyle.SelectedIndex = targetIndex;
+        }
+
         private bool IsActivelyStreaming =>
             (_pipeListener != null && _pipeListener.IsListening && !_pipeListener.IsPaused)
             || (_fileWatcher != null && _fileWatcher.IsListening && !_fileWatcher.IsPaused)
@@ -2047,11 +2103,13 @@ namespace SESpriteLCDLayoutTool
             if (_btnApplyCode != null && _layout.OriginalSourceCode != null)
                 _btnApplyCode.Visible = true;
 
-            // While any live source is actively streaming, the layout contains
-            // runtime-expanded sprites (loops unrolled, expressions resolved)
-            // that don't match the original source structure.  Freeze the code
+            // While a one-way live source (pipe or clipboard) is actively
+            // streaming, the layout contains runtime-expanded sprites that
+            // don't match the original source structure.  Freeze the code
             // panel so the user keeps seeing their compact source code.
-            if (IsActivelyStreaming) return;
+            // The file watcher is excluded — it operates bidirectionally so
+            // we need to regenerate code and write it back to the file.
+            if (IsOneWayStreaming) return;
 
             // Try round-trip: splice updated sprites back into the original pasted code
             if (_layout.OriginalSourceCode != null)
@@ -2062,6 +2120,7 @@ namespace SESpriteLCDLayoutTool
                 {
                     SetCodeText(patched);
                     RefreshDetectedCalls();
+                    WriteBackToWatchedFile(patched);
                     return;
                 }
 
@@ -2071,6 +2130,7 @@ namespace SESpriteLCDLayoutTool
                 {
                     SetCodeText(roundTrip);
                     RefreshDetectedCalls();
+                    WriteBackToWatchedFile(roundTrip);
                     return;
                 }
 
@@ -2096,11 +2156,17 @@ namespace SESpriteLCDLayoutTool
         /// <summary>
         /// Sets <see cref="_codeBox"/> text without triggering the dirty flag.
         /// If the text hasn't changed, preserves the current scroll position and selection.
+        /// RichTextBox normalises \n to \r\n internally, so we compare with
+        /// normalised line endings to avoid resetting the control on every call
+        /// (which would lose scroll position and selection).
         /// </summary>
         private void SetCodeText(string text)
         {
             _suppressCodeBoxEvents = true;
-            if (_codeBox.Text != text)
+            // Normalise to \n for comparison — RichTextBox.Text always returns \r\n
+            string normNew  = text.Replace("\r\n", "\n").Replace("\r", "\n");
+            string normCur  = _codeBox.Text.Replace("\r\n", "\n").Replace("\r", "\n");
+            if (normCur != normNew)
                 _codeBox.Text = text;
             _suppressCodeBoxEvents = false;
         }
@@ -2443,8 +2509,9 @@ namespace SESpriteLCDLayoutTool
                 _pipeListener.Dispose();
                 _pipeListener = null;
                 _mnuListenToggle.Text = "Start Live Listening";
-                _mnuPauseToggle.Enabled = false;
-                _mnuPauseToggle.Text = "Pause Live Stream";
+                _mnuPauseToggle.Enabled = _fileWatcher != null && _fileWatcher.IsListening;
+                if (!_mnuPauseToggle.Enabled)
+                    _mnuPauseToggle.Text = "Pause Live Stream";
                 _liveUndoPushed = false;
                 RestoreCodeSpritesIfStreamingEnded();
                 RefreshCode();
@@ -2537,40 +2604,37 @@ namespace SESpriteLCDLayoutTool
 
         private void ToggleFileWatching()
         {
-            if (_fileWatcher != null && _fileWatcher.IsListening)
+            if (_fileWatcher != null && _fileWatcher.IsListening && !_fileWatchBidirectional)
             {
-                _fileWatcher.Stop();
-                _fileWatcher.Dispose();
-                _fileWatcher = null;
-                _mnuFileWatchToggle.Text = "Watch Snapshot File…";
-                _mnuPauseToggle.Enabled = _pipeListener != null && _pipeListener.IsListening;
-                _liveUndoPushed = false;
-                RestoreCodeSpritesIfStreamingEnded();
-                RefreshCode();
-                UpdateSnapshotButtonState();
-                SetStatus("File watching stopped");
+                StopFileWatcher();
+                SetStatus("LCD output file watching stopped");
                 return;
             }
 
+            // If a script sync is active, stop it first — only one file watcher at a time
+            if (_fileWatcher != null && _fileWatcher.IsListening)
+                StopFileWatcher();
+
             using (var dlg = new System.Windows.Forms.OpenFileDialog
             {
-                Title = "Select snapshot file to watch",
-                Filter = "C# files (*.cs)|*.cs|All files (*.*)|*.*",
+                Title = "Select LCD output file to watch (!lcd watch)",
+                Filter = "All files (*.*)|*.*|Text files (*.txt)|*.txt",
                 CheckFileExists = false, // file may not exist yet
             })
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
+                _fileWatchBidirectional = false;
                 _fileWatcher = new LiveFileWatcher();
                 _fileWatcher.FrameReceived += OnLiveFrameReceived;
                 _fileWatcher.Connected += () => BeginInvoke((Action)(() =>
                 {
-                    SetStatus($"Watching: {_fileWatcher?.FilePath}");
+                    SetStatus($"Watching LCD output: {_fileWatcher?.FilePath}");
                     _mnuPauseToggle.Enabled = true;
                 }));
                 _fileWatcher.Disconnected += () => BeginInvoke((Action)(() =>
                 {
-                    SetStatus("File watching stopped");
+                    SetStatus("LCD output file watching stopped");
                     if (_pipeListener == null || !_pipeListener.IsListening)
                     {
                         _mnuPauseToggle.Enabled = false;
@@ -2578,10 +2642,87 @@ namespace SESpriteLCDLayoutTool
                     }
                 }));
                 _fileWatcher.Start(dlg.FileName);
-                _mnuFileWatchToggle.Text = "Stop Watching File";
+                _mnuFileWatchToggle.Text = "Stop Watching LCD File";
                 _mnuPauseToggle.Enabled = true;
-                SetStatus($"Watching: {dlg.FileName}");
+                SetStatus($"Watching LCD output: {dlg.FileName}");
             }
+        }
+
+        private void ToggleScriptWatching()
+        {
+            if (_fileWatcher != null && _fileWatcher.IsListening && _fileWatchBidirectional)
+            {
+                StopFileWatcher();
+                SetStatus("Script sync stopped");
+                return;
+            }
+
+            // If a snapshot watcher is active, stop it first — only one file watcher at a time
+            if (_fileWatcher != null && _fileWatcher.IsListening)
+                StopFileWatcher();
+
+            using (var dlg = new System.Windows.Forms.OpenFileDialog
+            {
+                Title = "Select script file to sync with VS Code / external editor",
+                Filter = "C# files (*.cs)|*.cs|All files (*.*)|*.*",
+                CheckFileExists = false, // file may not exist yet
+            })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                _fileWatchBidirectional = true;
+                _fileWatcher = new LiveFileWatcher();
+                _fileWatcher.FrameReceived += OnFileWatcherFrameReceived;
+                _fileWatcher.Connected += () => BeginInvoke((Action)(() =>
+                {
+                    SetStatus($"Script sync: {_fileWatcher?.FilePath}");
+                    _mnuPauseToggle.Enabled = true;
+                }));
+                _fileWatcher.Disconnected += () => BeginInvoke((Action)(() =>
+                {
+                    SetStatus("Script sync stopped");
+                    if (_pipeListener == null || !_pipeListener.IsListening)
+                    {
+                        _mnuPauseToggle.Enabled = false;
+                        _mnuPauseToggle.Text = "Pause Live Stream";
+                    }
+                }));
+                _fileWatcher.Start(dlg.FileName);
+                _mnuScriptWatchToggle.Text = "Stop Script Sync";
+                _mnuPauseToggle.Enabled = true;
+                SetStatus($"Script sync: {dlg.FileName}  — edits in either direction are synced");
+            }
+        }
+
+        /// <summary>
+        /// Centralised stop for the file watcher regardless of mode.
+        /// Cleans up timers, resets menu labels, and restores streaming state.
+        /// </summary>
+        private void StopFileWatcher()
+        {
+            if (_fileWatcher == null) return;
+
+            // Flush any pending write-back before stopping
+            if (_writeBackTimer != null)
+            {
+                _writeBackTimer.Stop();
+                _pendingWriteBack = null;
+            }
+
+            _fileWatcher.Stop();
+            _fileWatcher.Dispose();
+            _fileWatcher = null;
+
+            // Reset both menu labels to their default state
+            _mnuFileWatchToggle.Text  = "Watch LCD Output File…";
+            _mnuScriptWatchToggle.Text = "Sync Script File (VS Code)…";
+
+            _fileWatchBidirectional = false;
+            _mnuPauseToggle.Enabled = _pipeListener != null && _pipeListener.IsListening;
+            _liveUndoPushed = false;
+            RestoreCodeSpritesIfStreamingEnded();
+            RefreshCode();
+            UpdateSnapshotButtonState();
         }
 
         private void ToggleClipboardWatching()
@@ -2622,6 +2763,128 @@ namespace SESpriteLCDLayoutTool
             _lastClipboardHash = hash;
 
             OnLiveFrameReceived(text);
+        }
+
+        // ── Bidirectional file watcher ────────────────────────────────────────────
+
+        /// <summary>
+        /// Returns true when a one-way live source (pipe, clipboard, or LCD output
+        /// file watcher) is actively streaming.  The bidirectional script sync is
+        /// excluded because the user's edits are written back to the file, so the
+        /// code panel must keep regenerating.
+        /// </summary>
+        private bool IsOneWayStreaming =>
+            (_pipeListener != null && _pipeListener.IsListening && !_pipeListener.IsPaused)
+            || (_clipboardTimer != null)
+            || (_fileWatcher != null && _fileWatcher.IsListening && !_fileWatcher.IsPaused && !_fileWatchBidirectional);
+
+        /// <summary>
+        /// Handles inbound frames from the file watcher.  Unlike the generic
+        /// <see cref="OnLiveFrameReceived"/> handler used by pipe/clipboard, this
+        /// sets up per-sprite source tracking so that round-trip patching
+        /// (<see cref="CodeGenerator.PatchOriginalSource"/>) works correctly
+        /// and edits can be written back to the file.
+        /// </summary>
+        private void OnFileWatcherFrameReceived(string frame)
+        {
+            BeginInvoke((Action)(() =>
+            {
+                // Normalise line endings to \r\n so OriginalSourceCode, SourceStart/
+                // SourceEnd offsets, and _codeBox.Text are always in sync.  VS Code
+                // and other editors may save with bare \n which creates mismatches.
+                frame = frame.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+
+                var sprites = CodeParser.Parse(frame);
+                if (sprites.Count == 0) return;
+
+                if (_layout == null)
+                {
+                    _layout = new LcdLayout();
+                    _canvas.CanvasLayout = _layout;
+                }
+
+                if (!_liveUndoPushed)
+                {
+                    PushUndo();
+                    _liveUndoPushed = true;
+                }
+
+                // Set up per-sprite source tracking for round-trip patching
+                var contextCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var sprite in sprites)
+                {
+                    string ctx = sprite.SourceStart >= 0
+                        ? CodeGenerator.DetectSpriteContext(frame, sprite.SourceStart)
+                        : null;
+
+                    string typeHint = sprite.Type == SpriteEntryType.Text
+                        ? "Text"
+                        : sprite.SpriteName ?? "Texture";
+
+                    string label = ctx != null ? $"{ctx}: {typeHint}" : typeHint;
+
+                    if (!contextCounts.TryGetValue(label, out int count))
+                        count = 0;
+                    contextCounts[label] = count + 1;
+                    if (count > 0)
+                        label += $".{count + 1}";
+
+                    sprite.ImportLabel    = label;
+                    sprite.ImportBaseline = sprite.CloneValues();
+                }
+
+                _layout.Sprites.Clear();
+                _layout.Sprites.AddRange(sprites);
+                _layout.OriginalSourceCode = frame;
+
+                _canvas.CanvasLayout = _layout;
+                _canvas.SelectedSprite = sprites.Count > 0 ? sprites[0] : null;
+                RefreshLayerList();
+
+                // Auto-switch code style dropdown based on detected script type
+                AutoSwitchCodeStyle(frame);
+
+                // Show the file's code directly — no regeneration needed since
+                // baselines equal current values (nothing has been modified yet).
+                SetCodeText(frame);
+                RefreshDetectedCalls();
+
+                _lastLiveFrame = sprites;
+                SetStatus($"File sync: {sprites.Count} sprite(s) imported");
+            }));
+        }
+
+        /// <summary>
+        /// Schedules a debounced write of <paramref name="code"/> to the watched
+        /// file.  Rapid modifications (e.g. holding an arrow key to nudge) are
+        /// coalesced so only the final state is written after a short delay.
+        /// </summary>
+        private void WriteBackToWatchedFile(string code)
+        {
+            if (_fileWatcher == null || !_fileWatcher.IsListening || _fileWatcher.IsPaused)
+                return;
+            if (string.IsNullOrWhiteSpace(code)) return;
+
+            _pendingWriteBack = code;
+
+            if (_writeBackTimer == null)
+            {
+                _writeBackTimer = new System.Windows.Forms.Timer { Interval = 300 };
+                _writeBackTimer.Tick += OnWriteBackTick;
+            }
+
+            // Restart the debounce window
+            _writeBackTimer.Stop();
+            _writeBackTimer.Start();
+        }
+
+        private void OnWriteBackTick(object sender, EventArgs e)
+        {
+            _writeBackTimer.Stop();
+            string code = _pendingWriteBack;
+            _pendingWriteBack = null;
+            if (code != null)
+                _fileWatcher?.WriteBack(code);
         }
 
         /// <summary>
@@ -2791,6 +3054,30 @@ namespace SESpriteLCDLayoutTool
             _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
 
             PushUndo();
+
+            // For Pulsar/Mod scripts, runtime sprites from surface.DrawFrame()
+            // don't match CodeParser's static analysis — skip the merge and
+            // replace the layout with only the isolated method's sprites.
+            if (result.ScriptType == ScriptType.PulsarPlugin ||
+                result.ScriptType == ScriptType.ModSurface)
+            {
+                _layout.Sprites.Clear();
+                _isolatedCallSprites = new HashSet<SpriteEntry>();
+                foreach (var sp in result.Sprites)
+                {
+                    _layout.Sprites.Add(sp);
+                    _isolatedCallSprites.Add(sp);
+                }
+
+                _canvas.HighlightedSprites = _isolatedCallSprites;
+                _canvas.SelectedSprite = result.Sprites.Count > 0 ? result.Sprites[0] : null;
+                _canvas.Invalidate();
+                RefreshLayerList();
+                if (_btnShowAll != null) _btnShowAll.Visible = true;
+                UpdateActionBarVisibility();
+                SetStatus($"Isolated: {call} — {result.Sprites.Count} sprite(s). Click Show All to restore.");
+                return;
+            }
 
             // Merge the executed sprites into the full frame using SnapshotMerger
             // to match them by type+data, then build the highlighted set.
@@ -3022,6 +3309,12 @@ namespace SESpriteLCDLayoutTool
                     _canvas.CanvasLayout = _layout;
                     RefreshLayerList();
                     ClearCodeDirty();
+
+                    // Restore code style dropdown from saved source so animation
+                    // and execution use the correct script type.
+                    if (_layout.OriginalSourceCode != null)
+                        AutoSwitchCodeStyle(_layout.OriginalSourceCode);
+
                     RefreshCode();
                     UpdateTitle();
                     SetStatus($"Opened: {Path.GetFileName(_currentFile)}");
@@ -3255,6 +3548,21 @@ namespace SESpriteLCDLayoutTool
                     AcceptsTab = true,
                     MaxLength = 0,
                 };
+                bool txtCodeNormalizing = false;
+                txtCode.TextChanged += (s, e) =>
+                {
+                    if (txtCodeNormalizing) return;
+                    string t = txtCode.Text;
+                    string n = t.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+                    if (n != t)
+                    {
+                        txtCodeNormalizing = true;
+                        int pos = txtCode.SelectionStart;
+                        txtCode.Text = n;
+                        txtCode.SelectionStart = Math.Min(pos + (n.Length - t.Length), n.Length);
+                        txtCodeNormalizing = false;
+                    }
+                };
 
                 var lblSnapshot = new Label
                 {
@@ -3276,6 +3584,21 @@ namespace SESpriteLCDLayoutTool
                     ForeColor = Color.FromArgb(180, 210, 255),
                     AcceptsTab = true,
                     MaxLength = 0,
+                };
+                bool txtSnapNormalizing = false;
+                txtSnapshot.TextChanged += (s, e) =>
+                {
+                    if (txtSnapNormalizing) return;
+                    string t = txtSnapshot.Text;
+                    string n = t.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+                    if (n != t)
+                    {
+                        txtSnapNormalizing = true;
+                        int pos = txtSnapshot.SelectionStart;
+                        txtSnapshot.Text = n;
+                        txtSnapshot.SelectionStart = Math.Min(pos + (n.Length - t.Length), n.Length);
+                        txtSnapNormalizing = false;
+                    }
                 };
 
                 // ── Code-execution panel (sits above the snapshot box) ────────────────
@@ -3632,19 +3955,7 @@ namespace SESpriteLCDLayoutTool
                     ClearCodeDirty();
 
                     // Auto-switch code style based on detected script type
-                    var detectedType = CodeExecutor.DetectScriptType(sourceCode);
-                    switch (detectedType)
-                    {
-                        case ScriptType.ProgrammableBlock:
-                            if (_cmbCodeStyle.SelectedIndex != 0) _cmbCodeStyle.SelectedIndex = 0;
-                            break;
-                        case ScriptType.ModSurface:
-                            if (_cmbCodeStyle.SelectedIndex != 1) _cmbCodeStyle.SelectedIndex = 1;
-                            break;
-                        case ScriptType.PulsarPlugin:
-                            if (_cmbCodeStyle.SelectedIndex != 3) _cmbCodeStyle.SelectedIndex = 3;
-                            break;
-                    }
+                    AutoSwitchCodeStyle(sourceCode);
 
                     RefreshCode();
 
@@ -3965,6 +4276,26 @@ namespace SESpriteLCDLayoutTool
                         case Keys.Enter:
                             CodeBoxAutoIndentNewline();
                             return true;
+
+                        // Normalize clipboard to \r\n so pasting into a
+                        // WinForms TextBox (e.g. the Paste Layout dialog)
+                        // preserves line breaks.  RichTextBox.Copy() may
+                        // place \n-only text on the clipboard.
+                        case Keys.Control | Keys.C:
+                        case Keys.Control | Keys.X:
+                        {
+                            string sel = _codeBox.SelectedText;
+                            if (string.IsNullOrEmpty(sel) && keyData == (Keys.Control | Keys.C))
+                                sel = _codeBox.Text;  // Ctrl+C with no selection = copy all
+                            if (!string.IsNullOrEmpty(sel))
+                            {
+                                string norm = sel.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+                                Clipboard.SetText(norm);
+                                if (keyData == (Keys.Control | Keys.X))
+                                    _codeBox.SelectedText = "";
+                            }
+                            return true;
+                        }
                     }
                 }
 
@@ -4498,12 +4829,12 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
-            // Otherwise start fresh animation with full scene
+            // Start animation with only the focused method
             EnsureAnimPlayer();
             PushUndo();
             CaptureAnimPositionSnapshot();
 
-            string error = _animPlayer.Prepare(code, null);
+            string error = _animPlayer.Prepare(code, call);
             if (error != null)
             {
                 MessageBox.Show(error, "Animation Error",
@@ -4542,6 +4873,17 @@ namespace SESpriteLCDLayoutTool
                     // Restore full sprite set before starting animation
                     RestoreFullView();
                     StartFocusedAnimation(call);
+                    return;
+                }
+            }
+
+            // If a specific call is selected in the call box, animate
+            // just that method instead of the full scene.
+            {
+                string selectedCall = _execCallBox.Text.Trim();
+                if (!string.IsNullOrEmpty(selectedCall))
+                {
+                    StartFocusedAnimation(selectedCall);
                     return;
                 }
             }
@@ -4613,6 +4955,17 @@ namespace SESpriteLCDLayoutTool
                         UpdateAnimButtonStates();
                         return;
                     }
+                }
+
+                // If a specific call is selected, animate just that method
+                string selectedCall = _execCallBox.Text.Trim();
+                if (!string.IsNullOrEmpty(selectedCall))
+                {
+                    StartFocusedAnimation(selectedCall);
+                    if (_animPlayer != null && _animPlayer.IsPlaying)
+                        _animPlayer.StepForward();
+                    UpdateAnimButtonStates();
+                    return;
                 }
 
                 string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
@@ -5892,6 +6245,7 @@ namespace SESpriteLCDLayoutTool
                 _pipeListener?.Dispose();
                 _fileWatcher?.Dispose();
                 _clipboardTimer?.Dispose();
+                _writeBackTimer?.Dispose();
                 _textureCache?.Dispose();
                 _autoComplete?.Dispose();
                 if (_codePopoutForm != null && !_codePopoutForm.IsDisposed)

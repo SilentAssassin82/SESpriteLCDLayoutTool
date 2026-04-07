@@ -591,6 +591,8 @@ namespace SESpriteLCDLayoutTool.Controls
 
         private void DrawTextureSprite(Graphics g, SpriteEntry sprite, RectangleF rect)
         {
+            if (rect.Width <= 0 || rect.Height <= 0) return;
+
             var color = sprite.Color;
             var state = g.Save();
 

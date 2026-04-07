@@ -1028,6 +1028,17 @@ namespace SESpriteLCDLayoutTool.Services
             // Detect indentation from the line containing the first MySprite match
             string indent = DetectIndent(original, firstMatchPos);
 
+            // Detect the inner indent from the first property line inside the
+            // initializer block instead of hardcoding 4 spaces.  This preserves
+            // the user's indentation style (tabs, 2 spaces, 8 spaces, etc.).
+            string innerIndent = DetectInnerIndent(original, matches[0].Index, indent);
+
+            // Detect the wrapper prefix on the same line before "new MySprite"
+            // (e.g. "frame.Add(" or "sprites.Add(") so the round-trip preserves
+            // the user's original calling convention.
+            string wrapperPrefix = DetectWrapperPrefix(original, firstMatchPos);
+            string wrapperSuffix = wrapperPrefix.Length > 0 ? ");" : ";";
+
             // Generate just the sprite definitions with the detected indentation
             var sb = new StringBuilder();
             int actualCount = 0;
@@ -1039,31 +1050,31 @@ namespace SESpriteLCDLayoutTool.Services
                 if (actualCount > 0) sb.AppendLine();
 
                 sb.AppendLine($"{indent}// [{actualCount + 1}] {sp.DisplayName}");
-                sb.AppendLine($"{indent}frame.Add(new MySprite");
+                sb.AppendLine($"{indent}{wrapperPrefix}new MySprite");
                 sb.AppendLine($"{indent}{{");
 
                 if (sp.Type == SpriteEntryType.Text)
                 {
-                    sb.AppendLine($"{indent}    Type           = SpriteType.TEXT,");
-                    sb.AppendLine($"{indent}    Data           = {Q(sp.Text)},");
-                    sb.AppendLine($"{indent}    Position       = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
-                    sb.AppendLine($"{indent}    Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
-                    sb.AppendLine($"{indent}    FontId         = {Q(sp.FontId)},");
-                    sb.AppendLine($"{indent}    Alignment      = TextAlignment.{sp.Alignment.ToString().ToUpperInvariant()},");
-                    sb.AppendLine($"{indent}    RotationOrScale = {sp.Scale:F2}f,");
+                    sb.AppendLine($"{innerIndent}Type           = SpriteType.TEXT,");
+                    sb.AppendLine($"{innerIndent}Data           = {Q(sp.Text)},");
+                    sb.AppendLine($"{innerIndent}Position       = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
+                    sb.AppendLine($"{innerIndent}Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+                    sb.AppendLine($"{innerIndent}FontId         = {Q(sp.FontId)},");
+                    sb.AppendLine($"{innerIndent}Alignment      = TextAlignment.{sp.Alignment.ToString().ToUpperInvariant()},");
+                    sb.AppendLine($"{innerIndent}RotationOrScale = {sp.Scale:F2}f,");
                 }
                 else
                 {
-                    sb.AppendLine($"{indent}    Type           = SpriteType.TEXTURE,");
-                    sb.AppendLine($"{indent}    Data           = {Q(sp.SpriteName)},");
-                    sb.AppendLine($"{indent}    Position       = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
-                    sb.AppendLine($"{indent}    Size           = new Vector2({sp.Width:F1}f, {sp.Height:F1}f),");
-                    sb.AppendLine($"{indent}    Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
-                    sb.AppendLine($"{indent}    Alignment      = TextAlignment.CENTER,");
-                    sb.AppendLine($"{indent}    RotationOrScale = {sp.Rotation:F4}f,");
+                    sb.AppendLine($"{innerIndent}Type           = SpriteType.TEXTURE,");
+                    sb.AppendLine($"{innerIndent}Data           = {Q(sp.SpriteName)},");
+                    sb.AppendLine($"{innerIndent}Position       = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
+                    sb.AppendLine($"{innerIndent}Size           = new Vector2({sp.Width:F1}f, {sp.Height:F1}f),");
+                    sb.AppendLine($"{innerIndent}Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+                    sb.AppendLine($"{innerIndent}Alignment      = TextAlignment.CENTER,");
+                    sb.AppendLine($"{innerIndent}RotationOrScale = {sp.Rotation:F4}f,");
                 }
 
-                sb.Append($"{indent}}});");
+                sb.Append($"{indent}}}{wrapperSuffix}");
                 actualCount++;
             }
 
@@ -1136,6 +1147,66 @@ namespace SESpriteLCDLayoutTool.Services
                     break;
             }
             return indent.ToString();
+        }
+
+        /// <summary>
+        /// Detects the inner indentation used for properties inside the first
+        /// MySprite initializer block.  Falls back to <paramref name="outerIndent"/>
+        /// plus four spaces when detection fails.
+        /// </summary>
+        private static string DetectInnerIndent(string code, int matchPos, string outerIndent)
+        {
+            string fallback = outerIndent + "    ";
+
+            // Find the opening '{' of the initializer after matchPos
+            int bracePos = code.IndexOf('{', matchPos);
+            if (bracePos < 0) return fallback;
+
+            // Find the start of the next line after '{'
+            int pos = bracePos + 1;
+            while (pos < code.Length && code[pos] != '\n')
+                pos++;
+            if (pos >= code.Length) return fallback;
+            pos++; // skip past '\n'
+
+            // Extract leading whitespace of the first property line
+            var sb = new StringBuilder();
+            while (pos < code.Length && (code[pos] == ' ' || code[pos] == '\t'))
+            {
+                sb.Append(code[pos]);
+                pos++;
+            }
+
+            // Sanity check: the inner indent should be longer than the outer indent
+            // and the line should contain something (not be blank).
+            string result = sb.ToString();
+            if (result.Length > outerIndent.Length && pos < code.Length && code[pos] != '\r' && code[pos] != '\n')
+                return result;
+            return fallback;
+        }
+
+        /// <summary>
+        /// Detects the wrapper prefix on the same line before "new MySprite",
+        /// e.g. "frame.Add(" or "sprites.Add(".  Returns empty string when
+        /// the "new MySprite" is at the beginning of the non-whitespace content.
+        /// </summary>
+        private static string DetectWrapperPrefix(string code, int matchPos)
+        {
+            // Walk backwards from matchPos to the start of the line
+            int lineStart = matchPos;
+            while (lineStart > 0 && code[lineStart - 1] != '\n')
+                lineStart--;
+
+            // Skip leading whitespace to get to the content start
+            int contentStart = lineStart;
+            while (contentStart < matchPos && (code[contentStart] == ' ' || code[contentStart] == '\t'))
+                contentStart++;
+
+            // If the content starts right at matchPos, there's no wrapper
+            if (contentStart >= matchPos) return "";
+
+            // Extract the text between contentStart and matchPos (e.g. "frame.Add(")
+            return code.Substring(contentStart, matchPos - contentStart);
         }
 
         private static int SkipTrailingPunctuation(string code, int pos)

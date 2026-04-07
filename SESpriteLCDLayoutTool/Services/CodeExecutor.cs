@@ -62,6 +62,20 @@ namespace SESpriteLCDLayoutTool.Services
             @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(\w+)\s*\(\s*List\s*<\s*MySprite\s*>\s+\w+([^)]*)\)",
             RegexOptions.Compiled);
 
+        // Additional using-directive / namespace patterns for broader detection
+        private static readonly Regex _rxUsingIngame = new Regex(
+            @"using\s+Sandbox\.ModAPI\.Ingame\s*;", RegexOptions.Compiled);
+        private static readonly Regex _rxUsingVRagePlugins = new Regex(
+            @"using\s+VRage\.Plugins\s*;", RegexOptions.Compiled);
+        private static readonly Regex _rxUsingModAPI = new Regex(
+            @"using\s+Sandbox\.ModAPI\s*;", RegexOptions.Compiled);
+        private static readonly Regex _rxUsingTorch = new Regex(
+            @"using\s+Torch\b", RegexOptions.Compiled);
+        private static readonly Regex _rxUsingVRageGui = new Regex(
+            @"using\s+VRage\.Game\.GUI\.TextPanel\s*;", RegexOptions.Compiled);
+        private static readonly Regex _rxPulsarNamespace = new Regex(
+            @"namespace\s+[\w.]*Pulsar[\w.]*\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // Matches void methods with no params whose name indicates a state-update
         // method: Advance, Update, Tick, Simulate, Step, etc.
         // Excludes OnTick/OnUpdate/OnStep — these are timer/event wrappers that
@@ -79,7 +93,8 @@ namespace SESpriteLCDLayoutTool.Services
 
         /// <summary>
         /// Auto-detects whether <paramref name="userCode"/> is a Programmable Block script,
-        /// a mod/plugin with IMyTextSurface methods, or a plain LCD helper with List&lt;MySprite&gt; methods.
+        /// a mod/plugin with IMyTextSurface methods, a Pulsar plugin, or a plain LCD helper.
+        /// Uses class inheritance, method signatures, using directives, and namespace hints.
         /// </summary>
         public static ScriptType DetectScriptType(string userCode)
         {
@@ -89,13 +104,33 @@ namespace SESpriteLCDLayoutTool.Services
             if (_rxPbClass.IsMatch(userCode) || _rxMainMethod.IsMatch(userCode))
                 return ScriptType.ProgrammableBlock;
 
-            // Pulsar plugin detection: class implementing IPlugin
-            if (_rxPulsarPlugin.IsMatch(userCode))
+            // Pulsar plugin detection: class implementing IPlugin, or using VRage.Plugins,
+            // or namespace containing "Pulsar"
+            if (_rxPulsarPlugin.IsMatch(userCode) ||
+                _rxUsingVRagePlugins.IsMatch(userCode) ||
+                _rxPulsarNamespace.IsMatch(userCode))
                 return ScriptType.PulsarPlugin;
 
             // Mod/surface detection: methods accepting IMyTextSurface
             if (_rxSurfaceMethod.IsMatch(userCode))
                 return ScriptType.ModSurface;
+
+            // Using-directive fallbacks (when class/method patterns don't match):
+            // "using Sandbox.ModAPI.Ingame;" without MyGridProgram/Main → still PB code
+            if (_rxUsingIngame.IsMatch(userCode))
+                return ScriptType.ProgrammableBlock;
+
+            // "using Torch..." → Mod/Plugin surface code
+            // "using Sandbox.ModAPI;" (without .Ingame) → Mod surface code
+            if (_rxUsingTorch.IsMatch(userCode) || _rxUsingModAPI.IsMatch(userCode))
+                return ScriptType.ModSurface;
+
+            // "using VRage.Game.GUI.TextPanel;" without any Sandbox.ModAPI using
+            // implies direct VRage usage — typically Pulsar helper classes
+            if (_rxUsingVRageGui.IsMatch(userCode) &&
+                !_rxUsingIngame.IsMatch(userCode) &&
+                !_rxUsingModAPI.IsMatch(userCode))
+                return ScriptType.PulsarPlugin;
 
             return ScriptType.LcdHelper;
         }
@@ -136,6 +171,8 @@ namespace SESpriteLCDLayoutTool.Services
                 case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
                     DetectSurfaceCalls(userCode, results);
+                    // Check for orchestrator methods that return List<MySprite>
+                    results.AddRange(DetectSpriteReturnCalls(userCode));
                     // Also check for any List<MySprite> helpers in the same file
                     DetectLcdHelperCalls(userCode, results);
                     break;
@@ -193,6 +230,82 @@ namespace SESpriteLCDLayoutTool.Services
             // If no Main detected but we know it's PB, add a default
             if (results.Count == 0)
                 results.Add("Main(\"\", UpdateType.None)");
+        }
+
+        /// <summary>
+        /// Filters a list of detected call expressions to only top-level methods.
+        /// When a script has a method hierarchy (e.g. DrawHud calls DrawRadar),
+        /// calling all of them in RunFrame doubles sprites from sub-methods.
+        /// This removes methods whose name appears as a call inside the body of
+        /// another detected method.
+        /// </summary>
+        private static List<string> FilterTopLevelCalls(string userCode, List<string> calls)
+        {
+            if (calls.Count <= 1) return calls;
+
+            // Extract method names from call expressions
+            // "DrawHud(surface, viewport)" → "DrawHud"
+            // "sprites = BuildSprites(...)" → "BuildSprites"
+            var names = new List<string>();
+            foreach (string c in calls)
+            {
+                string expr = c.Trim().TrimEnd(';');
+                int eq = expr.IndexOf('=');
+                if (eq >= 0) expr = expr.Substring(eq + 1).Trim();
+                int paren = expr.IndexOf('(');
+                names.Add(paren > 0 ? expr.Substring(0, paren).Trim() : expr);
+            }
+
+            // For each detected method, find its body in the source and check
+            // whether it calls any other detected method.
+            var calledByOther = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string parentName in names)
+            {
+                // Find the method signature in the source
+                var sigRx = new Regex(
+                    @"(?:private|public|internal|protected)?\s*(?:static\s+)?(?:\w+(?:<[^>]+>)?)\s+"
+                    + Regex.Escape(parentName) + @"\s*\(");
+                Match sigMatch = sigRx.Match(userCode);
+                if (!sigMatch.Success) continue;
+
+                // Find opening brace of the method body
+                int bodyStart = userCode.IndexOf('{', sigMatch.Index + sigMatch.Length);
+                if (bodyStart < 0) continue;
+
+                // Match the closing brace
+                int depth = 0;
+                int bodyEnd = -1;
+                for (int i = bodyStart; i < userCode.Length; i++)
+                {
+                    if (userCode[i] == '{') depth++;
+                    else if (userCode[i] == '}') { depth--; if (depth == 0) { bodyEnd = i; break; } }
+                }
+                if (bodyEnd < 0) continue;
+
+                string body = userCode.Substring(bodyStart, bodyEnd - bodyStart + 1);
+
+                // Check if any other detected method is called within this body
+                foreach (string childName in names)
+                {
+                    if (string.Equals(childName, parentName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    // Look for "ChildName(" as a call (not a declaration)
+                    if (Regex.IsMatch(body, @"(?<!\w)" + Regex.Escape(childName) + @"\s*\("))
+                        calledByOther.Add(childName);
+                }
+            }
+
+            if (calledByOther.Count == 0) return calls;
+
+            var filtered = new List<string>();
+            for (int i = 0; i < calls.Count; i++)
+            {
+                if (!calledByOther.Contains(names[i]))
+                    filtered.Add(calls[i]);
+            }
+
+            // If everything was filtered (circular calls), return original
+            return filtered.Count > 0 ? filtered : calls;
         }
 
         private static void DetectSurfaceCalls(string userCode, List<string> results)
@@ -457,6 +570,25 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     // Orchestrators first; fall back to individual render methods
                     animCalls = DetectSpriteReturnCalls(userCode);
+                    if (animCalls.Count == 0)
+                    {
+                        animCalls = new List<string>();
+                        DetectLcdHelperCalls(userCode, animCalls);
+                    }
+                }
+                else if (scriptType == ScriptType.PulsarPlugin || scriptType == ScriptType.ModSurface)
+                {
+                    // Prefer orchestrators (methods returning List<MySprite>) which
+                    // call sub-methods internally — avoids double-calling sub-methods.
+                    animCalls = DetectSpriteReturnCalls(userCode);
+                    if (animCalls.Count == 0)
+                    {
+                        // No orchestrators — use surface methods, filtered to
+                        // top-level only (skip methods called by other detected methods)
+                        animCalls = new List<string>();
+                        DetectSurfaceCalls(userCode, animCalls);
+                        animCalls = FilterTopLevelCalls(userCode, animCalls);
+                    }
                     if (animCalls.Count == 0)
                     {
                         animCalls = new List<string>();
@@ -1102,9 +1234,17 @@ namespace SESpriteLCDLayoutTool.Services
                     sb.AppendLine("            " + updCall);
                 }
             }
+            // Declare sprites before calls — call expressions may reference it
+            // as a parameter (LCD helpers) or assignment target (return methods)
+            sb.AppendLine("            var sprites = new List<MySprite>();");
             foreach (string cl in callLines)
                 sb.AppendLine("            " + cl);
-            sb.AppendLine("            var sprites = SpriteCollector.Captured;");
+            // Only merge SpriteCollector when no call directly manages the sprites
+            // list (return-method assignments and LCD-helper parameters already
+            // collect sprites; merging would double-count since those methods may
+            // also add to SpriteCollector internally via surface.DrawFrame())
+            if (!callLines.Exists(cl => cl.Contains("sprites")))
+                sb.AppendLine("            { var _c = SpriteCollector.Captured; if (_c.Count > 0) sprites.AddRange(_c); }");
             AppendSpriteSerialisation(sb, "sprites");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -1160,8 +1300,10 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("        public string[][] RunAllData() {");
             sb.AppendLine("            SpriteCollector.Reset();");
             sb.AppendLine("            var _stubSurface = new StubTextSurface(512f, 512f);");
+            sb.AppendLine("            var sprites = new List<MySprite>();");
             sb.AppendLine("            " + callLine);
-            sb.AppendLine("            var sprites = SpriteCollector.Captured;");
+            if (!callLine.Contains("sprites"))
+                sb.AppendLine("            { var _c = SpriteCollector.Captured; if (_c.Count > 0) sprites.AddRange(_c); }");
             AppendSpriteSerialisation(sb, "sprites");
             sb.AppendLine("        }");
             sb.AppendLine("    }"); // class LcdRunner

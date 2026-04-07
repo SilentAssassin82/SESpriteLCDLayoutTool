@@ -42,9 +42,29 @@ namespace SESpriteLCDLayoutTool.Services
         private bool _throttlePending;
         private readonly object _lock = new object();
 
+        /// <summary>
+        /// Hash of the last content written by <see cref="WriteBack"/>.
+        /// When the file watcher detects a change and reads the file, it
+        /// compares the content hash to this value.  If they match the
+        /// change was caused by our own write and <see cref="FrameReceived"/>
+        /// is not raised — preventing an infinite feedback loop.
+        /// </summary>
+        private int _lastWrittenHash;
+
         // Throttle interval — guarantees one read every N ms even during
         // continuous writes (debounce would starve under rapid writes).
         private const int ThrottleMs = 50;
+
+        /// <summary>
+        /// Computes a hash that is insensitive to line-ending style (
+        /// \r\n vs \n) so that content written by us (\r\n from
+        /// RichTextBox) matches content read back after an editor like
+        /// VS Code normalises endings to \n.
+        /// </summary>
+        private static int ContentHash(string s)
+        {
+            return s.Replace("\r\n", "\n").Replace("\r", "\n").GetHashCode();
+        }
 
         /// <summary>
         /// Starts watching <paramref name="filePath"/> for changes.
@@ -107,6 +127,26 @@ namespace SESpriteLCDLayoutTool.Services
             }
         }
 
+        /// <summary>
+        /// Writes <paramref name="content"/> to the watched file.  The content
+        /// hash is stored so the next file-system change event caused by this
+        /// write is silently suppressed (no <see cref="FrameReceived"/> raised).
+        /// </summary>
+        public void WriteBack(string content)
+        {
+            if (!IsListening || string.IsNullOrEmpty(FilePath)) return;
+
+            int hash = ContentHash(content ?? "");
+            lock (_lock) { _lastWrittenHash = hash; }
+
+            try
+            {
+                File.WriteAllText(FilePath, content);
+            }
+            catch (IOException) { /* file locked — skip this write */ }
+            catch (UnauthorizedAccessException) { /* permissions — skip */ }
+        }
+
         public void Dispose() => Stop();
 
         // ── Internal ────────────────────────────────────────────────────────
@@ -151,7 +191,20 @@ namespace SESpriteLCDLayoutTool.Services
                     contents = sr.ReadToEnd();
 
                 if (!string.IsNullOrWhiteSpace(contents))
+                {
+                    // Suppress self-triggered changes: if the file content
+                    // matches what we last wrote via WriteBack, skip it.
+                    int readHash = ContentHash(contents);
+                    lock (_lock)
+                    {
+                        if (readHash == _lastWrittenHash)
+                        {
+                            _lastWrittenHash = 0; // consume the suppression
+                            return;
+                        }
+                    }
                     FrameReceived?.Invoke(contents);
+                }
             }
             catch (IOException)
             {

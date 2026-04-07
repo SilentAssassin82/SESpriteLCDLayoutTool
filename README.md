@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.2.0) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.3.0) |
 
 ---
 
@@ -141,7 +141,8 @@ Design your screens with drag & drop, preview real in-game textures, then export
 - Extremely useful for debugging dynamic LCDs or starting from an existing complex display
 
 ### 📁 File Operations
-- Save/Load layouts in `.seld` (XML) format
+- Save/Load layouts in `.seld` (XML) format — **including original script source code**, so animation, code round-trip, and detected methods are fully restored on load
+- **Bidirectional VS Code sync** — **File → Sync Script File (VS Code)…** watches a `.cs` file for external edits and writes code changes from the canvas back to the file in real time
 - Built-in surface presets: 1×1 LCD (512×512), Wide LCD (512×256), Corner LCD (1024×512), custom sizes
 
 ---
@@ -708,6 +709,18 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.3.0
+- **Layout file persistence for animation** — `.seld` files now save and restore the original script source code, so animation playback, code round-trip patching, and detected method lists are fully preserved across save/load cycles
+- **VS Code bidirectional file sync** — new **File → Sync Script File (VS Code)…** watches a `.cs` file for external edits (auto-importing on change) and writes canvas code changes back to the file in real time, enabling a seamless split-screen workflow with any external editor
+- **Auto-detect script type on code import** — when importing code via paste, file sync, or clipboard monitoring, the code style dropdown automatically switches to the correct target (PB, Mod, Plugin, Pulsar) based on detected script patterns (6 new regex patterns including `IPlugin`, `MySessionComponentBase`, `MyGridProgram`, `void Main`, `IMyTextSurface` parameter, and `VRage.Plugins`)
+- **Fixed indentation loss on code round-trip** — leading whitespace is no longer stripped during code generation patches across 3 coordinated fix points in the code generator
+- **Fixed FillPie crash on zero-size sprites** — `DrawTextureSprite` now guards against degenerate sprite sizes that caused `ArgumentException` in GDI+ `FillPie`
+- **Fixed clipboard paste indentation** — RichTextBox `\n`-only line breaks are now normalized to `\r\n`, preserving indentation when pasting code
+- **Fixed CS0841 compiler error in Mod/Pulsar animation** — animation source builders now declare the `sprites` variable before call lines that reference it
+- **Fixed sprite doubling in Mod/Pulsar scripts** — conditional `SpriteCollector` merge (only when no call line manages sprites directly), `FilterTopLevelCalls` helper to remove sub-methods called by orchestrators, and full sprite replacement in execute/isolate paths prevent duplicate sprites
+- **Fixed isolate mode for Mod/Pulsar scripts** — uses direct sprite replacement instead of snapshot merge, which failed due to runtime vs. static analysis mismatch
+- **Fixed animation Play/Step ignoring selected method** — the Play and Step-Forward buttons now check the detected-calls list for a selected method and start focused animation with that method instead of always playing all methods
 
 ### v2.2.0
 - **Script-type aware animation snippets** — both the simple animation dialog (right-click → Add Animation…) and the keyframe animation dialog now read the current **Code Style** dropdown and generate context-appropriate output
