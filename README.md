@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.3.0) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.4.0) |
 
 ---
 
@@ -709,6 +709,15 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.4.0
+- **Canvas multi-select** — Shift+click sprites directly on the canvas to add/remove them from the selection, enabling batch operations without switching to the layer list
+- **Hide Selected context menu** — right-click on the canvas shows "Hide Selected (N)" with a count badge when multiple sprites are selected; hides all selected sprites at once
+- **Smart brace-aware auto-indent** — select code in the editor and press Tab to intelligently reformat indentation based on brace nesting depth (Shift+Tab to outdent)
+- **Auto-indent on Enter** — new lines automatically match the indentation of the current line, with an extra level added after opening braces
+- **Fixed switch-case method detection** — the `DetectSwitchCaseRenderMethods` regex now correctly matches fully-qualified enum names (e.g. `case LcdSpriteRow.Kind.Header:`)
+- **Fixed source file write prevention** — bidirectional file sync no longer writes generated code back to the original `.cs` source file when the content hash hasn't changed
+- **Fixed code jump accuracy** — double-clicking a layer now uses line-based position mapping to jump to the correct sprite definition, even when code edits shift character offsets
 
 ### v2.3.0
 - **Layout file persistence for animation** — `.seld` files now save and restore the original script source code, so animation playback, code round-trip patching, and detected method lists are fully preserved across save/load cycles
