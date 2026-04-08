@@ -128,6 +128,19 @@ namespace SESpriteLCDLayoutTool.Models
         /// </summary>
         public bool IsReferenceLayout { get; set; }
 
+        /// <summary>
+        /// When true, this sprite came from runtime snapshot data (LcdSpriteRow[])
+        /// captured via live pipe or in-game !lcd snapshot file. Used to preserve
+        /// snapshot positions during Execute Code.
+        /// </summary>
+        public bool IsSnapshotData { get; set; }
+
+        /// <summary>
+        /// Optional note displayed in UI showing which runtime snapshot row this sprite represents
+        /// (e.g. "Header: Inventory", "ItemBar: Steel Plate (800/1000)").
+        /// </summary>
+        public string RuntimeDataNote { get; set; }
+
         // ── Source tracking (for per-sprite round-trip patching) ──────────────
 
         /// <summary>Character offset in OriginalSourceCode where this sprite definition starts (-1 = not tracked).</summary>
@@ -138,6 +151,9 @@ namespace SESpriteLCDLayoutTool.Models
 
         /// <summary>Contextual label from surrounding code (e.g. "Header: Text", "Item: Triangle"). Overrides DisplayName when set.</summary>
         [XmlIgnore] public string ImportLabel { get; set; }
+
+        /// <summary>Variable name extracted from code (e.g. "sprites.Add(header)", "frame.Add(titleBar)") for layer list annotation.</summary>
+        [XmlIgnore] public string VariableName { get; set; }
 
         /// <summary>Snapshot of property values at import time, used for diffing in per-sprite round-trip.</summary>
         [XmlIgnore] public SpriteEntry ImportBaseline { get; set; }

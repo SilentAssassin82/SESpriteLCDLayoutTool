@@ -1,0 +1,4 @@
+# Copilot Instructions
+
+## Project Guidelines
+- CRITICAL: The switch-case method extraction feature in CodeExecutor.DetectSwitchCaseRenderMethods() must be preserved during any future code changes. This feature auto-generates virtual render methods (RenderHeader, RenderBar, etc.) from switch statement case blocks in queue processor patterns (e.g., IML's switch(row.RowKind)). It was broken during previous UI restoration work and must not be broken again. Always verify that DetectSwitchCaseRenderMethods is still being called in the ModSurface/PulsarPlugin detection pipeline and that the regex pattern @"case\s+(?:[\w\.]+\.)?(\w+)\s*:" correctly matches fully-qualified enum names like "case LcdSpriteRow.Kind.Header:".

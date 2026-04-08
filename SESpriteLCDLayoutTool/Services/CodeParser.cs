@@ -879,5 +879,259 @@ namespace SESpriteLCDLayoutTool.Services
                 }
             });
         }
+
+        /// <summary>
+        /// Parses runtime snapshot data from in-game !lcd snapshot files.
+        /// Supports two formats:
+        ///   1. C# initializer blocks: <c>new LcdSpriteRow { RowKind = ..., Text = ..., ... }</c>
+        ///   2. @ROW comment lines:    <c>// @ROW:Kind|Text|StatText|IconSprite|R,G,B,A|BarFill|R,G,B,A|ShowAlert</c>
+        /// Returns the list of captured row data for replay in CodeExecutor.
+        /// </summary>
+        public static List<SnapshotRowData> ParseSnapshotRows(string code)
+        {
+            var results = new List<SnapshotRowData>();
+            if (string.IsNullOrWhiteSpace(code)) return results;
+
+            // ── Pass 1: Find "new LcdSpriteRow { ... }" blocks ──
+            int searchFrom = 0;
+            while (searchFrom < code.Length)
+            {
+                int idx = code.IndexOf("new LcdSpriteRow", searchFrom, StringComparison.Ordinal);
+                if (idx < 0) break;
+
+                // Find the opening brace
+                int braceStart = FindNextNonWhitespace(code, idx + 16);
+                if (braceStart >= 0 && code[braceStart] == '{')
+                {
+                    int braceEnd = FindMatchingBrace(code, braceStart);
+                    if (braceEnd >= 0)
+                    {
+                        string body = code.Substring(braceStart + 1, braceEnd - braceStart - 1);
+                        var row = ParseSnapshotRowBody(body);
+                        if (row != null)
+                            results.Add(row);
+                        searchFrom = braceEnd + 1;
+                        continue;
+                    }
+                }
+                searchFrom = idx + 16;
+            }
+
+            // ── Pass 2: Parse "// @ROW:" comment lines ──
+            // Format: // @ROW:Kind|Text|StatText|IconSprite|R,G,B,A|BarFill|R,G,B,A|ShowAlert
+            // Pipes in text values are escaped as \|
+            const string rowMarker = "// @ROW:";
+            searchFrom = 0;
+            while (searchFrom < code.Length)
+            {
+                int idx = code.IndexOf(rowMarker, searchFrom, StringComparison.Ordinal);
+                if (idx < 0) break;
+
+                // Extract line content after the marker
+                int lineStart = idx + rowMarker.Length;
+                int lineEnd = code.IndexOf('\n', lineStart);
+                if (lineEnd < 0) lineEnd = code.Length;
+                string line = code.Substring(lineStart, lineEnd - lineStart).TrimEnd('\r');
+
+                var row = ParseRowCommentLine(line);
+                if (row != null)
+                    results.Add(row);
+
+                searchFrom = lineEnd + 1;
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Splits a pipe-delimited <c>@ROW</c> comment payload, respecting <c>\|</c> escapes.
+        /// </summary>
+        private static string[] SplitRowFields(string line)
+        {
+            var fields = new System.Collections.Generic.List<string>();
+            var current = new System.Text.StringBuilder();
+            for (int i = 0; i < line.Length; i++)
+            {
+                if (line[i] == '\\' && i + 1 < line.Length && line[i + 1] == '|')
+                {
+                    current.Append('|');
+                    i++; // skip the escaped pipe
+                }
+                else if (line[i] == '|')
+                {
+                    fields.Add(current.ToString());
+                    current.Clear();
+                }
+                else
+                {
+                    current.Append(line[i]);
+                }
+            }
+            fields.Add(current.ToString());
+            return fields.ToArray();
+        }
+
+        /// <summary>
+        /// Parses one <c>@ROW</c> comment line into a <see cref="SnapshotRowData"/>.
+        /// Expected 8 fields: Kind|Text|StatText|IconSprite|R,G,B,A|BarFill|R,G,B,A|ShowAlert
+        /// </summary>
+        private static SnapshotRowData ParseRowCommentLine(string line)
+        {
+            var fields = SplitRowFields(line);
+            if (fields.Length < 8) return null;
+
+            var row = new SnapshotRowData();
+            try
+            {
+                row.Kind = fields[0];
+                row.Text = fields[1];
+                row.StatText = fields[2];
+                row.IconSprite = fields[3];
+
+                // TextColor: R,G,B,A
+                var tc = fields[4].Split(',');
+                if (tc.Length >= 4)
+                {
+                    row.TextColorR = int.Parse(tc[0].Trim());
+                    row.TextColorG = int.Parse(tc[1].Trim());
+                    row.TextColorB = int.Parse(tc[2].Trim());
+                    row.TextColorA = int.Parse(tc[3].Trim());
+                }
+
+                // BarFill
+                float bf;
+                if (float.TryParse(fields[5].Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out bf))
+                    row.BarFill = bf;
+
+                // BarFillColor: R,G,B,A
+                var bfc = fields[6].Split(',');
+                if (bfc.Length >= 4)
+                {
+                    row.BarFillColorR = int.Parse(bfc[0].Trim());
+                    row.BarFillColorG = int.Parse(bfc[1].Trim());
+                    row.BarFillColorB = int.Parse(bfc[2].Trim());
+                    row.BarFillColorA = int.Parse(bfc[3].Trim());
+                }
+
+                // ShowAlert
+                row.ShowAlert = fields[7].Trim() == "1"
+                    || fields[7].Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return null; // malformed line — skip
+            }
+
+            return row;
+        }
+
+        /// <summary>
+        /// Parses the body of a "new LcdSpriteRow { RowKind = ..., Text = ..., ... }" initializer.
+        /// </summary>
+        private static SnapshotRowData ParseSnapshotRowBody(string body)
+        {
+            var row = new SnapshotRowData();
+
+            // Split assignments by comma (simple split - good enough for snapshot files)
+            var assignments = body.Split(',');
+            foreach (string assign in assignments)
+            {
+                string trimmed = assign.Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
+
+                int eqIdx = trimmed.IndexOf('=');
+                if (eqIdx < 0) continue;
+
+                string propName = trimmed.Substring(0, eqIdx).Trim();
+                string valueStr = trimmed.Substring(eqIdx + 1).Trim();
+
+                try
+                {
+                    switch (propName)
+                    {
+                        case "RowKind":
+                            // "LcdSpriteRow.Kind.Header" → "Header"
+                            int lastDot = valueStr.LastIndexOf('.');
+                            row.Kind = lastDot >= 0 ? valueStr.Substring(lastDot + 1) : valueStr;
+                            break;
+                        case "Text":
+                            row.Text = ParseQuotedString(valueStr);
+                            break;
+                        case "StatText":
+                            row.StatText = ParseQuotedString(valueStr);
+                            break;
+                        case "IconSprite":
+                            row.IconSprite = ParseQuotedString(valueStr);
+                            break;
+                        case "TextColor":
+                            {
+                                int r = 0, g = 0, b = 0, a = 255;
+                                ParseColorInto(valueStr, ref r, ref g, ref b, ref a);
+                                row.TextColorR = r;
+                                row.TextColorG = g;
+                                row.TextColorB = b;
+                                row.TextColorA = a;
+                            }
+                            break;
+                        case "BarFill":
+                            row.BarFill = ParseFloat(valueStr);
+                            break;
+                        case "BarFillColor":
+                            {
+                                int r = 0, g = 0, b = 0, a = 255;
+                                ParseColorInto(valueStr, ref r, ref g, ref b, ref a);
+                                row.BarFillColorR = r;
+                                row.BarFillColorG = g;
+                                row.BarFillColorB = b;
+                                row.BarFillColorA = a;
+                            }
+                            break;
+                        case "ShowAlert":
+                            row.ShowAlert = valueStr.Equals("true", StringComparison.OrdinalIgnoreCase);
+                            break;
+                    }
+                }
+                catch { /* Skip malformed property */ }
+            }
+
+            return row;
+        }
+
+        /// <summary>
+        /// Extracts a string value from a quoted string literal (e.g., "Hello" → Hello).
+        /// </summary>
+        private static string ParseQuotedString(string expr)
+        {
+            var match = Regex.Match(expr, @"""((?:[^""\\]|\\.)*)""");
+            return match.Success ? UnescapeCSharpString(match.Groups[1].Value) : "";
+        }
+
+        /// <summary>
+        /// Parses a Color initializer like "new Color(255, 0, 0)" or "Color.White" into RGBA components.
+        /// </summary>
+        private static void ParseColorInto(string colorExpr, ref int r, ref int g, ref int b, ref int a)
+        {
+            // Handle named colors first
+            if (colorExpr.Contains("Color.White")) { r = 255; g = 255; b = 255; a = 255; return; }
+            if (colorExpr.Contains("Color.Black")) { r = 0; g = 0; b = 0; a = 255; return; }
+            if (colorExpr.Contains("Color.Red")) { r = 255; g = 0; b = 0; a = 255; return; }
+            if (colorExpr.Contains("Color.Green")) { r = 0; g = 255; b = 0; a = 255; return; }
+            if (colorExpr.Contains("Color.Blue")) { r = 0; g = 0; b = 255; a = 255; return; }
+            if (colorExpr.Contains("Color.Yellow")) { r = 255; g = 255; b = 0; a = 255; return; }
+            if (colorExpr.Contains("Color.Cyan")) { r = 0; g = 255; b = 255; a = 255; return; }
+            if (colorExpr.Contains("Color.Magenta")) { r = 255; g = 0; b = 255; a = 255; return; }
+
+            // Parse "new Color(r, g, b)" or "new Color(r, g, b, a)"
+            var match = Regex.Match(colorExpr, @"new\s+Color\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*(\d+))?\s*\)");
+            if (match.Success)
+            {
+                r = int.Parse(match.Groups[1].Value);
+                g = int.Parse(match.Groups[2].Value);
+                b = int.Parse(match.Groups[3].Value);
+                a = match.Groups[4].Success ? int.Parse(match.Groups[4].Value) : 255;
+            }
+        }
     }
 }

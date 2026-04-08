@@ -36,8 +36,8 @@ Design your screens with drag & drop, preview real in-game textures, then export
 - **Resize handles** for quick sprite scaling
 - **Rotation** support for texture sprites
 - **Layer ordering** — move sprites up/down in the draw order
-- **Multi-select layers** — Shift-click and Ctrl-click in the layer list to select multiple sprites; batch **delete**, **duplicate**, and **hide/show** operations apply to the entire selection
-- **Layer visibility** — hide individual layers or all layers above a sprite to easily select and edit buried sprites
+- **Multi-select** — Shift-click sprites directly on the **canvas** or in the **layer list** to build a selection; batch **delete**, **duplicate**, and **hide/show** operations apply to the entire selection
+- **Layer visibility** — right-click **Hide Selected** to hide one or more sprites, or **Hide Layers Above** to reveal buried sprites; **Show All Layers** restores full visibility
 - **Undo/Redo** with full history
 - **Dark theme** UI matching the Space Engineers aesthetic
 

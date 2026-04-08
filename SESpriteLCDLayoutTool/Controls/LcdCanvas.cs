@@ -45,6 +45,7 @@ namespace SESpriteLCDLayoutTool.Controls
         // ── Fields ───────────────────────────────────────────────────────────────
         private LcdLayout _layout;
         private SpriteEntry _selectedSprite;
+        private HashSet<SpriteEntry> _selectedSprites = new HashSet<SpriteEntry>();
         private SpriteTextureCache _textureCache;
 
         private DragMode _dragMode = DragMode.None;
@@ -91,10 +92,19 @@ namespace SESpriteLCDLayoutTool.Controls
             set
             {
                 _selectedSprite = value;
+                // Single-selection clears the multi-select set and adds only this sprite
+                _selectedSprites.Clear();
+                if (value != null)
+                    _selectedSprites.Add(value);
                 Invalidate();
                 SelectionChanged?.Invoke(this, EventArgs.Empty);
             }
         }
+
+        /// <summary>
+        /// Returns the set of currently selected sprites for multi-select operations.
+        /// </summary>
+        public HashSet<SpriteEntry> SelectedSprites => _selectedSprites;
 
         public float Zoom
         {
@@ -311,7 +321,7 @@ namespace SESpriteLCDLayoutTool.Controls
             {
                 if (sprite.IsHidden) continue;
                 if (sprite == excludeSprite) continue;
-                DrawSprite(g, sprite, sprite == _selectedSprite, scale, origin);
+                DrawSprite(g, sprite, _selectedSprites.Contains(sprite), scale, origin);
             }
 
             if (drawOverlays)
@@ -762,6 +772,7 @@ namespace SESpriteLCDLayoutTool.Controls
 
             if (e.Button != MouseButtons.Left) return;
 
+            bool shiftHeld = (Control.ModifierKeys & Keys.Shift) != 0;
             ComputeTransform(out float scale, out PointF origin);
             var pt = new PointF(e.X, e.Y);
 
@@ -783,8 +794,31 @@ namespace SESpriteLCDLayoutTool.Controls
                 var rect = GetSpriteScreenRect(_layout.Sprites[i], scale, origin);
                 if (rect.Contains(pt))
                 {
-                    SelectedSprite = _layout.Sprites[i];
-                    BeginDrag(DragMode.Move, pt, _selectedSprite);
+                    var clickedSprite = _layout.Sprites[i];
+
+                    if (shiftHeld)
+                    {
+                        // Shift+click: toggle selection (add/remove from multi-select)
+                        if (_selectedSprites.Contains(clickedSprite))
+                        {
+                            _selectedSprites.Remove(clickedSprite);
+                            // Update _selectedSprite to another selected sprite, or null
+                            _selectedSprite = _selectedSprites.Count > 0 ? GetFirstSelectedSprite() : null;
+                        }
+                        else
+                        {
+                            _selectedSprites.Add(clickedSprite);
+                            _selectedSprite = clickedSprite;
+                        }
+                        Invalidate();
+                        SelectionChanged?.Invoke(this, EventArgs.Empty);
+                    }
+                    else
+                    {
+                        // Normal click: single-select and begin drag
+                        SelectedSprite = clickedSprite;
+                        BeginDrag(DragMode.Move, pt, _selectedSprite);
+                    }
                     return;
                 }
             }
@@ -920,6 +954,14 @@ namespace SESpriteLCDLayoutTool.Controls
                 case DragMode.ResizeE:  case DragMode.ResizeW:  Cursor = Cursors.SizeWE;    break;
                 default: Cursor = rect.Contains(pt) ? Cursors.SizeAll : Cursors.Default;    break;
             }
+        }
+
+        /// <summary>Returns the first sprite from the multi-select set (used when removing from selection).</summary>
+        private SpriteEntry GetFirstSelectedSprite()
+        {
+            foreach (var sp in _selectedSprites)
+                return sp;
+            return null;
         }
 
         // ── Public actions ────────────────────────────────────────────────────────

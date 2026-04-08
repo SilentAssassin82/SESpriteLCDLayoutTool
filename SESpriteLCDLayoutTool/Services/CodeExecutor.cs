@@ -100,6 +100,18 @@ namespace SESpriteLCDLayoutTool.Services
         {
             if (string.IsNullOrWhiteSpace(userCode)) return ScriptType.LcdHelper;
 
+            // Torch detection: check for #if TORCH, RenderContext, or LcdSpriteRow
+            // BEFORE stripping preprocessor directives to catch the marker itself
+            if (userCode.Contains("#if TORCH") ||
+                userCode.Contains("#endif // TORCH") ||
+                userCode.Contains("class RenderContext") ||
+                userCode.Contains("struct LcdSpriteRow") ||
+                (userCode.Contains("RenderContext ctx") && userCode.Contains("LcdSpriteRow")))
+                return ScriptType.ModSurface;
+
+            // Resolve #if/#else/#endif so detection sees all conditionally-compiled code
+            userCode = StripPreprocessorDirectives(userCode);
+
             // PB detection: class extending MyGridProgram, or Main() with SE signature
             if (_rxPbClass.IsMatch(userCode) || _rxMainMethod.IsMatch(userCode))
                 return ScriptType.ProgrammableBlock;
@@ -155,12 +167,19 @@ namespace SESpriteLCDLayoutTool.Services
         /// with correct positions.  Falls back to individual render method detection
         /// with guessed parameter defaults.
         /// </summary>
-        public static List<string> DetectAllCallExpressions(string userCode)
+        public static List<string> DetectAllCallExpressions(string userCode,
+            List<SnapshotRowData> capturedRows = null)
         {
             var results = new List<string>();
             if (string.IsNullOrWhiteSpace(userCode)) return results;
 
+            // Resolve #if/#else/#endif so detection sees all conditionally-compiled code
+            userCode = StripPreprocessorDirectives(userCode);
+            System.Diagnostics.Debug.WriteLine($"[DetectAllCallExpressions] Code after preprocessor strip: {userCode.Length} chars");
+            System.Diagnostics.Debug.WriteLine($"[DetectAllCallExpressions] First 500 chars:\n{userCode.Substring(0, Math.Min(500, userCode.Length))}");
+
             var scriptType = DetectScriptType(userCode);
+            System.Diagnostics.Debug.WriteLine($"[DetectAllCallExpressions] Script type: {scriptType}");
 
             switch (scriptType)
             {
@@ -170,11 +189,16 @@ namespace SESpriteLCDLayoutTool.Services
 
                 case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
-                    DetectSurfaceCalls(userCode, results);
+                    DetectSurfaceCalls(userCode, results, capturedRows);
                     // Check for orchestrator methods that return List<MySprite>
                     results.AddRange(DetectSpriteReturnCalls(userCode));
                     // Also check for any List<MySprite> helpers in the same file
                     DetectLcdHelperCalls(userCode, results);
+                    // Extract virtual render methods from switch case blocks
+                    DetectSwitchCaseRenderMethods(userCode, results, capturedRows);
+                    // Fallback: detect methods that render sprites inline
+                    // (surface obtained internally, not via parameter)
+                    DetectInlineRenderMethods(userCode, results, capturedRows);
                     break;
 
                 default:
@@ -211,6 +235,69 @@ namespace SESpriteLCDLayoutTool.Services
             }
 
             return results;
+        }
+
+        /// <summary>
+        /// Returns detected call expressions with metadata indicating whether each
+        /// represents a real method or a virtual method extracted from a switch case.
+        /// </summary>
+        public static List<DetectedMethodInfo> GetDetectedMethodsWithMetadata(string userCode,
+            List<SnapshotRowData> capturedRows = null)
+        {
+            var result = new List<DetectedMethodInfo>();
+            var calls = DetectAllCallExpressions(userCode, capturedRows);
+
+            // Strip preprocessor directives for offset calculation
+            string cleanCode = StripPreprocessorDirectives(userCode);
+
+            // Build a set of all case names from switch statements to identify virtual methods
+            var virtualMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var rxSwitch = new Regex(@"switch\s*\(\s*(\w+(?:\.\w+)?)\s*\)\s*\{", RegexOptions.Singleline);
+            foreach (Match switchMatch in rxSwitch.Matches(cleanCode))
+            {
+                int bodyStart = switchMatch.Index + switchMatch.Length;
+                int bodyEnd = ScanToMatchingBrace(cleanCode, bodyStart);
+                if (bodyEnd <= bodyStart) continue;
+
+                string switchBody = cleanCode.Substring(bodyStart, bodyEnd - 1 - bodyStart);
+                var rxCase = new Regex(@"case\s+(?:[\w\.]+\.)?(\w+)\s*:", RegexOptions.Singleline);
+
+                foreach (Match caseMatch in rxCase.Matches(switchBody))
+                {
+                    string caseName = caseMatch.Groups[1].Value;
+                    if (!string.IsNullOrWhiteSpace(caseName))
+                    {
+                        string methodName = "Render" + caseName;
+                        virtualMethods.Add(methodName);
+                    }
+                }
+            }
+
+            // Create DetectedMethodInfo for each call
+            foreach (string call in calls)
+            {
+                // Extract method name from call expression
+                int parenIdx = call.IndexOf('(');
+                string methodName = parenIdx > 0 ? call.Substring(0, parenIdx).Trim() : call.Trim();
+
+                // Determine if this is a virtual method
+                bool isVirtual = virtualMethods.Contains(methodName);
+
+                // Find the source position
+                int sourcePos = FindMethodDefinitionOffset(cleanCode, call);
+
+                var info = new DetectedMethodInfo
+                {
+                    CallExpression = call,
+                    SourcePosition = sourcePos,
+                    Kind = isVirtual ? MethodKind.SwitchCase : MethodKind.RealMethod,
+                    CaseName = isVirtual ? methodName.Substring(6) : null // Remove "Render" prefix
+                };
+
+                result.Add(info);
+            }
+
+            return result;
         }
 
         private static void DetectPbCalls(string userCode, List<string> results)
@@ -308,7 +395,8 @@ namespace SESpriteLCDLayoutTool.Services
             return filtered.Count > 0 ? filtered : calls;
         }
 
-        private static void DetectSurfaceCalls(string userCode, List<string> results)
+        private static void DetectSurfaceCalls(string userCode, List<string> results,
+            List<SnapshotRowData> capturedRows = null)
         {
             foreach (Match m in _rxSurfaceMethod.Matches(userCode))
             {
@@ -337,6 +425,8 @@ namespace SESpriteLCDLayoutTool.Services
                     string bareType = typeName.Contains(".") ? typeName.Substring(typeName.LastIndexOf('.') + 1) : typeName;
                     if (bareType == "IMyTextSurface" || bareType == "IMyTextPanel")
                         args.Add("surface");
+                    else if (typeName.Equals("LcdSpriteRow", StringComparison.OrdinalIgnoreCase))
+                        args.Add(GuessLcdSpriteRowArg(methodName, capturedRows));
                     else
                         args.Add(GuessDefaultArg(typeName.ToLowerInvariant(), paramName));
                 }
@@ -353,6 +443,174 @@ namespace SESpriteLCDLayoutTool.Services
                 string restParams = m.Groups[2].Value.Trim();
                 string call = BuildCallExpression(methodName, restParams);
                 if (call != null) results.Add(call);
+            }
+        }
+
+        /// <summary>
+        /// Fallback detection for Mod/Plugin scripts where the surface is obtained
+        /// internally (e.g. via <c>MyAPIGateway.Entities</c> or field access) rather
+        /// than passed as a parameter.  Finds void methods whose body contains
+        /// <c>DrawFrame</c>, <c>new MySprite</c>, or <c>MySprite.Create</c>,
+        /// indicating inline sprite rendering.
+        /// </summary>
+        private static void DetectInlineRenderMethods(string userCode, List<string> results,
+            List<SnapshotRowData> capturedRows = null)
+        {
+            var rxAnyVoidMethod = new Regex(
+                @"(?:private|public|internal|protected)\s*(?:static\s+)?void\s+(\w+)\s*\(([^)]*)\)\s*\{",
+                RegexOptions.Singleline);
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string r in results)
+            {
+                int p = r.IndexOf('(');
+                if (p > 0) seen.Add(r.Substring(0, p).Trim());
+            }
+
+            System.Diagnostics.Debug.WriteLine($"[DetectInlineRenderMethods] Already detected: {string.Join(", ", seen)}");
+            System.Diagnostics.Debug.WriteLine($"[DetectInlineRenderMethods] Found {rxAnyVoidMethod.Matches(userCode).Count} void methods");
+
+            foreach (Match m in rxAnyVoidMethod.Matches(userCode))
+            {
+                string methodName = m.Groups[1].Value;
+                System.Diagnostics.Debug.WriteLine($"[DetectInlineRenderMethods] Checking method: {methodName}");
+
+                // Skip constructors, lifecycle, and already-detected methods
+                if (methodName == "Dispose" || methodName == "Init" || methodName == "Save"
+                    || methodName == "Main")
+                {
+                    System.Diagnostics.Debug.WriteLine($"  -> Skipped (lifecycle method)");
+                    continue;
+                }
+                if (seen.Contains(methodName))
+                {
+                    System.Diagnostics.Debug.WriteLine($"  -> Skipped (already detected)");
+                    continue;
+                }
+
+                // Scan the method body for sprite rendering patterns
+                int bodyStart = m.Index + m.Length;
+                int bodyEnd = ScanToMatchingBrace(userCode, bodyStart);
+                if (bodyEnd <= bodyStart)
+                {
+                    System.Diagnostics.Debug.WriteLine($"  -> Skipped (no valid body)");
+                    continue;
+                }
+
+                string body = userCode.Substring(bodyStart, bodyEnd - 1 - bodyStart);
+                if (!body.Contains("DrawFrame") && !body.Contains("new MySprite")
+                    && !body.Contains("MySprite.Create"))
+                {
+                    System.Diagnostics.Debug.WriteLine($"  -> Skipped (no sprite rendering code found)");
+                    continue;
+                }
+
+                // Skip methods that take StringBuilder (code generators, not renderers)
+                string paramDecl = m.Groups[2].Value.Trim();
+                if (Regex.IsMatch(paramDecl, @"\bStringBuilder\b"))
+                {
+                    System.Diagnostics.Debug.WriteLine($"  -> Skipped (StringBuilder parameter)");
+                    continue;
+                }
+
+                // Build a call expression with guessed default args
+                var args = new List<string>();
+                if (!string.IsNullOrWhiteSpace(paramDecl))
+                {
+                    foreach (string param in paramDecl.Split(','))
+                    {
+                        string p = param.Trim();
+                        if (string.IsNullOrWhiteSpace(p)) continue;
+                        string[] parts = p.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2) continue;
+                        string typeName = parts[0];
+                        string bareType = typeName.Contains(".") ? typeName.Substring(typeName.LastIndexOf('.') + 1) : typeName;
+                        string paramName = parts[parts.Length - 1].ToLowerInvariant().TrimStart('_');
+                        if (bareType == "IMyTextSurface" || bareType == "IMyTextPanel")
+                            args.Add("surface");
+                        else if (bareType.Equals("LcdSpriteRow", StringComparison.OrdinalIgnoreCase))
+                            args.Add(GuessLcdSpriteRowArg(methodName, capturedRows));
+                        else
+                            args.Add(GuessDefaultArg(typeName.ToLowerInvariant(), paramName));
+                    }
+                }
+                string call = methodName + "(" + string.Join(", ", args) + ")";
+                System.Diagnostics.Debug.WriteLine($"  -> DETECTED: {call}");
+                results.Add(call);
+                seen.Add(methodName);
+            }
+        }
+
+        /// <summary>
+        /// Extracts virtual render methods from switch statement case blocks, allowing
+        /// each LCD element to be executed and animated individually even when the
+        /// original code has all rendering inline within a switch.
+        /// For example, <c>case LcdSpriteRow.Kind.Header:</c> becomes <c>RenderHeader(ctx, row)</c>.
+        /// </summary>
+        private static void DetectSwitchCaseRenderMethods(string userCode, List<string> results,
+            List<SnapshotRowData> capturedRows = null)
+        {
+            // Pattern: switch (identifier) { case EnumOrConstant: ... }
+            var rxSwitch = new Regex(
+                @"switch\s*\(\s*(\w+(?:\.\w+)?)\s*\)\s*\{",
+                RegexOptions.Singleline);
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in results)
+            {
+                int p = r.IndexOf('(');
+                if (p > 0) seen.Add(r.Substring(0, p).Trim());
+            }
+
+            System.Diagnostics.Debug.WriteLine($"[DetectSwitchCaseRenderMethods] Searching for switch statements...");
+
+            foreach (Match switchMatch in rxSwitch.Matches(userCode))
+            {
+                string switchExpr = switchMatch.Groups[1].Value;
+                System.Diagnostics.Debug.WriteLine($"[DetectSwitchCaseRenderMethods] Found switch ({switchExpr})");
+
+                // Find the switch body
+                int bodyStart = switchMatch.Index + switchMatch.Length;
+                int bodyEnd = ScanToMatchingBrace(userCode, bodyStart);
+                if (bodyEnd <= bodyStart)
+                {
+                    System.Diagnostics.Debug.WriteLine($"  -> Skipped (no valid body)");
+                    continue;
+                }
+
+                string switchBody = userCode.Substring(bodyStart, bodyEnd - 1 - bodyStart);
+
+                // Extract all case labels
+                // Pattern: case EnumType.Value: or case ConstantName: or case Namespace.Type.Value:
+                var rxCase = new Regex(
+                    @"case\s+(?:[\w\.]+\.)?(\w+)\s*:",
+                    RegexOptions.Singleline);
+
+                foreach (Match caseMatch in rxCase.Matches(switchBody))
+                {
+                    string caseName = caseMatch.Groups[1].Value; // e.g., "Header", "Separator"
+
+                    if (string.IsNullOrWhiteSpace(caseName))
+                        continue;
+
+                    // Generate method name: Render + CaseName
+                    string methodName = "Render" + caseName;
+
+                    // Skip if already detected
+                    if (seen.Contains(methodName))
+                    {
+                        System.Diagnostics.Debug.WriteLine($"  -> case {caseName}: skipped (method already detected)");
+                        continue;
+                    }
+
+                    // Build call expression with guessed default args
+                    // Common pattern: RenderHeader(ctx, row) or RenderBar(default, default)
+                    string call = methodName + "(default, default)";
+
+                    System.Diagnostics.Debug.WriteLine($"  -> case {caseName}: DETECTED as {call}");
+                    results.Add(call);
+                    seen.Add(methodName);
+                }
             }
         }
 
@@ -376,38 +634,131 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
+        /// When the call expression includes <c>ApplyPendingUpdates</c> and the user
+        /// code defines an <c>EnqueueUpdate</c> method accepting <c>LcdSpriteRow[]</c>,
+        /// returns C# statements that pre-populate the queue with representative sample
+        /// data so the render method has something to draw.  When <paramref name="capturedRows"/>
+        /// contains runtime data, those real values are used instead of hardcoded placeholders.
+        /// Returns <c>null</c> if the pattern is not detected.
+        /// </summary>
+        private static string BuildSampleEnqueueCode(string userCode, string callExpression,
+            List<SnapshotRowData> capturedRows = null)
+        {
+            if (string.IsNullOrWhiteSpace(callExpression) || string.IsNullOrWhiteSpace(userCode))
+                return null;
+            // Check the user's source code (not the call expression) for the queue-processor
+            // pattern.  Auto-detected calls use the outer render method name (e.g.
+            // "RenderLcd(_stubSurface)"), not "ApplyPendingUpdates", so gating on
+            // callExpression would always fail for auto-detected pipelines.
+            if (!userCode.Contains("ApplyPendingUpdates"))
+                return null;
+            // Check for an EnqueueUpdate method that takes LcdSpriteRow[]
+            if (!Regex.IsMatch(userCode, @"\bEnqueueUpdate\s*\(.*LcdSpriteRow\s*\[\]"))
+                return null;
+
+            var sb = new StringBuilder();
+
+            // Use captured rows from a runtime snapshot when available
+            if (capturedRows != null && capturedRows.Count > 0)
+            {
+                sb.AppendLine("            // Runtime-captured rows from snapshot");
+                sb.AppendLine("            EnqueueUpdate(2, new LcdSpriteRow[] {");
+                for (int i = 0; i < capturedRows.Count; i++)
+                {
+                    string comma = (i < capturedRows.Count - 1) ? "," : ",";
+                    sb.AppendLine("                " + capturedRows[i].ToCSharpInitializer() + comma);
+                }
+                sb.AppendLine("            });");
+                return sb.ToString();
+            }
+
+            sb.AppendLine("            // Sample data so the queue-processor has representative rows to render");
+            sb.AppendLine("            EnqueueUpdate(2, new LcdSpriteRow[] {");
+            sb.AppendLine("                new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Header, Text = \"Inventory\", TextColor = Color.White },");
+            sb.AppendLine("                new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Separator },");
+            sb.AppendLine("                new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Item, Text = \"Iron Ingot\", StatText = \"1,500\", TextColor = Color.White },");
+            sb.AppendLine("                new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.ItemBar, Text = \"Steel Plate\", StatText = \"800 / 1000\", BarFill = 0.8f, BarFillColor = new Color(0, 200, 80), TextColor = Color.White },");
+            sb.AppendLine("                new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.ItemBar, Text = \"Interior Plate\", StatText = \"200 / 500\", BarFill = 0.4f, BarFillColor = new Color(200, 160, 0), TextColor = Color.White },");
+            sb.AppendLine("                new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.ItemBar, Text = \"Computer\", StatText = \"50 / 300\", BarFill = 0.17f, BarFillColor = new Color(220, 30, 0), ShowAlert = true, TextColor = new Color(255, 160, 0) },");
+            sb.AppendLine("                new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Footer, Text = \"Updated: just now\", TextColor = new Color(110, 110, 115) },");
+            sb.AppendLine("            });");
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// Given a call expression like <c>"RenderStarfield(sprites, 512f, 512f, 1f)"</c>,
         /// finds the character offset of the method definition in <paramref name="userCode"/>.
         /// Returns -1 if not found.
+        /// For virtual methods extracted from switch cases (e.g., RenderHeader), searches
+        /// for the corresponding case block if no real method is found.
         /// </summary>
         public static int FindMethodDefinitionOffset(string userCode, string callExpression)
         {
             if (string.IsNullOrWhiteSpace(userCode) || string.IsNullOrWhiteSpace(callExpression))
                 return -1;
 
+            string methodName = ExtractMethodName(callExpression);
+            if (string.IsNullOrEmpty(methodName)) return -1;
+
+            // Strategy 1: Search for a real method definition
+            // "void MethodName(" or "internal static void MethodName(" or "List<MySprite> MethodName(" etc.
+            // Allow optional access modifiers (public, private, internal, protected, static, etc.)
+            var rxDef = new Regex(
+                @"(?:public\s+|private\s+|internal\s+|protected\s+|static\s+)*(?:void|List\s*<\s*MySprite\s*>)\s+" + Regex.Escape(methodName) + @"\s*\(",
+                RegexOptions.Compiled);
+
+            Match match = rxDef.Match(userCode);
+            if (match.Success) return match.Index;
+
+            // Strategy 2: Virtual method from switch case
+            // If the method name starts with "Render" and wasn't found as a real method,
+            // search for the corresponding case block.
+            if (methodName.StartsWith("Render", StringComparison.OrdinalIgnoreCase))
+            {
+                string caseName = methodName.Substring(6); // Remove "Render" prefix
+                // Pattern: case EnumType.CaseName: or case CaseName:
+                var rxCase = new Regex(
+                    @"case\s+(?:[\w\.]+\.)?" + Regex.Escape(caseName) + @"\s*:",
+                    RegexOptions.Compiled | RegexOptions.Singleline);
+                Match caseMatch = rxCase.Match(userCode);
+                if (caseMatch.Success)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[FindMethodDefinitionOffset] Found switch case '{caseName}' for virtual method '{methodName}' at position {caseMatch.Index}");
+                    return caseMatch.Index;
+                }
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Extracts the method name from a call expression.
+        /// </summary>
+        public static string ExtractMethodName(string callExpression)
+        {
+            if (string.IsNullOrWhiteSpace(callExpression)) return null;
+
             // Extract method name from call expression:
             //   "RenderStarfield(sprites, 512f, 512f, 1f)"  → "RenderStarfield"
             //   "sprites = BuildSprites(...)"                → "BuildSprites"
             //   "Main(\"\", UpdateType.None)"                → "Main"
-            string methodName = callExpression;
-            int eq = methodName.IndexOf('=');
-            if (eq >= 0) methodName = methodName.Substring(eq + 1).Trim();
-            int paren = methodName.IndexOf('(');
-            if (paren > 0) methodName = methodName.Substring(0, paren).Trim();
-            // Strip any leading object reference: "surface.DrawHUD" → "DrawHUD"
-            int lastDot = methodName.LastIndexOf('.');
-            if (lastDot >= 0) methodName = methodName.Substring(lastDot + 1);
 
-            if (string.IsNullOrEmpty(methodName)) return -1;
+            // IMPORTANT: Extract the part BEFORE the first '(' to avoid matching
+            // '=' or '.' inside the argument list (e.g., "new Foo { X = Y.Z }")
+            int paren = callExpression.IndexOf('(');
+            if (paren < 0) return null;  // Not a method call
 
-            // Search for a method definition: look for the method signature pattern
-            // "void MethodName(" or "List<MySprite> MethodName(" etc.
-            var rxDef = new Regex(
-                @"(?:void|List\s*<\s*MySprite\s*>)\s+" + Regex.Escape(methodName) + @"\s*\(",
-                RegexOptions.Compiled);
+            string beforeArgs = callExpression.Substring(0, paren).Trim();
 
-            Match match = rxDef.Match(userCode);
-            return match.Success ? match.Index : -1;
+            // Check for assignment: "sprites = BuildSprites" → "BuildSprites"
+            int eq = beforeArgs.IndexOf('=');
+            if (eq >= 0) beforeArgs = beforeArgs.Substring(eq + 1).Trim();
+
+            // Strip object qualifier: "surface.DrawHUD" → "DrawHUD"
+            int lastDot = beforeArgs.LastIndexOf('.');
+            if (lastDot >= 0) beforeArgs = beforeArgs.Substring(lastDot + 1);
+
+            return beforeArgs;
         }
 
         /// <summary>
@@ -466,19 +817,23 @@ namespace SESpriteLCDLayoutTool.Services
         /// method like <c>"DrawHUD(surface)"</c>.  Returns the resulting sprite list
         /// or an error description.  Execution is capped at 5 seconds.
         /// </summary>
-        public static ExecutionResult Execute(string userCode, string callExpression, int tick = 0)
+        public static ExecutionResult Execute(string userCode, string callExpression, int tick = 0,
+            List<SnapshotRowData> capturedRows = null)
         {
             if (string.IsNullOrWhiteSpace(userCode))
                 return Fail("No code provided.");
             if (string.IsNullOrWhiteSpace(callExpression))
                 return Fail("No call expression provided.");
 
+            // Resolve #if/#else/#endif so all conditionally-compiled code is available
+            userCode = StripPreprocessorDirectives(userCode);
+
             var scriptType = DetectScriptType(userCode);
 
             try
             {
                 bool hadClassWrapper;
-                string source = BuildSource(userCode, callExpression, tick, scriptType, out hadClassWrapper);
+                string source = BuildSource(userCode, callExpression, tick, scriptType, out hadClassWrapper, capturedRows);
                 Assembly asm = Compile(source);
                 var result = RunAndConvert(asm);
                 result.ScriptType = scriptType;
@@ -496,17 +851,21 @@ namespace SESpriteLCDLayoutTool.Services
         /// when the script has class-level fields initialised in the constructor
         /// (e.g. arrays, RNG seeds, phase offsets).
         /// </summary>
-        public static ExecutionResult ExecuteWithInit(string userCode, string callExpression)
+        public static ExecutionResult ExecuteWithInit(string userCode, string callExpression,
+            List<SnapshotRowData> capturedRows = null)
         {
             if (string.IsNullOrWhiteSpace(userCode))
                 return Fail("No code provided.");
-            if (string.IsNullOrWhiteSpace(callExpression))
-                return Fail("No call expression provided.");
+            // callExpression may be null — CompileForAnimation auto-detects
+            // all rendering methods for non-PB scripts when null.
+
+            // Resolve #if/#else/#endif so all conditionally-compiled code is available
+            userCode = StripPreprocessorDirectives(userCode);
 
             AnimationContext ctx = null;
             try
             {
-                ctx = CompileForAnimation(userCode, callExpression);
+                ctx = CompileForAnimation(userCode, callExpression, capturedRows);
                 InitAnimation(ctx);
                 var result = RunAnimationFrame(ctx, 32, 0, 0.016);
                 result.ScriptType = ctx.ScriptType;
@@ -555,8 +914,12 @@ namespace SESpriteLCDLayoutTool.Services
         /// For LCD Helper and Mod scripts, a call expression may be null to auto-detect
         /// all rendering methods and call them all each frame.</para>
         /// </summary>
-        public static AnimationContext CompileForAnimation(string userCode, string callExpression = null)
+        public static AnimationContext CompileForAnimation(string userCode, string callExpression = null,
+            List<SnapshotRowData> capturedRows = null)
         {
+            // Resolve #if/#else/#endif so all conditionally-compiled code is available
+            userCode = StripPreprocessorDirectives(userCode);
+
             var scriptType = DetectScriptType(userCode);
 
             // Auto-detect call expressions when none is specified (non-PB).
@@ -586,7 +949,7 @@ namespace SESpriteLCDLayoutTool.Services
                         // No orchestrators — use surface methods, filtered to
                         // top-level only (skip methods called by other detected methods)
                         animCalls = new List<string>();
-                        DetectSurfaceCalls(userCode, animCalls);
+                        DetectSurfaceCalls(userCode, animCalls, capturedRows);
                         animCalls = FilterTopLevelCalls(userCode, animCalls);
                     }
                     if (animCalls.Count == 0)
@@ -594,10 +957,14 @@ namespace SESpriteLCDLayoutTool.Services
                         animCalls = new List<string>();
                         DetectLcdHelperCalls(userCode, animCalls);
                     }
+                    if (animCalls.Count == 0)
+                    {
+                        DetectInlineRenderMethods(userCode, animCalls, capturedRows);
+                    }
                 }
                 else
                 {
-                    animCalls = DetectAllCallExpressions(userCode);
+                    animCalls = DetectAllCallExpressions(userCode, capturedRows);
                 }
                 if (animCalls.Count == 0)
                     throw new InvalidOperationException(
@@ -621,7 +988,7 @@ namespace SESpriteLCDLayoutTool.Services
                     break;
                 case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
-                    source = BuildModSurfaceAnimationSource(userCode, callExpression, stateUpdateCalls);
+                    source = BuildModSurfaceAnimationSource(userCode, callExpression, stateUpdateCalls, capturedRows);
                     break;
                 default: // LcdHelper
                     source = BuildLcdHelperAnimationSource(userCode, callExpression, stateUpdateCalls);
@@ -737,7 +1104,8 @@ namespace SESpriteLCDLayoutTool.Services
         // ── Source construction ───────────────────────────────────────────────
 
         private static string BuildSource(string userCode, string callExpression,
-                                          int tick, ScriptType scriptType, out bool hadClassWrapper)
+                                          int tick, ScriptType scriptType, out bool hadClassWrapper,
+                                          List<SnapshotRowData> capturedRows = null)
         {
             switch (scriptType)
             {
@@ -745,7 +1113,7 @@ namespace SESpriteLCDLayoutTool.Services
                     return BuildPbSource(userCode, callExpression, out hadClassWrapper);
                 case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
-                    return BuildModSurfaceSource(userCode, callExpression, out hadClassWrapper);
+                    return BuildModSurfaceSource(userCode, callExpression, out hadClassWrapper, capturedRows);
                 default:
                     return BuildLcdHelperSource(userCode, callExpression, tick, out hadClassWrapper);
             }
@@ -770,7 +1138,7 @@ namespace SESpriteLCDLayoutTool.Services
                 "VRage.Game.GUI.TextPanel", "VRageMath", "Sandbox.ModAPI.Ingame",
                 "Sandbox.ModAPI", "VRage", "VRage.Game.ModAPI.Ingame",
                 "VRage.ModAPI", "VRage.Game.ModAPI", "VRage.Game.Components",
-                "VRage.Utils", "Sandbox.Game.GameSystems",
+                "VRage.Utils", "Sandbox.Game.GameSystems", "InventoryManagerLight",
                 "System", "System.Collections.Generic",
                 "System.Globalization", "System.Linq", "System.Text", "System.Threading"
             };
@@ -786,6 +1154,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("    using Sandbox.ModAPI.Ingame;");
             sb.AppendLine("    using Sandbox.ModAPI;");
             sb.AppendLine("    using Sandbox.Game.GameSystems;");
+            sb.AppendLine("    using InventoryManagerLight;");
             foreach (string u in userUsings)
                 if (!knownUsings.Contains(u))
                     sb.AppendLine("    using " + u + ";");
@@ -1154,7 +1523,7 @@ namespace SESpriteLCDLayoutTool.Services
         // ── Mod / surface animation source (compile once, run many) ─────────
 
         private static string BuildModSurfaceAnimationSource(string userCode, string callExpression,
-            List<string> stateUpdateCalls = null)
+            List<string> stateUpdateCalls = null, List<SnapshotRowData> capturedRows = null)
         {
             string[] userUsings;
             string stripped = ExtractUsings(userCode, out userUsings);
@@ -1234,11 +1603,13 @@ namespace SESpriteLCDLayoutTool.Services
                     sb.AppendLine("            " + updCall);
                 }
             }
+            // Inject sample queue data when the method is a queue-processor (e.g. ApplyPendingUpdates)
+            string sampleCode = BuildSampleEnqueueCode(userCode, callExpression, capturedRows);
+            if (sampleCode != null) sb.Append(sampleCode);
             // Declare sprites before calls — call expressions may reference it
             // as a parameter (LCD helpers) or assignment target (return methods)
             sb.AppendLine("            var sprites = new List<MySprite>();");
-            foreach (string cl in callLines)
-                sb.AppendLine("            " + cl);
+            EmitCallsWithContextCollection(sb, userCode, callLines, "            ");
             // Only merge SpriteCollector when no call directly manages the sprites
             // list (return-method assignments and LCD-helper parameters already
             // collect sprites; merging would double-count since those methods may
@@ -1262,7 +1633,8 @@ namespace SESpriteLCDLayoutTool.Services
         // ── Mod / surface script source ──────────────────────────────────────
 
         private static string BuildModSurfaceSource(string userCode, string callExpression,
-                                                    out bool hadClassWrapper)
+                                                    out bool hadClassWrapper,
+                                                    List<SnapshotRowData> capturedRows = null)
         {
             string[] userUsings;
             string stripped = ExtractUsings(userCode, out userUsings);
@@ -1272,9 +1644,15 @@ namespace SESpriteLCDLayoutTool.Services
                 stripped = StripConstructors(stripped, className);
 
             // Rewrite the call expression: replace `surface` token with the local stub variable
-            string callLine = callExpression.TrimEnd();
-            if (!callLine.EndsWith(";")) callLine += ";";
-            callLine = Regex.Replace(callLine, @"\bsurface\b", "_stubSurface");
+            var callLines = new List<string>();
+            foreach (string raw in callExpression.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string cl = raw.Trim();
+                if (string.IsNullOrEmpty(cl)) continue;
+                if (!cl.EndsWith(";")) cl += ";";
+                cl = Regex.Replace(cl, @"\bsurface\b", "_stubSurface");
+                callLines.Add(cl);
+            }
 
             var sb = new StringBuilder();
             AppendSharedHeader(sb, userUsings);
@@ -1300,9 +1678,12 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("        public string[][] RunAllData() {");
             sb.AppendLine("            SpriteCollector.Reset();");
             sb.AppendLine("            var _stubSurface = new StubTextSurface(512f, 512f);");
+            // Inject sample queue data when the method is a queue-processor (e.g. ApplyPendingUpdates)
+            string sampleCode = BuildSampleEnqueueCode(userCode, callExpression, capturedRows);
+            if (sampleCode != null) sb.Append(sampleCode);
             sb.AppendLine("            var sprites = new List<MySprite>();");
-            sb.AppendLine("            " + callLine);
-            if (!callLine.Contains("sprites"))
+            EmitCallsWithContextCollection(sb, userCode, callLines, "            ");
+            if (!callLines.Exists(cl => cl.Contains("sprites")))
                 sb.AppendLine("            { var _c = SpriteCollector.Captured; if (_c.Count > 0) sprites.AddRange(_c); }");
             AppendSpriteSerialisation(sb, "sprites");
             sb.AppendLine("        }");
@@ -1411,9 +1792,15 @@ namespace SESpriteLCDLayoutTool.Services
 
                 if (exitCode != 0)
                 {
+                    // Save a copy for diagnostics before deleting
+                    string diagPath = Path.Combine(Path.GetTempPath(), "SELcd_LastCompileError.cs");
+                    try { File.Copy(tempSrc, diagPath, true); } catch { }
+
                     // Strip temp file path from error messages for readability
                     output = output.Replace(tempSrc, "<user code>");
-                    throw new InvalidOperationException("Compilation errors:\n" + output.TrimEnd());
+                    throw new InvalidOperationException(
+                        "Compilation errors:\n" + output.TrimEnd()
+                        + "\n\n[Diagnostic: generated source saved to " + diagPath + "]");
                 }
 
                 // Load as byte array so we can delete the temp DLL immediately
@@ -1577,6 +1964,193 @@ namespace SESpriteLCDLayoutTool.Services
             return "default";
         }
 
+        /// <summary>
+        /// Generates a method-specific <c>LcdSpriteRow</c> initializer based on the
+        /// render method name.  When <paramref name="capturedRows"/> contains data from
+        /// a runtime snapshot, the first row whose kind matches the method name is used
+        /// instead of a placeholder.
+        /// </summary>
+        private static string GuessLcdSpriteRowArg(string methodName,
+            List<SnapshotRowData> capturedRows = null)
+        {
+            string lower = methodName.ToLowerInvariant();
+
+            // Try to find a matching captured row by kind
+            if (capturedRows != null && capturedRows.Count > 0)
+            {
+                SnapshotRowData match = null;
+                foreach (var r in capturedRows)
+                {
+                    string rk = (r.Kind ?? "").ToLowerInvariant();
+                    if (lower.Contains(rk) || rk.Contains(lower.Replace("render", "")))
+                    {
+                        match = r;
+                        break;
+                    }
+                }
+                // Fallback: use the first captured row that isn't a separator
+                if (match == null)
+                {
+                    foreach (var r in capturedRows)
+                    {
+                        if (!string.Equals(r.Kind, "Separator", StringComparison.OrdinalIgnoreCase))
+                        {
+                            match = r;
+                            break;
+                        }
+                    }
+                }
+                if (match != null)
+                    return match.ToCSharpInitializer();
+            }
+
+            if (lower.Contains("header"))
+                return "new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Header, "
+                     + "Text = \"Inventory\", TextColor = Color.White }";
+
+            if (lower.Contains("separator"))
+                return "new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Separator }";
+
+            if (lower.Contains("itembar"))
+                return "new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.ItemBar, "
+                     + "Text = \"Steel Plate\", StatText = \"800 / 1000\", "
+                     + "BarFill = 0.8f, BarFillColor = new Color(0, 200, 80), TextColor = Color.White }";
+
+            if (lower.Contains("item"))
+                return "new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Item, "
+                     + "Text = \"Iron Ingot\", StatText = \"1,500\", "
+                     + "IconSprite = \"MyObjectBuilder_Ingot/Iron\", TextColor = Color.White }";
+
+            if (lower.Contains("bar"))
+                return "new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Bar, "
+                     + "BarFill = 0.6f, BarFillColor = new Color(0, 200, 80) }";
+
+            if (lower.Contains("footer"))
+                return "new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Footer, "
+                     + "Text = \"Updated: just now\", TextColor = new Color(110, 110, 115) }";
+
+            if (lower.Contains("stat"))
+                return "new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Stat, "
+                     + "Text = \"Status: Online\", TextColor = Color.White }";
+
+            // Generic fallback with visible placeholder
+            return "new LcdSpriteRow { RowKind = LcdSpriteRow.Kind.Stat, "
+                 + "Text = \"[placeholder]\", TextColor = Color.White }";
+        }
+
+        /// <summary>
+        /// Emits call lines into RunFrame/RunAllData.  For methods that collect sprites
+        /// into a context parameter (e.g. <c>ctx.Sprites.Add</c>), automatically wraps
+        /// the call with context variable creation and sprite collection so the sprites
+        /// end up in the <c>sprites</c> list.
+        /// </summary>
+        private static void EmitCallsWithContextCollection(StringBuilder sb, string userCode,
+            List<string> callLines, string indent)
+        {
+            int ctxId = 0;
+            foreach (string cl in callLines)
+            {
+                string cleanCall = cl.TrimEnd(';', ' ');
+                int parenPos = cleanCall.IndexOf('(');
+                if (parenPos <= 0) { sb.AppendLine(indent + cl); continue; }
+
+                // Extract method name (handle "sprites = Method(...)" assignment)
+                string beforeParen = cleanCall.Substring(0, parenPos).Trim();
+                string methodName = beforeParen;
+                int eqPos = methodName.LastIndexOf('=');
+                if (eqPos >= 0) methodName = methodName.Substring(eqPos + 1).Trim();
+
+                // Find the method declaration in user code
+                var rxMethod = new Regex(
+                    @"(?:private|public|internal|protected)\s*(?:static\s+)?void\s+" +
+                    Regex.Escape(methodName) + @"\s*\(([^)]*)\)\s*\{",
+                    RegexOptions.Singleline);
+                var match = rxMethod.Match(userCode);
+                if (!match.Success) { sb.AppendLine(indent + cl); continue; }
+
+                // Scan body for param.Sprites.Add pattern
+                int bodyStart = match.Index + match.Length;
+                int bodyEnd = ScanToMatchingBrace(userCode, bodyStart);
+                if (bodyEnd <= bodyStart) { sb.AppendLine(indent + cl); continue; }
+                string body = userCode.Substring(bodyStart, bodyEnd - 1 - bodyStart);
+
+                var rxSpriteAdd = new Regex(@"(\w+)\.Sprites\.Add");
+                var spriteMatch = rxSpriteAdd.Match(body);
+                if (!spriteMatch.Success) { sb.AppendLine(indent + cl); continue; }
+                string ctxParamName = spriteMatch.Groups[1].Value;
+
+                // Find the type and position of that parameter
+                string paramDecl = match.Groups[1].Value;
+                string ctxTypeName = null;
+                int paramIndex = -1;
+                int idx = 0;
+                foreach (string param in paramDecl.Split(','))
+                {
+                    string p = param.Trim();
+                    string[] parts = p.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2 && parts[parts.Length - 1] == ctxParamName)
+                    {
+                        ctxTypeName = parts[0];
+                        paramIndex = idx;
+                        break;
+                    }
+                    idx++;
+                }
+                if (ctxTypeName == null || paramIndex < 0) { sb.AppendLine(indent + cl); continue; }
+
+                string varName = "_ctxIso" + ctxId++;
+
+                // Use an initializer method (e.g. EnsureCtx) if one exists for this type
+                var rxInitMethod = new Regex(
+                    @"(?:private|public|internal|protected)\s*(?:static\s+)?" +
+                    Regex.Escape(ctxTypeName) + @"\s+(\w+)\s*\(\s*" +
+                    Regex.Escape(ctxTypeName) + @"\s+\w+\s*\)");
+                var initMatch = rxInitMethod.Match(userCode);
+                if (initMatch.Success)
+                    sb.AppendLine($"{indent}var {varName} = {initMatch.Groups[1].Value}(null);");
+                else
+                    sb.AppendLine($"{indent}var {varName} = new {ctxTypeName}();");
+
+                // Replace the context parameter in the call with our variable
+                string argsSection = cleanCall.Substring(parenPos + 1);
+                int closeIdx = argsSection.LastIndexOf(')');
+                if (closeIdx >= 0) argsSection = argsSection.Substring(0, closeIdx);
+                var args = SplitCallArgs(argsSection);
+                if (paramIndex < args.Count)
+                    args[paramIndex] = varName;
+
+                string prefix = eqPos >= 0 ? beforeParen.Substring(0, eqPos + 1).TrimEnd() + " " : "";
+                sb.AppendLine($"{indent}{prefix}{methodName}({string.Join(", ", args)});");
+
+                // Collect sprites from context
+                sb.AppendLine($"{indent}if ({varName}.Sprites != null && {varName}.Sprites.Count > 0) sprites.AddRange({varName}.Sprites);");
+            }
+        }
+
+        /// <summary>
+        /// Splits a call-argument string by commas, respecting nested parens/braces/brackets.
+        /// </summary>
+        private static List<string> SplitCallArgs(string argsStr)
+        {
+            var args = new List<string>();
+            int depth = 0;
+            int start = 0;
+            for (int i = 0; i < argsStr.Length; i++)
+            {
+                char c = argsStr[i];
+                if (c == '(' || c == '{' || c == '[') depth++;
+                else if (c == ')' || c == '}' || c == ']') depth--;
+                else if (c == ',' && depth == 0)
+                {
+                    args.Add(argsStr.Substring(start, i - start).Trim());
+                    start = i + 1;
+                }
+            }
+            string last = argsStr.Substring(start).Trim();
+            if (last.Length > 0) args.Add(last);
+            return args;
+        }
+
         // ── Source pre-processing ─────────────────────────────────────────────
 
         private static string ExtractUsings(string code, out string[] extractedUsings)
@@ -1648,6 +2222,77 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
+        /// Resolves C# preprocessor directives (<c>#if</c>/<c>#elif</c>/<c>#else</c>/<c>#endif</c>)
+        /// by keeping <c>#if</c>/<c>#elif</c> branches and dropping <c>#else</c> branches.
+        /// This effectively "defines all symbols", making the maximum amount of user code
+        /// visible for detection and compilation.  Lines that are purely preprocessor
+        /// directives are removed from the output.
+        /// Returns the original string unchanged when no directives are present.
+        /// </summary>
+        private static string StripPreprocessorDirectives(string code)
+        {
+            if (code == null) return code;
+            if (code.IndexOf('#') < 0) return code; // fast-path: no directives
+
+            var sb = new StringBuilder(code.Length);
+            var lines = code.Split('\n');
+            // Stack tracks whether the current nesting level is "active" (content kept).
+            // true  = keep lines  (inside #if / #elif that we accept)
+            // false = drop lines  (inside #else)
+            var activeStack = new Stack<bool>();
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string trimmed = lines[i].TrimStart();
+
+                if (trimmed.StartsWith("#if ") || trimmed.StartsWith("#if\t"))
+                {
+                    // Enter a new #if block — keep the #if branch
+                    activeStack.Push(true);
+                    continue; // don't emit the #if line itself
+                }
+
+                if (trimmed.StartsWith("#elif ") || trimmed.StartsWith("#elif\t"))
+                {
+                    // Treat #elif same as another accepted branch — keep content
+                    if (activeStack.Count > 0) activeStack.Pop();
+                    activeStack.Push(true);
+                    continue;
+                }
+
+                if (trimmed.StartsWith("#else"))
+                {
+                    // Switch to the else branch — drop content
+                    if (activeStack.Count > 0) activeStack.Pop();
+                    activeStack.Push(false);
+                    continue;
+                }
+
+                if (trimmed.StartsWith("#endif"))
+                {
+                    // Exit the current #if block
+                    if (activeStack.Count > 0) activeStack.Pop();
+                    continue;
+                }
+
+                // Keep the line only if all enclosing #if blocks are active
+                bool active = true;
+                foreach (bool a in activeStack)
+                {
+                    if (!a) { active = false; break; }
+                }
+
+                if (active)
+                {
+                    sb.Append(lines[i]);
+                    if (i < lines.Length - 1) sb.Append('\n');
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// If <paramref name="code"/> contains a class definition, extracts its body
         /// (the content between the outermost braces) so the methods can be injected
         /// directly into <c>LcdRunner</c>.  Sets <paramref name="hadWrapper"/> to true
@@ -1661,32 +2306,87 @@ namespace SESpriteLCDLayoutTool.Services
 
         private static string StripClassWrapper(string code, out bool hadWrapper, out string className, out string baseClassName)
         {
-            var classMatch = Regex.Match(code,
+            // Strip outermost namespace wrapper so top-level types are exposed
+            string inner = StripOuterNamespace(code);
+
+            string classPattern =
                 @"(?:public|private|internal|protected)?\s*" +
                 @"(?:static|sealed|abstract|partial)?\s*" +
-                @"class\s+(\w+)[\w\s:,<>]*\{",
-                RegexOptions.Singleline);
+                @"class\s+(\w+)[\w\s:,<>]*\{";
+            var matches = Regex.Matches(inner, classPattern, RegexOptions.Singleline);
 
-            if (!classMatch.Success)
+            if (matches.Count == 0)
             {
                 hadWrapper = false;
                 className = null;
                 baseClassName = null;
-                return code;
+                return inner;
             }
 
-            className = classMatch.Groups[1].Value;
+            // Find the class with the largest body
+            Match bestMatch = null;
+            int bestBodyStart = 0;
+            int bestBodyEnd = 0;
+
+            foreach (Match m in matches)
+            {
+                int bodyStart = m.Index + m.Length;
+                int bodyEnd = ScanToMatchingBrace(inner, bodyStart);
+                if (bestMatch == null || (bodyEnd - bodyStart) > (bestBodyEnd - bestBodyStart))
+                {
+                    bestMatch = m;
+                    bestBodyStart = bodyStart;
+                    bestBodyEnd = bodyEnd;
+                }
+            }
+
+            className = bestMatch.Groups[1].Value;
 
             // Extract base class name from the inheritance list (e.g. ": MySessionComponentBase")
-            string header = classMatch.Value;
+            string header = bestMatch.Value;
             var baseMatch = Regex.Match(header, @":\s*(\w+)");
             baseClassName = baseMatch.Success ? baseMatch.Groups[1].Value : null;
 
-            int bodyStart = classMatch.Index + classMatch.Length;
-            int pos = ScanToMatchingBrace(code, bodyStart);
-
             hadWrapper = true;
-            return code.Substring(bodyStart, pos - 1 - bodyStart);
+
+            // Extract the main class body
+            string body = inner.Substring(bestBodyStart, bestBodyEnd - 1 - bestBodyStart);
+
+            // Preserve sibling type definitions (structs, enums, helper classes)
+            // that appear outside the main class — they become nested types in LcdRunner
+            string before = inner.Substring(0, bestMatch.Index).Trim();
+            string after = inner.Substring(bestBodyEnd).Trim();
+
+            var result = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(before))
+            {
+                result.AppendLine(before);
+                result.AppendLine();
+            }
+            result.Append(body);
+            if (!string.IsNullOrWhiteSpace(after))
+            {
+                result.AppendLine();
+                result.Append(after);
+            }
+            return result.ToString();
+        }
+
+        /// <summary>
+        /// Strips the outermost <c>namespace Xxx { }</c> wrapper, returning the
+        /// content between the braces.  Returns the original code when no namespace
+        /// wrapper is found.
+        /// </summary>
+        private static string StripOuterNamespace(string code)
+        {
+            var nsMatch = Regex.Match(code, @"^\s*namespace\s+[\w.]+\s*\{", RegexOptions.Multiline);
+            if (!nsMatch.Success) return code;
+
+            int bodyStart = nsMatch.Index + nsMatch.Length;
+            int bodyEnd = ScanToMatchingBrace(code, bodyStart);
+            if (bodyEnd <= bodyStart) return code;
+
+            return code.Substring(bodyStart, bodyEnd - 1 - bodyStart);
         }
 
         // ── Brace-aware scanning ─────────────────────────────────────────────
@@ -2041,7 +2741,7 @@ namespace Sandbox.ModAPI.Ingame
         public int MaxInstructionCount { get { return 50000; } }
     }
 
-    public class StubTextSurface : IMyTextSurface, IMyTextPanel
+    public class StubTextSurface : IMyTextSurface, IMyTextPanel, VRage.ModAPI.IMyEntity
     {
         private string _text = """";
         private readonly StubInventory _inv = new StubInventory();
@@ -2066,6 +2766,7 @@ namespace Sandbox.ModAPI.Ingame
         public string CustomName { get; set; }
         public string CustomData { get; set; }
         public string DetailedInfo { get; set; }
+        public string DisplayName { get { return CustomName ?? ""LCD Panel""; } }
         public bool IsWorking { get { return true; } }
         public bool IsFunctional { get { return true; } }
         public long EntityId { get; set; }
@@ -2577,6 +3278,7 @@ namespace Sandbox.ModAPI
     public interface IMyEntities
     {
         void GetEntities(System.Collections.Generic.HashSet<VRage.ModAPI.IMyEntity> entities);
+        VRage.ModAPI.IMyEntity GetEntityById(long entityId);
     }
 
     public interface IMyTerminalActionsHelper
@@ -2611,7 +3313,9 @@ namespace Sandbox.ModAPI
 
     public class StubEntities : IMyEntities
     {
+        private readonly Sandbox.ModAPI.Ingame.StubTextSurface _defaultSurface = new Sandbox.ModAPI.Ingame.StubTextSurface();
         public void GetEntities(System.Collections.Generic.HashSet<VRage.ModAPI.IMyEntity> entities) { entities.Clear(); }
+        public VRage.ModAPI.IMyEntity GetEntityById(long entityId) { return _defaultSurface; }
     }
 
     public class StubTerminalActionsHelper : IMyTerminalActionsHelper
@@ -2706,6 +3410,71 @@ namespace VRage.Utils
 
 // ── Sandbox.Game.GameSystems (stub namespace) ─────────────────────────
 namespace Sandbox.Game.GameSystems { }
+
+// ── InventoryManagerLight — Torch plugin types used by synced LCD code ─
+namespace InventoryManagerLight
+{
+    public class RuntimeConfig
+    {
+        public enum LogLevel { Error = 0, Warn = 1, Info = 2, Debug = 3 }
+        public LogLevel LoggingLevel { get; set; }
+    }
+
+    public static class Log
+    {
+        public static RuntimeConfig.LogLevel CurrentLevel { get; set; }
+    }
+
+    public interface ILogger
+    {
+        void Info(string msg);
+        void Debug(string msg);
+        void Warn(string msg);
+        void Error(string msg);
+        bool IsEnabled(RuntimeConfig.LogLevel level);
+    }
+
+    public class DefaultLogger : ILogger
+    {
+        public DefaultLogger(RuntimeConfig.LogLevel minLevel = RuntimeConfig.LogLevel.Info) { }
+        public bool IsEnabled(RuntimeConfig.LogLevel level) { return false; }
+        public void Info(string msg) { }
+        public void Debug(string msg) { }
+        public void Warn(string msg) { }
+        public void Error(string msg) { }
+    }
+
+    public struct LcdSpriteRow
+    {
+        public enum Kind { Header, Separator, Item, Bar, Stat, Footer, ItemBar }
+        public Kind   RowKind;
+        public string Text;
+        public string StatText;
+        public string IconSprite;
+        public VRageMath.Color  TextColor;
+        public bool   ShowAlert;
+        public float  BarFill;
+        public VRageMath.Color  BarFillColor;
+    }
+
+    public class LcdManager
+    {
+        private static readonly System.Lazy<LcdManager> _lazy = new System.Lazy<LcdManager>(() => new LcdManager());
+        public static LcdManager Instance { get { return _lazy.Value; } }
+        private ILogger _logger;
+        public LcdManager() { _logger = new DefaultLogger(); }
+        public void SetLogger(ILogger logger) { _logger = logger ?? new DefaultLogger(); }
+        public static void Initialize(ILogger logger) { if (_lazy.IsValueCreated) _lazy.Value.SetLogger(logger); }
+        public void EnqueueUpdate(long lcdEntityId, LcdSpriteRow[] rows, bool isAlert = false) { }
+        public void ApplyPendingUpdates() { }
+        public void SetPluginDir(string dir) { }
+        public bool HasPendingSnapshot(long entityId) { return false; }
+        public void RequestSnapshot(long entityId, string name) { }
+        public string LastSnapshotPath { get { return null; } }
+        public string StartLiveFeed(long entityId, string name, int seconds) { return null; }
+        public void StopLiveFeed(long entityId) { }
+    }
+}
 ";
     }
 }

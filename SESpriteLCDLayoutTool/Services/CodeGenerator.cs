@@ -652,6 +652,10 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine($"{accessModifier}List<MySprite> _snapshotSprites = new List<MySprite>();");
             sb.AppendLine();
 
+            // Row data collector — captures the LcdSpriteRow[] that drove rendering
+            sb.AppendLine($"{accessModifier}List<LcdSpriteRow> _snapshotRows = new List<LcdSpriteRow>();");
+            sb.AppendLine();
+
             // Snapshot tag — set this to identify which plugin/script produced the snapshot
             sb.AppendLine("/// <summary>");
             sb.AppendLine("/// Set this to a unique label (e.g. \"MyPulsarHUD\") so the layout tool");
@@ -660,10 +664,38 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine($"{accessModifier}string _snapshotTag = \"\";");
             sb.AppendLine();
 
-            // Collect method
+            // ── Per-sprite incremental collection ────────────────────────────
+            // Use SnapshotBegin() + SnapshotAdd() when sprites are built across
+            // multiple render phases (e.g. text in one pass, bars/icons in another).
+            // This ensures ALL sprites are captured regardless of which phase adds them.
             sb.AppendLine("/// <summary>");
-            sb.AppendLine("/// Call this with your list of MySprite objects after you've built them");
-            sb.AppendLine("/// but before (or after) adding them to the frame.");
+            sb.AppendLine("/// Starts a new snapshot frame.  Clears previously collected sprites and rows.");
+            sb.AppendLine("/// Call once at the TOP of your render method, before any SnapshotAdd calls.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine($"{accessModifier}void SnapshotBegin()");
+            sb.AppendLine("{");
+            sb.AppendLine("    _snapshotSprites.Clear();");
+            sb.AppendLine("    _snapshotRows.Clear();");
+            sb.AppendLine("}");
+            sb.AppendLine();
+
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Adds a single sprite to the snapshot.  Call this alongside every frame.Add()");
+            sb.AppendLine("/// so the snapshot captures ALL sprites — text, bars, icons, separators, etc.");
+            sb.AppendLine("/// <para>Usage:  frame.Add(sprite);  SnapshotAdd(sprite);</para>");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine($"{accessModifier}void SnapshotAdd(MySprite sprite)");
+            sb.AppendLine("{");
+            sb.AppendLine("    _snapshotSprites.Add(sprite);");
+            sb.AppendLine("}");
+            sb.AppendLine();
+
+            // Bulk collect sprites — for code that builds a complete list before drawing
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Bulk-collects ALL sprites at once.  Use this when you have a single");
+            sb.AppendLine("/// List&lt;MySprite&gt; that already contains every sprite (text, bars, icons).");
+            sb.AppendLine("/// If your rendering adds sprites in multiple passes, prefer");
+            sb.AppendLine("/// SnapshotBegin() + SnapshotAdd() instead so nothing is missed.");
             sb.AppendLine("/// </summary>");
             sb.AppendLine($"{accessModifier}void SnapshotCollect(List<MySprite> sprites)");
             sb.AppendLine("{");
@@ -672,17 +704,33 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("}");
             sb.AppendLine();
 
+            // Collect row data — call this alongside SnapshotCollect so the layout tool
+            // can use real game data instead of placeholder values.
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Captures the LcdSpriteRow data that drove rendering so the layout");
+            sb.AppendLine("/// tool can use real game values (item names, amounts, bar fills) instead");
+            sb.AppendLine("/// of placeholder text.  Call this right before or after SnapshotCollect.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine($"{accessModifier}void SnapshotCollectRows(LcdSpriteRow[] rows)");
+            sb.AppendLine("{");
+            sb.AppendLine("    _snapshotRows.Clear();");
+            sb.AppendLine("    if (rows != null)");
+            sb.AppendLine("        _snapshotRows.AddRange(rows);");
+            sb.AppendLine("}");
+            sb.AppendLine();
+
             // Serializer
             sb.AppendLine("/// <summary>");
-            sb.AppendLine("/// Serializes collected sprites into C# MySprite initializer code");
-            sb.AppendLine("/// with all positions/sizes resolved to literal pixel values.");
+            sb.AppendLine("/// Serializes collected sprites AND row data into a snapshot that the");
+            sb.AppendLine("/// layout tool can import.  Sprites become MySprite initializer code;");
+            sb.AppendLine("/// rows are appended as @ROW comments so the tool can replay them.");
             sb.AppendLine("/// Paste the output into the layout tool's \"Paste Layout\" dialog.");
             sb.AppendLine("/// </summary>");
             sb.AppendLine($"{accessModifier}string SerializeSnapshot()");
             sb.AppendLine("{");
             sb.AppendLine("    var sb = new StringBuilder();");
             sb.AppendLine("    sb.AppendLine(\"// ── LCD Snapshot ──\");");
-            sb.AppendLine("    sb.AppendLine($\"// Captured: {DateTime.Now:yyyy-MM-dd HH:mm}  |  Sprites: {_snapshotSprites.Count}\");");
+            sb.AppendLine("    sb.AppendLine($\"// Captured: {DateTime.Now:yyyy-MM-dd HH:mm}  |  Sprites: {_snapshotSprites.Count}  |  Rows: {_snapshotRows.Count}\");");
             sb.AppendLine("    if (!string.IsNullOrEmpty(_snapshotTag))");
             sb.AppendLine("        sb.AppendLine($\"// @SnapshotTag: {_snapshotTag}\");");
             sb.AppendLine("    sb.AppendLine();");
@@ -694,9 +742,9 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("        sb.AppendLine($\"    Type           = SpriteType.{s.Type},\");");
             sb.AppendLine("        sb.AppendLine($\"    Data           = \\\"{s.Data}\\\",\");");
             sb.AppendLine("        if (s.Position.HasValue)");
-                sb.AppendLine("            sb.AppendLine($\"    Position       = new Vector2({s.Position.Value.X:F4}f, {s.Position.Value.Y:F4}f),\");");
-                sb.AppendLine("        if (s.Size.HasValue)");
-                sb.AppendLine("            sb.AppendLine($\"    Size           = new Vector2({s.Size.Value.X:F4}f, {s.Size.Value.Y:F4}f),\");");
+            sb.AppendLine("            sb.AppendLine($\"    Position       = new Vector2({s.Position.Value.X:F1}f, {s.Position.Value.Y:F1}f),\");");
+            sb.AppendLine("        if (s.Size.HasValue)");
+            sb.AppendLine("            sb.AppendLine($\"    Size           = new Vector2({s.Size.Value.X:F1}f, {s.Size.Value.Y:F1}f),\");");
             sb.AppendLine("        if (s.Color.HasValue)");
             sb.AppendLine("            sb.AppendLine($\"    Color          = new Color({s.Color.Value.R}, {s.Color.Value.G}, {s.Color.Value.B}, {s.Color.Value.A}),\");");
             sb.AppendLine("        if (s.FontId != null)");
@@ -706,6 +754,28 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("        sb.AppendLine(\"});\");");
             sb.AppendLine("        sb.AppendLine();");
             sb.AppendLine("    }");
+            sb.AppendLine();
+            // Row data section — encoded as comments so it survives paste workflows
+            sb.AppendLine("    // Serialize captured row data");
+            sb.AppendLine("    if (_snapshotRows.Count > 0)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        sb.AppendLine();");
+            sb.AppendLine("        sb.AppendLine(\"// ── Captured Row Data ──\");");
+            sb.AppendLine("        sb.AppendLine(\"// The layout tool uses these to replay render methods with real game values.\");");
+            sb.AppendLine("        sb.AppendLine(\"// Format: @ROW:Kind|Text|StatText|IconSprite|R,G,B,A|BarFill|R,G,B,A|ShowAlert\");");
+            sb.AppendLine("        foreach (var r in _snapshotRows)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            string text     = (r.Text ?? \"\").Replace(\"|\", \"\\\\|\");");
+            sb.AppendLine("            string statText = (r.StatText ?? \"\").Replace(\"|\", \"\\\\|\");");
+            sb.AppendLine("            string icon     = (r.IconSprite ?? \"\").Replace(\"|\", \"\\\\|\");");
+            sb.AppendLine("            string tc       = $\"{r.TextColor.R},{r.TextColor.G},{r.TextColor.B},{r.TextColor.A}\";");
+            sb.AppendLine("            string bf       = r.BarFill.ToString(\"F4\");");
+            sb.AppendLine("            string bfc      = $\"{r.BarFillColor.R},{r.BarFillColor.G},{r.BarFillColor.B},{r.BarFillColor.A}\";");
+            sb.AppendLine("            string alert    = r.ShowAlert ? \"1\" : \"0\";");
+            sb.AppendLine("            sb.AppendLine($\"// @ROW:{r.RowKind}|{text}|{statText}|{icon}|{tc}|{bf}|{bfc}|{alert}\");");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine();
             sb.AppendLine("    return sb.ToString();");
             sb.AppendLine("}");
         }
@@ -1037,7 +1107,7 @@ namespace SESpriteLCDLayoutTool.Services
             // (e.g. "frame.Add(" or "sprites.Add(") so the round-trip preserves
             // the user's original calling convention.
             string wrapperPrefix = DetectWrapperPrefix(original, firstMatchPos);
-            string wrapperSuffix = wrapperPrefix.Length > 0 ? ");" : ";";
+            string wrapperSuffix = (wrapperPrefix.Length > 0 && wrapperPrefix.TrimEnd().EndsWith("(")) ? ");" : ";";
 
             // Generate just the sprite definitions with the detected indentation
             var sb = new StringBuilder();

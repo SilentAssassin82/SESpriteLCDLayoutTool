@@ -38,6 +38,7 @@ namespace SESpriteLCDLayoutTool
         private TextBox       _txtText;
         private ComboBox      _cmbFont;
         private ComboBox      _cmbAlignment;
+        private Label         _lblRuntimeData;
         private ListBox       _lstLayers;
 
         // ── Code panel ────────────────────────────────────────────────────────────
@@ -46,6 +47,7 @@ namespace SESpriteLCDLayoutTool
         private TextBox     _execCallBox;
         private Label       _execResultLabel;
         private ListBox     _lstDetectedCalls;
+        private List<DetectedMethodInfo> _detectedMethods;
 
         // ── Split containers (distances set on Load) ──────────────────────────────
         private SplitContainer _mainSplit, _workSplit, _topSplit;
@@ -78,6 +80,7 @@ namespace SESpriteLCDLayoutTool
         // debounce delay so external editors see the change in near-real-time.
         private System.Windows.Forms.Timer _writeBackTimer;
         private string _pendingWriteBack;
+        private int _lastWriteBackHash;
 
         // ── Clipboard watcher (PB workflow) ──────────────────────────────────────
         private System.Windows.Forms.Timer _clipboardTimer;
@@ -573,6 +576,12 @@ namespace SESpriteLCDLayoutTool
                 Font          = new Font("Segoe UI", 8.5f),
                 SelectionMode = SelectionMode.MultiExtended,
             };
+            var layerTooltip = new ToolTip();
+            layerTooltip.SetToolTip(_lstLayers,
+                "Layer order (bottom → top)\n" +
+                "⊘ = hidden  |  [REF] = reference layout  |  ⚠ = game data  |  · = untracked\n" +
+                "// variable = code variable name\n" +
+                "Double-click to jump to code definition");
             _lstLayers.SelectedIndexChanged += OnLayerListSelectionChanged;
             _lstLayers.MouseDoubleClick  += OnLayerListDoubleClick;
             _lstLayers.MouseDown += (s, e) =>
@@ -674,6 +683,20 @@ namespace SESpriteLCDLayoutTool
             };
             flow.Controls.Add(_exprColorPanel);
 
+            // ── Runtime Data Indicator ─────────────────────────────────────────
+            _lblRuntimeData = new Label
+            {
+                Text      = "\u26A0 Game data — edit position/color/size, not text",
+                Width     = 230,
+                Height    = 36,
+                ForeColor = Color.FromArgb(255, 200, 80),
+                Font      = new Font("Segoe UI", 7.5f, FontStyle.Italic),
+                BackColor = Color.FromArgb(60, 50, 20),
+                Padding   = new Padding(4, 2, 4, 2),
+                Visible   = false,
+            };
+            flow.Controls.Add(_lblRuntimeData);
+
             // ── Text Properties ───────────────────────────────────────────────────
             _grpText = new GroupBox
             {
@@ -756,16 +779,70 @@ namespace SESpriteLCDLayoutTool
 
             if (_layout == null) { SetStatus("No layout loaded."); return; }
 
+            // When a one-way live source owns the canvas, don't overwrite it.
+            // If we have captured row data, re-render from that instead.
+            if (IsOneWayStreaming)
+            {
+                if (_layout?.CapturedRows?.Count > 0)
+                    AutoExecuteWithCapturedRows(null, _layout.CapturedRows.Count);
+                else
+                    SetStatus("Pause the live stream to execute code manually.");
+                return;
+            }
+
             string code = _codeBox.Text;
             if (string.IsNullOrWhiteSpace(code)) { SetStatus("Code panel is empty."); return; }
 
             // Use stored call expression, or auto-detect from the code
             string call = _execCallBox.Text.Trim();
+
+            // Virtual switch-case methods (e.g. RenderHeader) cannot be compiled
+            // as direct calls — redirect to isolate mode which handles them.
+            if (!string.IsNullOrWhiteSpace(call) && IsVirtualSwitchCaseCall(call))
+            {
+                IsolateCallSprites(call);
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(call))
             {
                 call = CodeExecutor.DetectCallExpression(code);
                 if (call == null)
                 {
+                    // Fallback: if the code contains bare frame.Add(new MySprite patterns
+                    // (e.g. snapshot output from a Torch plugin), parse sprites directly
+                    // instead of requiring a method wrapper.
+                    if (code.Contains("new MySprite"))
+                    {
+                        var parsed = Services.CodeParser.Parse(code);
+                        if (parsed.Count > 0)
+                        {
+                            PushUndo();
+
+                            // SNAPSHOT PRESERVATION: If snapshot exists, merge positions with parsed code
+                            bool hadImportSnapshot = _lastLiveFrame != null && _lastLiveFrame.Count > 0;
+                            if (hadImportSnapshot)
+                            {
+                                var mergeResult = SnapshotMerger.Merge(parsed, _lastLiveFrame, applyColors: false);
+                                foreach (var sp in parsed)
+                                {
+                                    if (sp.ImportBaseline != null)
+                                        sp.ImportBaseline = sp.CloneValues();
+                                }
+                            }
+
+                            _layout.Sprites.Clear();
+                            _layout.Sprites.AddRange(parsed);
+                            _canvas.CanvasLayout = _layout;
+                            _canvas.SelectedSprite = parsed.Count > 0 ? parsed[0] : null;
+                            RefreshLayerList();
+                            _execResultLabel.Text      = "✔ " + parsed.Count + " sprites [Import]";
+                            _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
+                            SetStatus($"Imported {parsed.Count} sprite(s) from pasted code" + (hadImportSnapshot ? " (snapshot positions preserved)" : ""));
+                            return;
+                        }
+                    }
+
                     var st = CodeExecutor.DetectScriptType(code);
                     string hint = st == ScriptType.ProgrammableBlock
                         ? "Could not auto-detect a Main() entry point in this PB script.\n\n"
@@ -790,7 +867,7 @@ namespace SESpriteLCDLayoutTool
             _execResultLabel.ForeColor = Color.FromArgb(200, 180, 60);
             Refresh();
 
-            var result = CodeExecutor.ExecuteWithInit(code, call);
+            var result = CodeExecutor.ExecuteWithInit(code, call, _layout?.CapturedRows);
             if (!result.Success)
             {
                 _execResultLabel.Text      = "✗ Error";
@@ -808,13 +885,33 @@ namespace SESpriteLCDLayoutTool
 
             PushUndo();
 
+            // SNAPSHOT PRESERVATION: If there's a captured snapshot (_lastLiveFrame),
+            // merge its positions with the execution results so snapshot edits survive Execute Code
+            bool hadSnapshot = _lastLiveFrame != null && _lastLiveFrame.Count > 0;
+            if (hadSnapshot)
+            {
+                var mergeResult = SnapshotMerger.Merge(result.Sprites, _lastLiveFrame, applyColors: false);
+                // Update execution results to use merged positions
+                foreach (var sp in result.Sprites)
+                {
+                    if (sp.ImportBaseline != null)
+                        sp.ImportBaseline = sp.CloneValues();
+                }
+            }
+
+            // Tag text sprites that originate from runtime game data
+            TagSnapshotSprites(result.Sprites);
+
             // When source-tracked sprites exist, merge execution results as a
             // snapshot so round-trip editing and click-to-jump continue to work.
             // Skip merge for Pulsar/Mod scripts — their sprites come from runtime
             // surface.DrawFrame() calls and don't match CodeParser's static analysis,
             // causing all execution sprites to be added as orphans (doubling).
+            // ALSO skip when we just applied snapshot positions (hadSnapshot=true)
+            // because the second merge would overwrite the snapshot positions.
             bool useFullReplacement = result.ScriptType == ScriptType.PulsarPlugin
-                                   || result.ScriptType == ScriptType.ModSurface;
+                                   || result.ScriptType == ScriptType.ModSurface
+                                   || hadSnapshot;
 
             if (!useFullReplacement && _layout.OriginalSourceCode != null)
             {
@@ -1166,6 +1263,12 @@ namespace SESpriteLCDLayoutTool
                 BorderStyle = BorderStyle.None,
                 Font        = new Font("Consolas", 9f),
             };
+            var callsTooltip = new ToolTip();
+            callsTooltip.SetToolTip(_lstDetectedCalls,
+                "Auto-detected rendering methods in your code\n" +
+                "Single-click to populate call box\n" +
+                "Double-click to execute and show sprites\n" +
+                "Right-click for Execute & Isolate and Focused Animation");
             _lstDetectedCalls.SelectedIndexChanged += (s, e) =>
             {
                 if (_lstDetectedCalls.SelectedItem != null)
@@ -1481,12 +1584,21 @@ namespace SESpriteLCDLayoutTool
                         _numRotScale.Value        = (decimal)Math.Round(ClampF(sp.Rotation, -7f, 7f), 3);
                     }
 
-                    _colorPreview.BackColor = sp.Color;
-                    _trackAlpha.Value       = sp.ColorA;
-                    _lblAlpha.Text          = sp.ColorA.ToString();
-                }
+                        _colorPreview.BackColor = sp.Color;
+                        _trackAlpha.Value       = sp.ColorA;
+                        _lblAlpha.Text          = sp.ColorA.ToString();
 
-                // Sync layer list selection
+                        // Show runtime-data warning when the selected sprite was populated by game data
+                        if (_lblRuntimeData != null)
+                            _lblRuntimeData.Visible = sp.IsSnapshotData;
+                    }
+                    else
+                    {
+                        if (_lblRuntimeData != null)
+                            _lblRuntimeData.Visible = false;
+                    }
+
+                        // Sync layer list selection
                 if (sp != null && _layout != null)
                 {
                     var highlighted = _canvas.HighlightedSprites;
@@ -1498,7 +1610,7 @@ namespace SESpriteLCDLayoutTool
                         foreach (var sprite in _layout.Sprites)
                         {
                             if (!highlighted.Contains(sprite)) continue;
-                            if (sprite == sp) { _lstLayers.SelectedIndex = listIdx; found = true; break; }
+                            if (sprite == sp) { if (listIdx < _lstLayers.Items.Count) _lstLayers.SelectedIndex = listIdx; found = true; break; }
                             listIdx++;
                         }
                         if (!found) _lstLayers.SelectedIndex = -1;
@@ -1547,7 +1659,7 @@ namespace SESpriteLCDLayoutTool
             }
 
             ClearCodeDirty();
-            RefreshCode();
+            RefreshCode(writeBack: true);
             UpdateStatus();
         }
 
@@ -1606,7 +1718,7 @@ namespace SESpriteLCDLayoutTool
             _canvas.Invalidate();
             RefreshLayerList();
             ClearCodeDirty();
-            RefreshCode();
+            RefreshCode(writeBack: true);
         }
 
         private void OnAlphaChanged(object sender, EventArgs e)
@@ -1617,7 +1729,7 @@ namespace SESpriteLCDLayoutTool
             _canvas.SelectedSprite.ColorA = _trackAlpha.Value;
             _canvas.Invalidate();
             ClearCodeDirty();
-            RefreshCode();
+            RefreshCode(writeBack: true);
         }
 
         private void OnColorClick(object sender, EventArgs e)
@@ -1634,7 +1746,7 @@ namespace SESpriteLCDLayoutTool
                 _colorPreview.BackColor = _canvas.SelectedSprite.Color;
                 _canvas.Invalidate();
                 ClearCodeDirty();
-                RefreshCode();
+                RefreshCode(writeBack: true);
             }
         }
 
@@ -1749,21 +1861,43 @@ namespace SESpriteLCDLayoutTool
         }
 
         /// <summary>
+        /// Returns true when the call expression refers to a virtual switch-case
+        /// method (e.g. RenderHeader) that has no real method body in the user's
+        /// source code.  These expressions are UI-only and must not be passed to
+        /// the compiler.
+        /// </summary>
+        private bool IsVirtualSwitchCaseCall(string callExpression)
+        {
+            if (_detectedMethods == null || string.IsNullOrWhiteSpace(callExpression))
+                return false;
+            var info = _detectedMethods.FirstOrDefault(m => m.CallExpression == callExpression);
+            return info != null && info.Kind == MethodKind.SwitchCase;
+        }
+
+        /// <summary>
         /// Re-executes the current OriginalSourceCode to refresh sprite values on the canvas.
         /// Used after expression color edits.
         /// </summary>
         private void TryReExecuteCode()
         {
             if (_layout?.OriginalSourceCode == null) return;
+            if (IsOneWayStreaming) return;
 
             var callExpr = _execCallBox?.Text?.Trim();
             if (string.IsNullOrEmpty(callExpr)) callExpr = null;
 
+            // Virtual switch-case methods (e.g. RenderHeader) have no real method
+            // body — pass null so the compiler auto-detects the real render method.
+            if (callExpr != null && IsVirtualSwitchCaseCall(callExpr))
+                callExpr = null;
+
             try
             {
-                var result = CodeExecutor.Execute(_layout.OriginalSourceCode, callExpr);
+                var result = CodeExecutor.Execute(_layout.OriginalSourceCode, callExpr, capturedRows: _layout?.CapturedRows);
                 if (result.Success && result.Sprites.Count > 0)
                 {
+                    TagSnapshotSprites(result.Sprites);
+
                     // Collect source-tracked sprites for merge
                     var editable = new List<SpriteEntry>();
                     foreach (var sp in _layout.Sprites)
@@ -1784,7 +1918,7 @@ namespace SESpriteLCDLayoutTool
 
                     _canvas.Invalidate();
                     RefreshLayerList();
-                    RefreshCode();
+                    RefreshCode(writeBack: true);
                     RefreshExpressionColors();
 
                     // Re-sync the colour swatch and alpha slider for the selected sprite
@@ -1834,16 +1968,25 @@ namespace SESpriteLCDLayoutTool
         }
 
         /// <summary>
-        /// Returns all sprites currently selected in the layer list.
+        /// Returns all sprites currently selected (from layer list or canvas multi-select).
         /// </summary>
         private List<SpriteEntry> GetSelectedSprites()
         {
             var list = new List<SpriteEntry>();
             if (_layout == null) return list;
+
+            // Include canvas multi-select (Shift+click on canvas)
+            if (_canvas?.SelectedSprites != null && _canvas.SelectedSprites.Count > 0)
+            {
+                foreach (var sp in _canvas.SelectedSprites)
+                    if (!list.Contains(sp)) list.Add(sp);
+            }
+
+            // Include layer list multi-select
             foreach (int idx in _lstLayers.SelectedIndices)
             {
                 var sp = SpriteFromLayerIndex(idx);
-                if (sp != null) list.Add(sp);
+                if (sp != null && !list.Contains(sp)) list.Add(sp);
             }
             return list;
         }
@@ -1872,8 +2015,23 @@ namespace SESpriteLCDLayoutTool
             string code = _codeBox.Text.Replace("\r", "");
             int targetPos = -1;
 
-            // Count non-ref, source-tracked sprites before this one (for round-trip ordinal)
+            // Count non-ref, source-tracked sprites before this one.
+            // Use SOURCE ORDER (by SourceStart) rather than layout index order so
+            // switch-case patterns where the layout reorders sprites (e.g. ItemBar
+            // sprites rendered before Header) still jump to the correct code.
             int nonRefOrdinal = 0;
+            int sourceOrdinal = -1;
+            if (!sprite.IsReferenceLayout && sprite.SourceStart >= 0)
+            {
+                sourceOrdinal = 0;
+                foreach (var sp in _layout.Sprites)
+                {
+                    if (sp == sprite || sp.IsReferenceLayout || sp.SourceStart < 0) continue;
+                    if (sp.SourceStart < sprite.SourceStart)
+                        sourceOrdinal++;
+                }
+            }
+            // Layout-index ordinal as fallback for non-source-tracked sprites
             for (int i = 0; i < spriteIdx; i++)
                 if (!_layout.Sprites[i].IsReferenceLayout && _layout.Sprites[i].SourceStart >= 0)
                     nonRefOrdinal++;
@@ -1892,18 +2050,150 @@ namespace SESpriteLCDLayoutTool
                 targetPos = code.IndexOf(marker, StringComparison.Ordinal);
             }
 
-            // Strategy 3: Nth "new MySprite" / "MySprite.Create" occurrence (PatchOriginalSource / no markers)
-            if (targetPos < 0 && !sprite.IsReferenceLayout && sprite.SourceStart >= 0)
+            // Strategy 3: Direct SourceStart lookup — find the sprite pattern nearest
+            // to the sprite's known code position.  SourceStart was computed from
+            // OriginalSourceCode, so convert via line number to tolerate drift when
+            // PatchOriginalSource changes value lengths in the displayed code.
+            if (targetPos < 0 && !sprite.IsReferenceLayout && sprite.SourceStart >= 0
+                && _layout?.OriginalSourceCode != null)
             {
-                int pos = -1;
-                for (int n = 0; n <= nonRefOrdinal; n++)
+                string originalSrc = _layout.OriginalSourceCode;
+                int ssPos = Math.Min(sprite.SourceStart, originalSrc.Length - 1);
+                if (ssPos >= 0)
                 {
-                    int a = code.IndexOf("new MySprite", pos + 1, StringComparison.Ordinal);
-                    int b = code.IndexOf("MySprite.Create", pos + 1, StringComparison.Ordinal);
-                    if (a < 0 && b < 0) { pos = -1; break; }
-                    pos = (a >= 0 && b >= 0) ? Math.Min(a, b) : (a >= 0 ? a : b);
+                    // Count line number in original source at SourceStart.
+                    int lineNum = 0;
+                    for (int i = 0; i < ssPos; i++)
+                        if (originalSrc[i] == '\n') lineNum++;
+
+                    // Find the start and end of that line in the \n-only displayed code
+                    int lineStart2 = 0;
+                    for (int n = 0; n < lineNum && lineStart2 < code.Length; n++)
+                    {
+                        int nl = code.IndexOf('\n', lineStart2);
+                        if (nl < 0) { lineStart2 = code.Length; break; }
+                        lineStart2 = nl + 1;
+                    }
+                    int lineEnd2 = code.IndexOf('\n', lineStart2);
+                    if (lineEnd2 < 0) lineEnd2 = code.Length;
+
+                    // Search ONLY on this line for a sprite creation pattern.
+                    // This eliminates any possibility of selecting an adjacent line's
+                    // sprite when patching changes line lengths.
+                    int a = code.IndexOf("new MySprite", lineStart2, lineEnd2 - lineStart2, StringComparison.Ordinal);
+                    int b = code.IndexOf("MySprite.Create", lineStart2, lineEnd2 - lineStart2, StringComparison.Ordinal);
+                    int found = (a >= 0 && b >= 0) ? Math.Min(a, b) : (a >= 0 ? a : b);
+                    if (found >= 0)
+                        targetPos = found;
                 }
-                if (pos >= 0) targetPos = pos;
+            }
+
+            // Strategy 4: Search by sprite text/data content.
+            // For sprites that couldn't be fully parsed (SourceStart = -1), e.g., due to
+            // expression arguments like "0.75f * scale", search for the sprite's unique
+            // text or data value in the code.  This finds CreateText("!", ...) by its "!"
+            // text content or texture sprites by their sprite name.
+            if (targetPos < 0 && !sprite.IsReferenceLayout)
+            {
+                string searchContent = sprite.Type == SpriteEntryType.Text ? sprite.Text : sprite.SpriteName;
+                if (!string.IsNullOrEmpty(searchContent) && searchContent.Length >= 1)
+                {
+                    // Build specific patterns based on sprite type
+                    // For TEXT: look for CreateText("content" or Data = "content"
+                    // For TEXTURE: look for CreateSprite("content" or Data = "content" or "content" in object init
+                    string textPattern = sprite.Type == SpriteEntryType.Text
+                        ? $"CreateText(\"{searchContent}\""
+                        : $"\"{searchContent}\"";
+
+                    int pos = code.IndexOf(textPattern, StringComparison.Ordinal);
+
+                    // Fallback: search for quoted content with = "content" pattern
+                    if (pos < 0)
+                    {
+                        string pattern2 = $"= \"{searchContent}\"";
+                        pos = code.IndexOf(pattern2, StringComparison.Ordinal);
+                    }
+
+                    // Final fallback: just the quoted string
+                    if (pos < 0)
+                    {
+                        string pattern3 = $"\"{searchContent}\"";
+                        pos = code.IndexOf(pattern3, StringComparison.Ordinal);
+                    }
+
+                    // Find the sprite creation context around this match
+                    if (pos >= 0)
+                    {
+                        // Walk back to find "new MySprite" or "MySprite.Create" before this position
+                        int searchStart = Math.Max(0, pos - 200);
+                        int bestMatch = -1;
+                        int sPos = searchStart;
+                        while (sPos < pos)
+                        {
+                            int a = code.IndexOf("new MySprite", sPos, pos - sPos, StringComparison.Ordinal);
+                            int b = code.IndexOf("MySprite.Create", sPos, pos - sPos, StringComparison.Ordinal);
+                            int f = (a >= 0 && b >= 0) ? Math.Min(a, b) : (a >= 0 ? a : b);
+                            if (f < 0) break;
+                            bestMatch = f; // Keep the last (closest to the text) match
+                            sPos = f + 1;
+                        }
+                        if (bestMatch >= 0) targetPos = bestMatch;
+                    }
+                }
+            }
+
+            // Strategy 5: Find sprite by content, then jump to the Nth matching sprite creation
+            // NOTE: After sorting by SourceStart, layout order ≠ code order for unparsed sprites.
+            // We first find the sprite's content in code, then count how many sprite creations
+            // appear BEFORE that position to determine the correct ordinal.
+            if (targetPos < 0 && !sprite.IsReferenceLayout)
+            {
+                string searchContent = sprite.Type == SpriteEntryType.Text ? sprite.Text : sprite.SpriteName;
+                if (!string.IsNullOrEmpty(searchContent) && searchContent.Length >= 1)
+                {
+                    // Find ALL occurrences of this content in sprite creation patterns
+                    var contentPositions = new List<int>();
+                    string escaped = searchContent.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                    string dataLiteral = "\"" + escaped + "\"";
+
+                    int searchPos = 0;
+                    while (searchPos < code.Length)
+                    {
+                        int dPos = code.IndexOf(dataLiteral, searchPos, StringComparison.Ordinal);
+                        if (dPos < 0) break;
+
+                        // Check it's inside a sprite creation by looking backward for "new MySprite" or "MySprite.Create"
+                        int lookStart = Math.Max(0, dPos - 300);
+                        int nms = code.LastIndexOf("new MySprite", dPos, dPos - lookStart, StringComparison.Ordinal);
+                        int msc = code.LastIndexOf("MySprite.Create", dPos, dPos - lookStart, StringComparison.Ordinal);
+                        int spriteStart = Math.Max(nms, msc);
+
+                        if (spriteStart >= 0)
+                            contentPositions.Add(spriteStart);
+
+                        searchPos = dPos + dataLiteral.Length;
+                    }
+
+                    if (contentPositions.Count > 0)
+                    {
+                        // Count which occurrence of this content type this sprite is in LAYOUT order
+                        // (sprites with same content are still in relative layout order)
+                        int targetOcc = 0;
+                        foreach (var sp in _layout.Sprites)
+                        {
+                            if (sp == sprite) break;
+                            string d = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
+                            if (d == searchContent) targetOcc++;
+                        }
+
+                        if (targetOcc < contentPositions.Count)
+                        {
+                            // Sort by code position and pick the targetOcc-th one
+                            contentPositions.Sort();
+                            targetPos = contentPositions[targetOcc];
+                        }
+                    }
+                }
             }
 
             if (targetPos < 0) return;
@@ -1912,24 +2202,63 @@ namespace SESpriteLCDLayoutTool
             int lineStart = targetPos;
             while (lineStart > 0 && code[lineStart - 1] != '\n') lineStart--;
 
-            // Find block end at "});" or next blank line
-            int blockEnd = code.IndexOf("})", targetPos, StringComparison.Ordinal);
-            if (blockEnd >= 0)
+            // Find sprite block end more precisely:
+            // For object initializer: find first "})" or "};" after targetPos
+            // For constructor: find first ");" after targetPos
+            // Stop at the earliest match to avoid selecting enclosing blocks
+            int blockEnd = -1;
+
+            // Look for object initializer end: "})" or "};"
+            int initEnd1 = code.IndexOf("})", targetPos, StringComparison.Ordinal);
+            int initEnd2 = code.IndexOf("};", targetPos, StringComparison.Ordinal);
+
+            // Look for constructor call end: ");"
+            int ctorEnd = code.IndexOf(");", targetPos, StringComparison.Ordinal);
+
+            // Take the EARLIEST valid match (closest to targetPos)
+            if (initEnd1 >= 0) blockEnd = initEnd1 + 2; // Include "})"
+            if (initEnd2 >= 0 && (blockEnd < 0 || initEnd2 < initEnd1))
+                blockEnd = initEnd2 + 2; // Include "};"
+            if (ctorEnd >= 0 && (blockEnd < 0 || ctorEnd < (initEnd1 >= 0 ? initEnd1 : int.MaxValue)))
             {
-                blockEnd += 2;
-                // Include trailing semicolon and newline if present
-                if (blockEnd < code.Length && code[blockEnd] == ';') blockEnd++;
-                if (blockEnd < code.Length && code[blockEnd] == '\n') blockEnd++;
+                // Only use constructor end if it comes before initializer end
+                // and is within reasonable distance (avoid matching method call further down)
+                if (blockEnd < 0 || ctorEnd + 2 < blockEnd)
+                    blockEnd = ctorEnd + 2; // Include ");"
             }
-            else
+
+            if (blockEnd < 0)
             {
+                // Fallback: single line
                 blockEnd = code.IndexOf('\n', targetPos);
                 if (blockEnd < 0) blockEnd = code.Length;
                 else blockEnd++;
             }
+            else
+            {
+                // Include trailing newline if present
+                if (blockEnd < code.Length && code[blockEnd] == '\n') blockEnd++;
+            }
+
+            // Convert positions from the \r-stripped text to line numbers,
+            // then use GetFirstCharIndexFromLine so the selection works regardless
+            // of how RichTextBox maps line endings internally.
+            int startLineNum = 0;
+            for (int i = 0; i < lineStart; i++)
+                if (code[i] == '\n') startLineNum++;
+
+            int endLineNum = startLineNum;
+            for (int i = lineStart; i < blockEnd && i < code.Length; i++)
+                if (code[i] == '\n') endLineNum++;
 
             _codeBox.Focus();
-            _codeBox.Select(lineStart, blockEnd - lineStart);
+            int selStart = _codeBox.GetFirstCharIndexFromLine(startLineNum);
+            if (selStart < 0) selStart = 0;
+            int selEnd = (endLineNum + 1 < _codeBox.Lines.Length)
+                ? _codeBox.GetFirstCharIndexFromLine(endLineNum + 1)
+                : _codeBox.TextLength;
+            if (selEnd < 0) selEnd = _codeBox.TextLength;
+            _codeBox.Select(selStart, selEnd - selStart);
             _codeBox.ScrollToCaret();
         }
 
@@ -1941,30 +2270,43 @@ namespace SESpriteLCDLayoutTool
         {
             if (_codeBox == null || string.IsNullOrWhiteSpace(callExpression)) return;
 
-            // RichTextBox.Text returns \r\n but Select() counts each line break
-            // as a single character.  Strip \r so positions match Select coords.
-            string code = _codeBox.Text.Replace("\r", "");
-            int offset = CodeExecutor.FindMethodDefinitionOffset(code, callExpression);
+            // First, ensure we're displaying source code that contains the method definition
+            string searchCode = _codeBox.Text.Replace("\r", "");
+            int offset = CodeExecutor.FindMethodDefinitionOffset(searchCode, callExpression);
+
+            // If not found and we have OriginalSourceCode, switch to show it
+            if (offset < 0 && _layout?.OriginalSourceCode != null)
+            {
+                SetCodeText(_layout.OriginalSourceCode);
+                searchCode = _codeBox.Text.Replace("\r", "");
+                offset = CodeExecutor.FindMethodDefinitionOffset(searchCode, callExpression);
+            }
+
             if (offset < 0)
             {
-                SetStatus($"Could not find definition of method in code panel.");
+                SetStatus($"Could not find definition of '{callExpression}' in code.");
                 return;
             }
 
             // Find the start of the line containing the method definition
-            int lineStart = code.LastIndexOf('\n', Math.Max(0, offset - 1));
+            int lineStart = searchCode.LastIndexOf('\n', Math.Max(0, offset - 1));
             lineStart = lineStart < 0 ? 0 : lineStart + 1;
 
-            // Find the end of the signature line
-            int lineEnd = code.IndexOf('\n', offset);
-            if (lineEnd < 0) lineEnd = code.Length;
+            // Find the end of the method signature (opening brace or line end)
+            int sigEnd = searchCode.IndexOf('{', offset);
+            if (sigEnd < 0) sigEnd = searchCode.IndexOf('\n', offset);
+            if (sigEnd < 0) sigEnd = searchCode.Length;
+
+            // Calculate selection length
+            int selectionLength = sigEnd - lineStart;
 
             _suppressCodeBoxEvents = true;
             try
             {
                 _codeBox.Focus();
-                _codeBox.Select(lineStart, lineEnd - lineStart);
+                _codeBox.Select(lineStart, selectionLength);
                 _codeBox.ScrollToCaret();
+                SetStatus($"Found: {callExpression}");
             }
             finally
             {
@@ -2003,9 +2345,16 @@ namespace SESpriteLCDLayoutTool
 
                     string prefix = s.IsHidden ? "⊘ "
                         : s.IsReferenceLayout ? "[REF] "
+                        : s.IsSnapshotData ? "\u26A0 "
                         : s.SourceStart < 0 ? "· "
                         : "";
-                    _lstLayers.Items.Add(prefix + s.DisplayName);
+
+                    // Append variable name annotation when present (shows code structure)
+                    string suffix = !string.IsNullOrEmpty(s.VariableName) 
+                        ? $"  // {s.VariableName}"
+                        : "";
+
+                    _lstLayers.Items.Add(prefix + s.DisplayName + suffix);
                     listSprites.Add(s);
                 }
 
@@ -2025,13 +2374,25 @@ namespace SESpriteLCDLayoutTool
                     if (sel != null)
                     {
                         int listIdx = listSprites.IndexOf(sel);
-                        if (listIdx >= 0)
-                            _lstLayers.SetSelected(listIdx, true);
-                    }
-                }
-            }
-            finally { _updatingProps = false; }
-        }
+                                    if (listIdx >= 0)
+                                        _lstLayers.SetSelected(listIdx, true);
+                                    }
+                                }
+
+                                // Show the "Show All" button when any layers are hidden or isolation is active
+                                if (_btnShowAll != null)
+                                {
+                                    bool hasIsolation = _isolatedCallSprites != null && _isolatedCallSprites.Count > 0;
+                                    bool hasHiddenLayers = false;
+                                    foreach (var sp in _layout.Sprites)
+                                    {
+                                        if (sp.IsHidden) { hasHiddenLayers = true; break; }
+                                    }
+                                    _btnShowAll.Visible = hasIsolation || hasHiddenLayers;
+                                }
+                            }
+                            finally { _updatingProps = false; }
+                        }
 
         private CodeStyle SelectedCodeStyle
         {
@@ -2077,7 +2438,21 @@ namespace SESpriteLCDLayoutTool
             switch (detectedType)
             {
                 case ScriptType.ProgrammableBlock: targetIndex = 0; break;
-                case ScriptType.ModSurface:        targetIndex = 1; break;
+                case ScriptType.ModSurface:
+                    // Distinguish between generic Mod (index 1) and Torch/Plugin (index 2)
+                    if (code.Contains("#if TORCH") ||
+                        code.Contains("#endif // TORCH") ||
+                        code.Contains("class RenderContext") ||
+                        code.Contains("struct LcdSpriteRow") ||
+                        (code.Contains("RenderContext ctx") && code.Contains("LcdSpriteRow")))
+                    {
+                        targetIndex = 2; // "Plugin / Torch"
+                    }
+                    else
+                    {
+                        targetIndex = 1; // "Mod"
+                    }
+                    break;
                 case ScriptType.PulsarPlugin:      targetIndex = 3; break;
                 default: return; // LcdHelper — leave dropdown unchanged
             }
@@ -2090,7 +2465,7 @@ namespace SESpriteLCDLayoutTool
             || (_fileWatcher != null && _fileWatcher.IsListening && !_fileWatcher.IsPaused)
             || (_clipboardTimer != null);
 
-        private void RefreshCode()
+        private void RefreshCode(bool writeBack = false)
         {
             if (_layout == null) { SetCodeText(""); RefreshDetectedCalls(); return; }
 
@@ -2120,7 +2495,7 @@ namespace SESpriteLCDLayoutTool
                 {
                     SetCodeText(patched);
                     RefreshDetectedCalls();
-                    WriteBackToWatchedFile(patched);
+                    if (writeBack) WriteBackToWatchedFile(patched);
                     return;
                 }
 
@@ -2130,7 +2505,7 @@ namespace SESpriteLCDLayoutTool
                 {
                     SetCodeText(roundTrip);
                     RefreshDetectedCalls();
-                    WriteBackToWatchedFile(roundTrip);
+                    if (writeBack) WriteBackToWatchedFile(roundTrip);
                     return;
                 }
 
@@ -2245,27 +2620,65 @@ namespace SESpriteLCDLayoutTool
         }
 
         /// <summary>
-        /// Indents all lines covered by the current selection by one level (4 spaces).
+        /// Smart auto-indent: analyzes brace structure and applies correct indentation
+        /// to each line based on nesting depth. Select code and press Tab to reformat.
         /// If nothing is selected, inserts 4 spaces at the caret.
         /// </summary>
         private void CodeBoxIndentSelection()
         {
             const string indent = "    ";
+
+            // No selection = quick 4-space insert at cursor
             if (_codeBox.SelectionLength == 0)
             {
                 _codeBox.SelectedText = indent;
                 return;
             }
 
-            string text = _codeBox.Text;
+            string fullText = _codeBox.Text;
             int selStart = _codeBox.SelectionStart;
             int selEnd = selStart + _codeBox.SelectionLength;
 
             // Expand to full lines
             int lineStart = selStart;
-            while (lineStart > 0 && text[lineStart - 1] != '\n')
+            while (lineStart > 0 && fullText[lineStart - 1] != '\n')
                 lineStart--;
 
+            // Calculate starting brace depth by counting { and } from document start
+            int depth = 0;
+            bool inString = false;
+            bool inChar = false;
+            bool inLineComment = false;
+            bool inBlockComment = false;
+            for (int i = 0; i < lineStart && i < fullText.Length; i++)
+            {
+                char c = fullText[i];
+                char next = (i + 1 < fullText.Length) ? fullText[i + 1] : '\0';
+                char prev = (i > 0) ? fullText[i - 1] : '\0';
+
+                // Track comments and strings to avoid counting braces inside them
+                if (inLineComment)
+                {
+                    if (c == '\n') inLineComment = false;
+                    continue;
+                }
+                if (inBlockComment)
+                {
+                    if (c == '*' && next == '/') { inBlockComment = false; i++; }
+                    continue;
+                }
+                if (c == '/' && next == '/') { inLineComment = true; i++; continue; }
+                if (c == '/' && next == '*') { inBlockComment = true; i++; continue; }
+
+                if (!inChar && c == '"' && prev != '\\') inString = !inString;
+                if (!inString && c == '\'' && prev != '\\') inChar = !inChar;
+                if (inString || inChar) continue;
+
+                if (c == '{') depth++;
+                else if (c == '}') depth = Math.Max(0, depth - 1);
+            }
+
+            // Select the full lines
             _codeBox.SelectionStart = lineStart;
             _codeBox.SelectionLength = selEnd - lineStart;
             string block = _codeBox.SelectedText;
@@ -2274,34 +2687,84 @@ namespace SESpriteLCDLayoutTool
             var sb = new System.Text.StringBuilder();
             for (int i = 0; i < lines.Length; i++)
             {
+                string line = lines[i];
+                string content = line.TrimStart(' ', '\t').TrimEnd('\r');
+
+                // Empty lines stay empty (preserve blank lines)
+                if (string.IsNullOrEmpty(content))
+                {
+                    if (i > 0) sb.Append('\n');
+                    continue;
+                }
+
+                // If line starts with }, decrease depth BEFORE indenting
+                if (content.StartsWith("}") || content.StartsWith(")"))
+                    depth = Math.Max(0, depth - 1);
+
+                // Apply indentation
                 if (i > 0) sb.Append('\n');
-                if (lines[i].TrimEnd('\r').Length > 0)
+                for (int d = 0; d < depth; d++)
                     sb.Append(indent);
-                sb.Append(lines[i]);
+                sb.Append(content);
+
+                // Preserve trailing \r if original line had it
+                if (line.EndsWith("\r"))
+                    sb.Append('\r');
+
+                // Count braces in content to adjust depth for NEXT line
+                // (skip the leading brace we already handled)
+                int startIdx = (content.StartsWith("}") || content.StartsWith(")")) ? 1 : 0;
+                bool lineInString = false;
+                bool lineInChar = false;
+                bool lineInComment = false;
+                for (int ci = startIdx; ci < content.Length; ci++)
+                {
+                    char c = content[ci];
+                    char cnext = (ci + 1 < content.Length) ? content[ci + 1] : '\0';
+                    char cprev = (ci > 0) ? content[ci - 1] : '\0';
+
+                    if (lineInComment) continue; // rest of line is comment
+                    if (c == '/' && cnext == '/') { lineInComment = true; continue; }
+
+                    if (!lineInChar && c == '"' && cprev != '\\') lineInString = !lineInString;
+                    if (!lineInString && c == '\'' && cprev != '\\') lineInChar = !lineInChar;
+                    if (lineInString || lineInChar) continue;
+
+                    if (c == '{') depth++;
+                    else if (c == '}') depth = Math.Max(0, depth - 1);
+                }
             }
 
             string result = sb.ToString();
             _codeBox.SelectedText = result;
             _codeBox.SelectionStart = lineStart;
             _codeBox.SelectionLength = result.Length;
+            SetStatus($"Auto-indented {lines.Length} line(s)");
         }
 
         /// <summary>
         /// Removes up to 4 leading spaces (or one tab) from every selected line.
-        /// Does nothing when there is no selection.
+        /// When nothing is selected, outdents the current line.
         /// </summary>
         private void CodeBoxOutdentSelection()
         {
-            if (_codeBox.SelectionLength == 0) return;
-
             string text = _codeBox.Text;
+            if (string.IsNullOrEmpty(text)) return;
+
             int selStart = _codeBox.SelectionStart;
             int selEnd = selStart + _codeBox.SelectionLength;
 
-            // Expand to full lines
+            // Expand to full lines (handles both no-selection and partial selection)
             int lineStart = selStart;
             while (lineStart > 0 && text[lineStart - 1] != '\n')
                 lineStart--;
+
+            // If no selection, expand selEnd to end of current line
+            if (selEnd == selStart)
+            {
+                while (selEnd < text.Length && text[selEnd] != '\n' && text[selEnd] != '\r')
+                    selEnd++;
+            }
 
             _codeBox.SelectionStart = lineStart;
             _codeBox.SelectionLength = selEnd - lineStart;
@@ -2420,6 +2883,9 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
+            // Auto-detect script type from code markers
+            AutoSwitchCodeStyle(sourceCode);
+
             var sprites = CodeParser.Parse(sourceCode);
             if (sprites.Count == 0)
             {
@@ -2463,11 +2929,26 @@ namespace SESpriteLCDLayoutTool
 
             PushUndo();
 
+            // Sort sprites by SourceStart so layout order matches source order.
+            // The parser returns sprites in pass order (Pass 1, 2, 3...), not
+            // source order.  When code mixes new MySprite() and MySprite.CreateText(),
+            // the ordinal-based code jump (Strategy 4) would select the wrong sprite.
+            sprites.Sort((a, b) =>
+            {
+                if (a.SourceStart < 0 && b.SourceStart < 0) return 0;
+                if (a.SourceStart < 0) return 1;
+                if (b.SourceStart < 0) return -1;
+                return a.SourceStart.CompareTo(b.SourceStart);
+            });
+
             _layout.Sprites.Clear();
             foreach (var sprite in sprites)
                 _layout.Sprites.Add(sprite);
 
             _layout.OriginalSourceCode = sourceCode;
+
+            // Tag text sprites whose content originates from runtime game data
+            TagSnapshotSprites(sprites);
 
             _canvas.SelectedSprite = sprites.Count > 0 ? sprites[0] : null;
             _canvas.Invalidate();
@@ -2481,10 +2962,139 @@ namespace SESpriteLCDLayoutTool
                 SetStatus($"Applied {sprites.Count} sprite(s) from the code panel.");
         }
 
+        /// <summary>
+        /// Tags sprites whose text content originates from captured runtime data
+        /// (e.g. item names, quantities) so the UI can warn users not to edit text.
+        /// Sources checked (in order): CapturedRows, detected-call LcdSpriteRow
+        /// initializers, and finally a blanket check for LcdSpriteRow code patterns.
+        /// </summary>
+        private void TagSnapshotSprites(List<SpriteEntry> sprites)
+        {
+            var runtimeTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Source 1: Captured runtime rows from a snapshot
+            var rows = _layout?.CapturedRows;
+            if (rows != null)
+            {
+                foreach (var r in rows)
+                {
+                    if (!string.IsNullOrEmpty(r.Text))     runtimeTexts.Add(r.Text);
+                    if (!string.IsNullOrEmpty(r.StatText))  runtimeTexts.Add(r.StatText);
+                }
+            }
+
+            // Source 2: Text literals embedded in detected call expressions
+            //   e.g. RenderHeader(default, new LcdSpriteRow { Text = "Inventory", ... })
+            if (_lstDetectedCalls != null)
+            {
+                foreach (var item in _lstDetectedCalls.Items)
+                {
+                    string call = item.ToString();
+                    if (!call.Contains("LcdSpriteRow")) continue;
+                    ExtractQuotedValues(call, "Text = \"", runtimeTexts);
+                    ExtractQuotedValues(call, "StatText = \"", runtimeTexts);
+                }
+            }
+
+            // If we matched specific runtime text values, tag only those sprites
+            if (runtimeTexts.Count > 0)
+            {
+                foreach (var sp in sprites)
+                {
+                    if (sp.Type != SpriteEntryType.Text) continue;
+                    if (string.IsNullOrEmpty(sp.Text)) continue;
+
+                    if (runtimeTexts.Contains(sp.Text))
+                    {
+                        sp.IsSnapshotData  = true;
+                        sp.RuntimeDataNote = "Text set by game data at runtime \u2014 edit position, color, and size instead";
+                    }
+                }
+            }
+            else
+            {
+                // Fallback: if the code uses LcdSpriteRow-based rendering, tag ALL
+                // text sprites — all text content comes from row data that varies at runtime
+                string code = _codeBox?.Text;
+                if (code != null && code.Contains("LcdSpriteRow"))
+                {
+                    foreach (var sp in sprites)
+                    {
+                        if (sp.Type != SpriteEntryType.Text) continue;
+                        if (string.IsNullOrEmpty(sp.Text)) continue;
+                        sp.IsSnapshotData  = true;
+                        sp.RuntimeDataNote = "Text set by game data at runtime \u2014 edit position, color, and size instead";
+                    }
+                }
+            }
+
+            // Un-tag sprites whose text is hard-coded as a literal in a
+            // MySprite.CreateText("text",...) call — those are user-authored
+            // constants, not runtime row data.
+            string src = _layout?.OriginalSourceCode;
+            if (src != null)
+            {
+                var codeLiterals = new HashSet<string>(StringComparer.Ordinal);
+                int p = 0;
+                while (p < src.Length)
+                {
+                    int idx = src.IndexOf("CreateText(\"", p, StringComparison.Ordinal);
+                    if (idx < 0) break;
+                    idx += "CreateText(\"".Length;
+                    int end = src.IndexOf('"', idx);
+                    if (end > idx) codeLiterals.Add(src.Substring(idx, end - idx));
+                    p = (end > idx) ? end + 1 : idx + 1;
+                }
+
+                foreach (var sp in sprites)
+                {
+                    if (!sp.IsSnapshotData) continue;
+                    if (sp.Type != SpriteEntryType.Text) continue;
+                    if (string.IsNullOrEmpty(sp.Text)) continue;
+                    if (codeLiterals.Contains(sp.Text))
+                    {
+                        sp.IsSnapshotData  = false;
+                        sp.RuntimeDataNote = null;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Extracts quoted string values following a given prefix pattern.
+        /// e.g. prefix="Text = \"" finds the value in: Text = "Iron Ingot"
+        /// </summary>
+        private static void ExtractQuotedValues(string source, string prefix, HashSet<string> results)
+        {
+            int pos = 0;
+            while (pos < source.Length)
+            {
+                int start = source.IndexOf(prefix, pos, StringComparison.Ordinal);
+                if (start < 0) break;
+                start += prefix.Length;
+                int end = source.IndexOf('"', start);
+                if (end < 0) break;
+                string val = source.Substring(start, end - start);
+                if (val.Length > 0) results.Add(val);
+                pos = end + 1;
+            }
+        }
+
         private void RefreshDetectedCalls()
         {
             if (_lstDetectedCalls == null) return;
-            var calls = CodeExecutor.DetectAllCallExpressions(_codeBox.Text);
+
+            // DIAGNOSTIC: Check what's in the code box and what gets detected
+            string codeText = _codeBox.Text ?? "";
+            System.Diagnostics.Debug.WriteLine($"[RefreshDetectedCalls] Code length: {codeText.Length}");
+
+            var calls = CodeExecutor.DetectAllCallExpressions(codeText, _layout?.CapturedRows);
+            _detectedMethods = CodeExecutor.GetDetectedMethodsWithMetadata(codeText, _layout?.CapturedRows);
+
+            System.Diagnostics.Debug.WriteLine($"[RefreshDetectedCalls] Detected {calls.Count} calls:");
+            foreach (var c in calls)
+                System.Diagnostics.Debug.WriteLine($"  - {c}");
+
             _lstDetectedCalls.Items.Clear();
             foreach (var c in calls)
                 _lstDetectedCalls.Items.Add(c);
@@ -2718,6 +3328,7 @@ namespace SESpriteLCDLayoutTool
             _mnuScriptWatchToggle.Text = "Sync Script File (VS Code)…";
 
             _fileWatchBidirectional = false;
+            _lastWriteBackHash = 0;
             _mnuPauseToggle.Enabled = _pipeListener != null && _pipeListener.IsListening;
             _liveUndoPushed = false;
             RestoreCodeSpritesIfStreamingEnded();
@@ -2833,6 +3444,34 @@ namespace SESpriteLCDLayoutTool
                     sprite.ImportBaseline = sprite.CloneValues();
                 }
 
+                // SNAPSHOT PRESERVATION: If there's a captured snapshot, merge its positions
+                // with the new file sprites so snapshot edits survive file sync updates
+                bool hadSnapshot = _lastLiveFrame != null && _lastLiveFrame.Count > 0;
+                if (hadSnapshot)
+                {
+                    var mergeResult = SnapshotMerger.Merge(sprites, _lastLiveFrame, applyColors: false);
+                    // Update baselines to preserve the merged positions
+                    foreach (var sp in sprites)
+                    {
+                        if (sp.ImportBaseline != null)
+                            sp.ImportBaseline = sp.CloneValues();
+                    }
+                }
+
+                // Sort sprites by SourceStart so layout order matches source order.
+                // The parser returns sprites in pass order (Pass 1, 2, 3...), not
+                // source order.  When code mixes new MySprite() and MySprite.CreateText(),
+                // the ordinal-based code jump (Strategy 4) would select the wrong sprite
+                // if we don't sort by source position.  Sprites without SourceStart
+                // (value -1) are placed at the end.
+                sprites.Sort((a, b) =>
+                {
+                    if (a.SourceStart < 0 && b.SourceStart < 0) return 0;
+                    if (a.SourceStart < 0) return 1;
+                    if (b.SourceStart < 0) return -1;
+                    return a.SourceStart.CompareTo(b.SourceStart);
+                });
+
                 _layout.Sprites.Clear();
                 _layout.Sprites.AddRange(sprites);
                 _layout.OriginalSourceCode = frame;
@@ -2849,8 +3488,11 @@ namespace SESpriteLCDLayoutTool
                 SetCodeText(frame);
                 RefreshDetectedCalls();
 
-                _lastLiveFrame = sprites;
-                SetStatus($"File sync: {sprites.Count} sprite(s) imported");
+                // Don't overwrite _lastLiveFrame here - preserve the snapshot!
+                // _lastLiveFrame is only updated when "Capture Snapshot" button is clicked
+
+                SetStatus($"File sync: {sprites.Count} sprite(s) imported" +
+                    (hadSnapshot ? " (snapshot positions preserved)" : ""));
             }));
         }
 
@@ -2864,6 +3506,14 @@ namespace SESpriteLCDLayoutTool
             if (_fileWatcher == null || !_fileWatcher.IsListening || _fileWatcher.IsPaused)
                 return;
             if (string.IsNullOrWhiteSpace(code)) return;
+
+            // Skip if the code content hasn't changed since the last write-back.
+            // This prevents unnecessary file writes during selection changes,
+            // code jumping (double-click layer), and other non-editing actions
+            // that trigger RefreshCode() without altering the generated code.
+            int hash = code.Replace("\r\n", "\n").Replace("\r", "\n").GetHashCode();
+            if (hash == _lastWriteBackHash) return;
+            _lastWriteBackHash = hash;
 
             _pendingWriteBack = code;
 
@@ -3015,6 +3665,79 @@ namespace SESpriteLCDLayoutTool
         }
 
         /// <summary>
+        /// Extracts sprites from a switch-case block by parsing the case body using CodeParser.
+        /// Returns null if the case block cannot be found or contains no sprites.
+        /// </summary>
+        private List<SpriteEntry> ExtractCaseBlockSprites(string code, string caseName)
+        {
+            if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(caseName))
+                return null;
+
+            // Find the case block
+            // Pattern: case EnumType.CaseName: or case CaseName:
+            var rxCase = new System.Text.RegularExpressions.Regex(
+                @"case\s+(?:[\w\.]+\.)?" + System.Text.RegularExpressions.Regex.Escape(caseName) + @"\s*:",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            var match = rxCase.Match(code);
+            if (!match.Success)
+                return null;
+
+            // Find the case block body (from ':' to 'break;' or next 'case' or '}')
+            int bodyStart = match.Index + match.Length;
+            int bodyEnd = FindCaseBlockEnd(code, bodyStart);
+            if (bodyEnd <= bodyStart)
+                return null;
+
+            string caseBody = code.Substring(bodyStart, bodyEnd - bodyStart);
+
+            // Parse sprites from the case body
+            try
+            {
+                var sprites = CodeParser.Parse(caseBody);
+                return sprites;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ExtractCaseBlockSprites] Failed to parse case {caseName}: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Finds the end of a case block starting from the position after 'case X:'.
+        /// Returns the position of the 'break;' statement, next 'case', or closing '}'.
+        /// </summary>
+        private int FindCaseBlockEnd(string code, int start)
+        {
+            int braceDepth = 0;
+            for (int i = start; i < code.Length - 1; i++)
+            {
+                char c = code[i];
+                char next = code[i + 1];
+
+                if (c == '{') braceDepth++;
+                else if (c == '}')
+                {
+                    if (braceDepth == 0)
+                        return i; // End of switch block
+                    braceDepth--;
+                }
+                else if (braceDepth == 0)
+                {
+                    // Look for 'break;', 'return', or 'case'
+                    if (code.Substring(i).StartsWith("break;"))
+                        return i + 6; // Include 'break;'
+                    if (code.Substring(i).StartsWith("return"))
+                        return i;
+                    if (code.Substring(i).StartsWith("case "))
+                        return i;
+                }
+            }
+            return code.Length;
+        }
+
+        /// <summary>
         /// Executes a single detected call, then highlights only its sprites on the
         /// canvas while dimming the rest of the full frame.  The user can edit the
         /// isolated sprites and click "Show All" to restore the complete view.
@@ -3023,18 +3746,176 @@ namespace SESpriteLCDLayoutTool
         {
             if (_layout == null || string.IsNullOrWhiteSpace(call)) return;
 
-            string code = _codeBox.Text;
+            // Removed duplicate variable declaration
+            // Retained correct variable declaration
+            string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
             if (string.IsNullOrWhiteSpace(code)) return;
 
-            // Save the full frame so we can restore it later
+            // When a one-way live source owns the canvas, allow identification
+            // (highlighting) but don't modify the sprite data.
+            bool highlightOnly = IsOneWayStreaming;
+
+            // Save the full frame so we can restore it later.
+            // On first call, snapshot the original sprites. On subsequent
+            // calls (switching between isolated methods), restore the original
+            // set first to remove orphans from the previous isolation.
             if (_fullFrameSprites == null)
             {
                 _fullFrameSprites = new List<SpriteEntry>();
                 foreach (var sp in _layout.Sprites)
                     _fullFrameSprites.Add(sp);
             }
+            else
+            {
+                // Restore original sprite list before re-isolating
+                _layout.Sprites.Clear();
+                foreach (var sp in _fullFrameSprites)
+                    _layout.Sprites.Add(sp);
+            }
 
-            var result = CodeExecutor.ExecuteWithInit(code, call);
+            // Check if this is a virtual method (switch-case)
+            DetectedMethodInfo methodInfo = _detectedMethods?.FirstOrDefault(m => m.CallExpression == call);
+            if (methodInfo != null && methodInfo.Kind == MethodKind.SwitchCase)
+            {
+                // Virtual methods: execute the full rendering pipeline with
+                // capturedRows filtered to only the target case kind.  This
+                // resolves dynamic data (row.Text, row.IconSprite, etc.) that
+                // static CodeParser.Parse cannot handle.
+                List<SpriteEntry> caseSprites = null;
+
+                var filteredRows = _layout?.CapturedRows?
+                    .Where(r => string.Equals(r.Kind, methodInfo.CaseName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                // If no captured rows match (or none exist), create a synthetic
+                // sample row so BuildSampleEnqueueCode can still feed the switch.
+                if (filteredRows == null || filteredRows.Count == 0)
+                {
+                    filteredRows = new List<SnapshotRowData>
+                    {
+                        new SnapshotRowData
+                        {
+                            Kind = methodInfo.CaseName,
+                            Text = methodInfo.CaseName,
+                            StatText = "1,000",
+                            TextColorR = 255, TextColorG = 255, TextColorB = 255, TextColorA = 255,
+                        }
+                    };
+                }
+
+                var caseResult = CodeExecutor.ExecuteWithInit(code, null, filteredRows);
+                if (caseResult.Success && caseResult.Sprites.Count > 0)
+                {
+                    caseSprites = caseResult.Sprites;
+                    TagSnapshotSprites(caseSprites);
+                }
+                else
+                {
+                    // Fall back to static extraction if execution fails
+                    caseSprites = ExtractCaseBlockSprites(code, methodInfo.CaseName);
+                }
+
+                if (caseSprites == null || caseSprites.Count == 0)
+                {
+                    SetStatus($"Could not extract sprites from case block '{methodInfo.CaseName}'");
+                    return;
+                }
+
+                _execResultLabel.Text      = $"✔ {caseSprites.Count} (case block)";
+                _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
+
+                PushUndo();
+
+                // Build highlight set by matching executed sprites to existing layout sprites.
+                // Keep ALL sprites in the layout — only dim the non-matched ones.
+                // Two-pass: first match only sprites whose ImportLabel belongs to
+                // this case block (e.g. "Footer: Text" for case Footer), then fall
+                // back to unrestricted matching for orphan execution sprites.
+                _isolatedCallSprites = new HashSet<SpriteEntry>();
+                var usedExec = new HashSet<int>();
+                string casePrefix = methodInfo.CaseName + ":";
+
+                // Pass 1: match layout sprites that belong to this case block
+                foreach (var layoutSp in _layout.Sprites)
+                {
+                    if (layoutSp.ImportLabel == null ||
+                        !layoutSp.ImportLabel.StartsWith(casePrefix, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    for (int ei = 0; ei < caseSprites.Count; ei++)
+                    {
+                        if (usedExec.Contains(ei)) continue;
+                        var execSp = caseSprites[ei];
+                        bool typeMatch = layoutSp.Type == execSp.Type
+                            && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
+                             || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
+                        if (typeMatch)
+                        {
+                            _isolatedCallSprites.Add(layoutSp);
+                            usedExec.Add(ei);
+                            break;
+                        }
+                    }
+                }
+
+                // Pass 2: match remaining execution sprites against any layout sprite
+                // (handles orphans from previous executions that lack ImportLabel)
+                foreach (var layoutSp in _layout.Sprites)
+                {
+                    if (_isolatedCallSprites.Contains(layoutSp)) continue;
+                    for (int ei = 0; ei < caseSprites.Count; ei++)
+                    {
+                        if (usedExec.Contains(ei)) continue;
+                        var execSp = caseSprites[ei];
+                        bool typeMatch = layoutSp.Type == execSp.Type
+                            && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
+                             || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
+                        if (typeMatch)
+                        {
+                            _isolatedCallSprites.Add(layoutSp);
+                            usedExec.Add(ei);
+                            break;
+                        }
+                    }
+                }
+
+                // Add any unmatched executed sprites (orphans) to the layout
+                if (!highlightOnly)
+                {
+                    for (int ei = 0; ei < caseSprites.Count; ei++)
+                    {
+                        if (usedExec.Contains(ei)) continue;
+                        var orphan = caseSprites[ei];
+                        orphan.SourceStart = -1;
+                        orphan.SourceEnd   = -1;
+                        _layout.Sprites.Add(orphan);
+                        _isolatedCallSprites.Add(orphan);
+                    }
+
+                    // If no matches at all, add all case sprites directly
+                    if (_isolatedCallSprites.Count == 0)
+                    {
+                        foreach (var sp in caseSprites)
+                        {
+                            _layout.Sprites.Add(sp);
+                            _isolatedCallSprites.Add(sp);
+                        }
+                    }
+                }
+
+                _canvas.HighlightedSprites = _isolatedCallSprites;
+                _canvas.Invalidate();
+                RefreshLayerList();
+                SpriteEntry firstIso = null;
+                foreach (var sp in _isolatedCallSprites) { firstIso = sp; break; }
+                _canvas.SelectedSprite = firstIso;
+                if (_btnShowAll != null) _btnShowAll.Visible = true;
+                UpdateActionBarVisibility();
+                SetStatus($"Isolated {_isolatedCallSprites.Count} sprites from case {methodInfo.CaseName}. Click Show All to restore.");
+                return;
+            }
+
+            var result = CodeExecutor.ExecuteWithInit(code, call, _layout?.CapturedRows);
             if (!result.Success)
             {
                 _execResultLabel.Text      = "✗ Error";
@@ -3050,69 +3931,135 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
+            TagSnapshotSprites(result.Sprites);
+
             _execResultLabel.Text      = $"✔ {result.Sprites.Count} (isolated)";
             _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
 
             PushUndo();
 
             // For Pulsar/Mod scripts, runtime sprites from surface.DrawFrame()
-            // don't match CodeParser's static analysis — skip the merge and
-            // replace the layout with only the isolated method's sprites.
+            // don't match CodeParser's static analysis — match by Type+Data and
+            // keep ALL sprites in the layout, dimming the non-isolated ones.
             if (result.ScriptType == ScriptType.PulsarPlugin ||
                 result.ScriptType == ScriptType.ModSurface)
             {
-                _layout.Sprites.Clear();
                 _isolatedCallSprites = new HashSet<SpriteEntry>();
-                foreach (var sp in result.Sprites)
+                var usedExec = new HashSet<int>();
+                foreach (var layoutSp in _layout.Sprites)
                 {
-                    _layout.Sprites.Add(sp);
-                    _isolatedCallSprites.Add(sp);
+                    for (int ei = 0; ei < result.Sprites.Count; ei++)
+                    {
+                        if (usedExec.Contains(ei)) continue;
+                        var execSp = result.Sprites[ei];
+                        bool typeMatch = layoutSp.Type == execSp.Type
+                            && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
+                             || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
+                        if (typeMatch)
+                        {
+                            _isolatedCallSprites.Add(layoutSp);
+                            usedExec.Add(ei);
+                            break;
+                        }
+                    }
+                }
+
+                // Add orphan executed sprites not matched to existing layout
+                if (!highlightOnly)
+                {
+                    for (int ei = 0; ei < result.Sprites.Count; ei++)
+                    {
+                        if (usedExec.Contains(ei)) continue;
+                        var orphan = result.Sprites[ei];
+                        orphan.SourceStart = -1;
+                        orphan.SourceEnd   = -1;
+                        _layout.Sprites.Add(orphan);
+                        _isolatedCallSprites.Add(orphan);
+                    }
+
+                    // If no matches at all, add all executed sprites directly
+                    if (_isolatedCallSprites.Count == 0)
+                    {
+                        foreach (var sp in result.Sprites)
+                        {
+                            _layout.Sprites.Add(sp);
+                            _isolatedCallSprites.Add(sp);
+                        }
+                    }
                 }
 
                 _canvas.HighlightedSprites = _isolatedCallSprites;
-                _canvas.SelectedSprite = result.Sprites.Count > 0 ? result.Sprites[0] : null;
                 _canvas.Invalidate();
                 RefreshLayerList();
+                SpriteEntry firstIso = null;
+                foreach (var sp in _isolatedCallSprites) { firstIso = sp; break; }
+                _canvas.SelectedSprite = firstIso;
                 if (_btnShowAll != null) _btnShowAll.Visible = true;
                 UpdateActionBarVisibility();
-                SetStatus($"Isolated: {call} — {result.Sprites.Count} sprite(s). Click Show All to restore.");
+                SetStatus($"Isolated: {call} — {_isolatedCallSprites.Count} sprite(s). Click Show All to restore.");
                 return;
             }
 
-            // Merge the executed sprites into the full frame using SnapshotMerger
-            // to match them by type+data, then build the highlighted set.
-            var nonRef = new List<SpriteEntry>();
-            foreach (var sp in _layout.Sprites)
-                if (!sp.IsReferenceLayout) nonRef.Add(sp);
-
-            var mergeResult = SnapshotMerger.Merge(nonRef, result.Sprites, applyColors: true);
-
-            // The highlighted set = sprites that matched the executed call
+            // Match executed sprites to existing layout sprites and build
+            // the highlight set.  When streaming, skip Merge and orphan adds
+            // so the live frame data is not modified.
             _isolatedCallSprites = new HashSet<SpriteEntry>();
-            foreach (var sp in nonRef)
+
+            if (highlightOnly)
             {
-                // Check if this sprite was matched (position/color updated from the call)
-                foreach (var execSp in result.Sprites)
+                // Type+data matching only — no position/colour transfer.
+                var usedExec2 = new HashSet<int>();
+                foreach (var layoutSp in _layout.Sprites)
                 {
-                    bool typeMatch = (sp.Type == SpriteEntryType.Text && execSp.Type == SpriteEntryType.Text
-                                        && sp.Text == execSp.Text)
-                                   || (sp.Type == SpriteEntryType.Texture && execSp.Type == SpriteEntryType.Texture
-                                        && sp.SpriteName == execSp.SpriteName);
-                    if (typeMatch && Math.Abs(sp.X - execSp.X) < 1f && Math.Abs(sp.Y - execSp.Y) < 1f)
+                    for (int ei = 0; ei < result.Sprites.Count; ei++)
                     {
-                        _isolatedCallSprites.Add(sp);
-                        break;
+                        if (usedExec2.Contains(ei)) continue;
+                        var execSp = result.Sprites[ei];
+                        bool typeMatch = layoutSp.Type == execSp.Type
+                            && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
+                             || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
+                        if (typeMatch)
+                        {
+                            _isolatedCallSprites.Add(layoutSp);
+                            usedExec2.Add(ei);
+                            break;
+                        }
                     }
                 }
             }
-
-            // Also add any orphan (unmatched) sprites from the execution
-            foreach (var orphan in mergeResult.UnmatchedSnapshots)
+            else
             {
-                orphan.SourceStart = -1;
-                orphan.SourceEnd   = -1;
-                _layout.Sprites.Add(orphan);
-                _isolatedCallSprites.Add(orphan);
+                var nonRef = new List<SpriteEntry>();
+                foreach (var sp in _layout.Sprites)
+                    if (!sp.IsReferenceLayout) nonRef.Add(sp);
+
+                var mergeResult = SnapshotMerger.Merge(nonRef, result.Sprites, applyColors: true);
+
+                // The highlighted set = sprites that matched the executed call
+                foreach (var sp in nonRef)
+                {
+                    foreach (var execSp in result.Sprites)
+                    {
+                        bool typeMatch = (sp.Type == SpriteEntryType.Text && execSp.Type == SpriteEntryType.Text
+                                            && sp.Text == execSp.Text)
+                                       || (sp.Type == SpriteEntryType.Texture && execSp.Type == SpriteEntryType.Texture
+                                            && sp.SpriteName == execSp.SpriteName);
+                        if (typeMatch && Math.Abs(sp.X - execSp.X) < 1f && Math.Abs(sp.Y - execSp.Y) < 1f)
+                        {
+                            _isolatedCallSprites.Add(sp);
+                            break;
+                        }
+                    }
+                }
+
+                // Also add any orphan (unmatched) sprites from the execution
+                foreach (var orphan in mergeResult.UnmatchedSnapshots)
+                {
+                    orphan.SourceStart = -1;
+                    orphan.SourceEnd   = -1;
+                    _layout.Sprites.Add(orphan);
+                    _isolatedCallSprites.Add(orphan);
+                }
             }
 
             // If no matches found, highlight all executed sprites directly
@@ -3123,11 +4070,11 @@ namespace SESpriteLCDLayoutTool
             }
 
             _canvas.HighlightedSprites = _isolatedCallSprites;
+            _canvas.Invalidate();
+            RefreshLayerList();
             SpriteEntry firstIsolated = null;
             foreach (var sp in _isolatedCallSprites) { firstIsolated = sp; break; }
             _canvas.SelectedSprite = firstIsolated;
-            _canvas.Invalidate();
-            RefreshLayerList();
             if (_btnShowAll != null) _btnShowAll.Visible = true;
             UpdateActionBarVisibility();
             SetStatus($"Isolated: {call} — {_isolatedCallSprites.Count} sprite(s). Edit, then click Show All.");
@@ -3142,13 +4089,13 @@ namespace SESpriteLCDLayoutTool
             _canvas.HighlightedSprites = null;
             _isolatedCallSprites = null;
 
-            if (_fullFrameSprites != null)
+            if (_fullFrameSprites != null && _layout != null)
             {
-                // The sprites in _layout.Sprites may have been edited;
-                // _fullFrameSprites are the originals.  We need to reconcile:
-                // keep the current layout sprites (which include edits) but
-                // clear the isolation state.  The full set is already on canvas
-                // since we never removed non-highlighted sprites.
+                // Restore the original sprite list — remove any orphan sprites
+                // that were added during isolation and restore the original set.
+                _layout.Sprites.Clear();
+                foreach (var sp in _fullFrameSprites)
+                    _layout.Sprites.Add(sp);
                 _fullFrameSprites = null;
             }
 
@@ -3163,6 +4110,9 @@ namespace SESpriteLCDLayoutTool
             RefreshLayerList();
             SetStatus("Full view restored.");
         }
+
+        // Duplicate removed - using implementation at line 2073
+
 
         /// <summary>Hides or shows the selected sprite layer(s).</summary>
         private void ToggleSelectedLayerVisibility(bool hide)
@@ -3230,16 +4180,39 @@ namespace SESpriteLCDLayoutTool
             BeginInvoke((Action)(() =>
             {
                 var sprites = CodeParser.Parse(frame);
-                if (sprites.Count == 0) return;
 
                 // Extract snapshot tag if present
                 string frameTag = CodeParser.ParseSnapshotTag(frame);
+
+                // Always parse @ROW data — even when the file has no MySprite blocks.
+                // This ensures CapturedRows is populated from @ROW-only files so the
+                // executor can replay switch-case render methods with real game data.
+                var frameRows = CodeParser.ParseSnapshotRows(frame);
 
                 // Create a default layout if none is loaded so live frames always land somewhere
                 if (_layout == null)
                 {
                     _layout = new LcdLayout();
                     _canvas.CanvasLayout = _layout;
+                }
+
+                // Store captured rows before the early-return check
+                bool rowsUpdated = false;
+                if (frameRows.Count > 0)
+                {
+                    _layout.CapturedRows = frameRows;
+                    rowsUpdated = true;
+                }
+
+                // When the file has @ROW data but no sprites, and source code is loaded,
+                // auto-execute the code with the captured rows to produce a rendered frame.
+                if (sprites.Count == 0)
+                {
+                    if (rowsUpdated && _layout.OriginalSourceCode != null)
+                    {
+                        AutoExecuteWithCapturedRows(frameTag, frameRows.Count);
+                    }
+                    return;
                 }
 
                 // Save ONE undo snapshot for the pre-stream state, then skip
@@ -3269,7 +4242,9 @@ namespace SESpriteLCDLayoutTool
                         if (!sp.IsReferenceLayout) _preLiveCodeSprites.Add(sp);
                 }
 
-                if (hasTracking) _lastLiveFrame = sprites;
+                // Always save the live frame so Execute Code can merge
+                // snapshot positions even when no source code is loaded yet.
+                _lastLiveFrame = sprites;
 
                 // Always replace for a correct full-resolution visual.
                 // (The merge into code sprites happens in ToggleLivePause.)
@@ -3277,10 +4252,92 @@ namespace SESpriteLCDLayoutTool
                 _layout.Sprites.AddRange(sprites);
                 _canvas.CanvasLayout = _layout;
                 RefreshLayerList();
+
+                // Refresh detected calls when rows changed so the call list
+                // reflects real game data instead of hardcoded sample placeholders.
+                if (rowsUpdated)
+                    RefreshDetectedCalls();
+
                 SetStatus(frameTag != null
                     ? $"Live frame [{frameTag}]: {sprites.Count} sprites"
                     : $"Live frame: {sprites.Count} sprites");
             }));
+        }
+
+        /// <summary>
+        /// Called when the watched file has @ROW data but no MySprite blocks.
+        /// Re-executes the loaded source code with the updated CapturedRows so
+        /// the switch-case render methods produce a proper rendering.
+        /// </summary>
+        private void AutoExecuteWithCapturedRows(string frameTag, int rowCount)
+        {
+            string code = _layout?.OriginalSourceCode;
+            if (string.IsNullOrWhiteSpace(code)) return;
+
+            if (!_liveUndoPushed)
+            {
+                PushUndo();
+                _liveUndoPushed = true;
+            }
+
+            // Detect a suitable call expression from the source code
+            string call = _execCallBox?.Text?.Trim();
+            if (string.IsNullOrEmpty(call) || (call != null && IsVirtualSwitchCaseCall(call)))
+                call = CodeExecutor.DetectCallExpression(code);
+
+            try
+            {
+                var result = CodeExecutor.ExecuteWithInit(code, call, _layout.CapturedRows);
+                if (!result.Success || result.Sprites.Count == 0) return;
+
+                TagSnapshotSprites(result.Sprites);
+
+                // Check whether we should merge into existing source-tracked sprites
+                // or do a full replacement
+                var editable = new List<SpriteEntry>();
+                foreach (var sp in _layout.Sprites)
+                    if (!sp.IsReferenceLayout && sp.SourceStart >= 0 && sp.ImportBaseline != null)
+                        editable.Add(sp);
+
+                if (editable.Count > 0)
+                {
+                    var mergeResult = SnapshotMerger.Merge(editable, result.Sprites, applyColors: true);
+
+                    foreach (var sp in editable)
+                    {
+                        if (sp.ImportBaseline != null)
+                            sp.ImportBaseline = sp.CloneValues();
+                    }
+
+                    foreach (var orphan in mergeResult.UnmatchedSnapshots)
+                    {
+                        orphan.SourceStart = -1;
+                        orphan.SourceEnd   = -1;
+                        _layout.Sprites.Add(orphan);
+                    }
+                }
+                else
+                {
+                    // No source tracking — full replacement with executed sprites
+                    _layout.Sprites.Clear();
+                    _layout.Sprites.AddRange(result.Sprites);
+                }
+
+                _lastLiveFrame = result.Sprites;
+                _canvas.CanvasLayout = _layout;
+                RefreshLayerList();
+                RefreshDetectedCalls();
+
+                string tagInfo = frameTag != null ? $" [{frameTag}]" : "";
+                SetStatus($"@ROW update{tagInfo}: {rowCount} rows → {result.Sprites.Count} sprites");
+            }
+            catch
+            {
+                // Execution failed — just show the row count
+                RefreshDetectedCalls();
+                string tagInfo = frameTag != null ? $" [{frameTag}]" : "";
+                SetStatus($"@ROW update{tagInfo}: {rowCount} rows captured (execute code to render)");
+            }
         }
 
         private void SetStatus(string msg) => _statusLabel.Text = msg;
@@ -3720,6 +4777,20 @@ namespace SESpriteLCDLayoutTool
                         call = CodeExecutor.DetectCallExpression(txtCode.Text);
                         if (call == null)
                         {
+                            // Fallback: if the code contains bare frame.Add(new MySprite patterns
+                            // (e.g. snapshot output from a Torch plugin), parse sprites directly.
+                            if (txtCode.Text.Contains("new MySprite"))
+                            {
+                                var parsed = Services.CodeParser.Parse(txtCode.Text);
+                                if (parsed.Count > 0)
+                                {
+                                    executedSprites = parsed;
+                                    lblExecResult.Text = "✔ " + parsed.Count + " sprites [Import]";
+                                    lblExecResult.ForeColor = Color.FromArgb(80, 220, 100);
+                                    return;
+                                }
+                            }
+
                             var st = CodeExecutor.DetectScriptType(txtCode.Text);
                             string hint = st == ScriptType.ProgrammableBlock
                                 ? "Could not detect a Main() entry point in this PB script.\n\n"
@@ -3748,7 +4819,7 @@ namespace SESpriteLCDLayoutTool
                     lblExecResult.ForeColor = Color.FromArgb(200, 180, 60);
                     dlg.Refresh();
 
-                    var execResult = CodeExecutor.Execute(txtCode.Text, call);
+                    var execResult = CodeExecutor.Execute(txtCode.Text, call, capturedRows: _layout?.CapturedRows);
                     if (!execResult.Success)
                     {
                         executedSprites = null;
@@ -3939,6 +5010,15 @@ namespace SESpriteLCDLayoutTool
 
                     PushUndo();
 
+                    // Sort sprites by SourceStart so layout order matches source order.
+                    sprites.Sort((a, b) =>
+                    {
+                        if (a.SourceStart < 0 && b.SourceStart < 0) return 0;
+                        if (a.SourceStart < 0) return 1;
+                        if (b.SourceStart < 0) return -1;
+                        return a.SourceStart.CompareTo(b.SourceStart);
+                    });
+
                     if (chkReplace.Checked)
                         _layout.Sprites.Clear();
 
@@ -3948,6 +5028,9 @@ namespace SESpriteLCDLayoutTool
                     // Store original source for round-trip code generation
                     if (!isReference)
                         _layout.OriginalSourceCode = sourceCode;
+
+                    // Tag text sprites whose content originates from runtime game data
+                    TagSnapshotSprites(sprites);
 
                     _canvas.SelectedSprite = sprites.Count > 0 ? sprites[0] : null;
                     _canvas.Invalidate();
@@ -4053,6 +5136,7 @@ namespace SESpriteLCDLayoutTool
 
                     string applyTag = CodeParser.ParseSnapshotTag(snapCode);
                     var snapshotSprites = CodeParser.Parse(snapCode);
+                    var snapshotRows = CodeParser.ParseSnapshotRows(snapCode);
                     if (snapshotSprites.Count == 0)
                     {
                         MessageBox.Show(
@@ -4074,11 +5158,16 @@ namespace SESpriteLCDLayoutTool
                     foreach (var extra in result.UnmatchedSnapshots)
                         _layout.Sprites.Add(extra);
 
+                    // Store captured row data for the execution engine
+                    if (snapshotRows.Count > 0)
+                        _layout.CapturedRows = snapshotRows;
+
                     _canvas.Invalidate();
                     RefreshLayerList();
                     RefreshCode();
+                    string rowInfo = snapshotRows.Count > 0 ? $"  ({snapshotRows.Count} rows captured)" : "";
                     string applyTagInfo = applyTag != null ? $" [snapshot: {applyTag}]" : "";
-                    SetStatus(result.Summary + applyTagInfo);
+                    SetStatus(result.Summary + rowInfo + applyTagInfo);
                     dlg.Close();
                 };
 
@@ -4265,37 +5354,53 @@ namespace SESpriteLCDLayoutTool
                 // Code-editor–specific keys (only when the code box itself is focused)
                 if (_codeBox != null && _codeBox.Focused)
                 {
-                    switch (keyData)
-                    {
-                        case Keys.Tab:
-                            CodeBoxIndentSelection();
-                            return true;
-                        case Keys.Shift | Keys.Tab:
-                            CodeBoxOutdentSelection();
-                            return true;
-                        case Keys.Enter:
-                            CodeBoxAutoIndentNewline();
-                            return true;
+                    // Use KeyCode mask for reliable key matching (avoids extra modifier bits)
+                    Keys keyCode = keyData & Keys.KeyCode;
+                    Keys modifiers = keyData & Keys.Modifiers;
 
-                        // Normalize clipboard to \r\n so pasting into a
-                        // WinForms TextBox (e.g. the Paste Layout dialog)
-                        // preserves line breaks.  RichTextBox.Copy() may
-                        // place \n-only text on the clipboard.
-                        case Keys.Control | Keys.C:
-                        case Keys.Control | Keys.X:
+                    // Tab / Shift+Tab for indent/outdent
+                    if (keyCode == Keys.Tab)
+                    {
+                        if ((modifiers & Keys.Shift) != 0)
+                            CodeBoxOutdentSelection();
+                        else
+                            CodeBoxIndentSelection();
+                        return true;
+                    }
+
+                    // Enter for auto-indent newline
+                    if (keyCode == Keys.Enter && modifiers == Keys.None)
+                    {
+                        CodeBoxAutoIndentNewline();
+                        return true;
+                    }
+
+                    // Normalize clipboard to \r\n so pasting into a
+                    // WinForms TextBox (e.g. the Paste Layout dialog)
+                    // preserves line breaks.  RichTextBox.Copy() may
+                    // place \n-only text on the clipboard.
+                    if (keyCode == Keys.C && modifiers == Keys.Control)
+                    {
+                        string sel = _codeBox.SelectedText;
+                        if (string.IsNullOrEmpty(sel))
+                            sel = _codeBox.Text;  // Ctrl+C with no selection = copy all
+                        if (!string.IsNullOrEmpty(sel))
                         {
-                            string sel = _codeBox.SelectedText;
-                            if (string.IsNullOrEmpty(sel) && keyData == (Keys.Control | Keys.C))
-                                sel = _codeBox.Text;  // Ctrl+C with no selection = copy all
-                            if (!string.IsNullOrEmpty(sel))
-                            {
-                                string norm = sel.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
-                                Clipboard.SetText(norm);
-                                if (keyData == (Keys.Control | Keys.X))
-                                    _codeBox.SelectedText = "";
-                            }
-                            return true;
+                            string norm = sel.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+                            Clipboard.SetText(norm);
                         }
+                        return true;
+                    }
+                    if (keyCode == Keys.X && modifiers == Keys.Control)
+                    {
+                        string sel = _codeBox.SelectedText;
+                        if (!string.IsNullOrEmpty(sel))
+                        {
+                            string norm = sel.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+                            Clipboard.SetText(norm);
+                            _codeBox.SelectedText = "";
+                        }
+                        return true;
                     }
                 }
 
@@ -4411,7 +5516,7 @@ namespace SESpriteLCDLayoutTool
             // Undo snapshot was pushed in BeginDrag via OnMouseDown;
             // nothing extra needed here — the drag's final state is the "current" state.
             ClearCodeDirty();
-            RefreshCode();
+            RefreshCode(writeBack: true);
             RefreshDebugStats();
         }
 
@@ -4530,6 +5635,11 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add("Stretch to Surface",       null, (s, e) => StretchToSurface());
             ctx.Items.Add(new ToolStripSeparator());
 
+            // Hide Selected (works with Shift+click multi-select)
+            var hideItem = ctx.Items.Add("Hide Selected",     null, (s, e) => ToggleSelectedLayerVisibility(true));
+            ctx.Items.Add("Show All Layers",  null, (s, e) => ShowAllLayers());
+            ctx.Items.Add(new ToolStripSeparator());
+
             // ── Add Animation submenu ──
             var animMenu = new ToolStripMenuItem("Add Animation…")
             {
@@ -4558,6 +5668,10 @@ namespace SESpriteLCDLayoutTool
             ctx.Opening += (s, e) =>
             {
                 animMenu.Enabled = _canvas.SelectedSprite != null;
+                // Update "Hide Selected" label based on count
+                var selected = GetSelectedSprites();
+                hideItem.Text = selected.Count > 1 ? $"Hide Selected ({selected.Count})" : "Hide Selected";
+                hideItem.Enabled = selected.Count > 0;
             };
 
             return ctx;
@@ -4802,24 +5916,78 @@ namespace SESpriteLCDLayoutTool
             string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
             if (string.IsNullOrWhiteSpace(code)) return;
 
-            // Determine which sprites belong to the focused call by executing it once
-            // Use ExecuteWithInit so the constructor body runs (field init, arrays, RNG seeds).
-            var result = CodeExecutor.ExecuteWithInit(code, call);
-            if (!result.Success || result.Sprites.Count == 0)
-            {
-                SetStatus($"Could not identify sprites for {call}");
-                return;
-            }
+            // Check if this is a virtual method (switch-case)
+            DetectedMethodInfo methodInfo = _detectedMethods?.FirstOrDefault(m => m.CallExpression == call);
+            bool isVirtual = methodInfo != null && methodInfo.Kind == MethodKind.SwitchCase;
 
-            // Build a set of Type+Data keys to identify the focused method's sprites
-            _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var sp in result.Sprites)
+            // For virtual methods, we execute with filtered capturedRows (only the
+            // target case Kind) to identify which sprites belong to this case.
+            // For real methods, we execute the specific call expression directly.
+            List<SnapshotRowData> execRows = _layout?.CapturedRows;
+            string execCall = call;
+
+            if (isVirtual)
             {
-                string key = (sp.Type == SpriteEntryType.Text ? "T:" : "X:") +
-                             (sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName);
-                _animFocusSprites.Add(key);
+                // Filter captured rows to the target case kind
+                var filteredRows = execRows?
+                    .Where(r => string.Equals(r.Kind, methodInfo.CaseName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (filteredRows == null || filteredRows.Count == 0)
+                {
+                    filteredRows = new List<SnapshotRowData>
+                    {
+                        new SnapshotRowData
+                        {
+                            Kind = methodInfo.CaseName,
+                            Text = methodInfo.CaseName,
+                            StatText = "1,000",
+                            TextColorR = 255, TextColorG = 255, TextColorB = 255, TextColorA = 255,
+                        }
+                    };
+                }
+
+                // Execute full pipeline with filtered rows to build focus set
+                var result = CodeExecutor.ExecuteWithInit(code, null, filteredRows);
+                if (!result.Success || result.Sprites.Count == 0)
+                {
+                    SetStatus($"Could not identify sprites for {call}");
+                    return;
+                }
+
+                // Build focus set from filtered execution
+                _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var sp in result.Sprites)
+                {
+                    string key = (sp.Type == SpriteEntryType.Text ? "T:" : "X:") +
+                                 (sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName);
+                    _animFocusSprites.Add(key);
+                }
+                _animFocusCall = call;
+
+                // For animation, run the full scene (null call) with all captured rows
+                execCall = null;
+                execRows = _layout?.CapturedRows;
             }
-            _animFocusCall = call;
+            else
+            {
+                // Real methods: execute the specific call to build focus set
+                var result = CodeExecutor.ExecuteWithInit(code, call, _layout?.CapturedRows);
+                if (!result.Success || result.Sprites.Count == 0)
+                {
+                    SetStatus($"Could not identify sprites for {call}");
+                    return;
+                }
+
+                _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var sp in result.Sprites)
+                {
+                    string key = (sp.Type == SpriteEntryType.Text ? "T:" : "X:") +
+                                 (sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName);
+                    _animFocusSprites.Add(key);
+                }
+                _animFocusCall = call;
+            }
 
             // If animation is already running, just apply the focus — the next
             // OnAnimFrame will pick up _animFocusSprites and dim accordingly.
@@ -4829,12 +5997,12 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
-            // Start animation with only the focused method
+            // Start animation — full scene for virtual methods, focused call for real ones
             EnsureAnimPlayer();
             PushUndo();
             CaptureAnimPositionSnapshot();
 
-            string error = _animPlayer.Prepare(code, call);
+            string error = _animPlayer.Prepare(code, execCall, execRows);
             if (error != null)
             {
                 MessageBox.Show(error, "Animation Error",
@@ -4903,7 +6071,7 @@ namespace SESpriteLCDLayoutTool
 
             // Pass null so CompileForAnimation auto-detects ALL rendering
             // methods and calls them every frame — showing the full scene.
-            string error = _animPlayer.Prepare(code, null);
+            string error = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
             if (error != null)
             {
                 MessageBox.Show(error, "Animation Error",
@@ -4977,7 +6145,7 @@ namespace SESpriteLCDLayoutTool
 
                 // Pass null so CompileForAnimation auto-detects ALL rendering
                 // methods and calls them every frame — showing the full scene.
-                string error = _animPlayer.Prepare(code, null);
+                string error = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
                 if (error != null)
                 {
                     MessageBox.Show(error, "Animation Error",
@@ -6197,11 +7365,21 @@ namespace SESpriteLCDLayoutTool
             _btnPopOut.Text = "⬋ Dock";
             SetStatus("Code editor popped out — Ctrl+E to dock back");
 
-            // Allow Ctrl+E to dock back while the popout has focus
+            // Allow keyboard shortcuts while the popout has focus
             _codePopoutForm.KeyPreview = true;
             _codePopoutForm.KeyDown += (s, e) =>
             {
-                if (e.KeyData == (Keys.Control | Keys.E))
+                // Tab / Shift+Tab for indent/outdent (ProcessCmdKey doesn't work on child form)
+                if (e.KeyCode == Keys.Tab && _codeBox != null && _codeBox.Focused)
+                {
+                    if (e.Shift)
+                        CodeBoxOutdentSelection();
+                    else
+                        CodeBoxIndentSelection();
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                }
+                else if (e.KeyData == (Keys.Control | Keys.E))
                 {
                     e.Handled = true;
                     e.SuppressKeyPress = true;
@@ -6235,6 +7413,28 @@ namespace SESpriteLCDLayoutTool
         {
             if (_codePopoutForm == null || _codePopoutForm.IsDisposed) return;
             _codePopoutForm.Close();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // Cancel any pending write-back so closing the app never writes
+            // generated/patched code back to the synced file.
+            if (_writeBackTimer != null)
+            {
+                _writeBackTimer.Stop();
+                _pendingWriteBack = null;
+            }
+
+            // Disconnect the file watcher without triggering a final write-back.
+            if (_fileWatcher != null)
+            {
+                _fileWatcher.Stop();
+                _fileWatcher.Dispose();
+                _fileWatcher = null;
+                _fileWatchBidirectional = false;
+            }
+
+            base.OnFormClosing(e);
         }
 
         protected override void Dispose(bool disposing)

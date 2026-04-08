@@ -69,13 +69,17 @@ namespace SESpriteLCDLayoutTool.Services
         /// Required for LCD Helper and Mod/Surface scripts (e.g. <c>DrawHUD(surface)</c>).
         /// Ignored for Programmable Block scripts.
         /// </param>
-        public string Prepare(string userCode, string callExpression = null)
+        /// <param name="capturedRows">
+        /// Optional runtime snapshot data (from live capture or in-game file).
+        /// Passed to render methods so they can display real game values.
+        /// </param>
+        public string Prepare(string userCode, string callExpression = null, List<SnapshotRowData> capturedRows = null)
         {
             Stop();
 
             try
             {
-                _ctx = CodeExecutor.CompileForAnimation(userCode, callExpression);
+                _ctx = CodeExecutor.CompileForAnimation(userCode, callExpression, capturedRows);
             }
             catch (Exception ex)
             {

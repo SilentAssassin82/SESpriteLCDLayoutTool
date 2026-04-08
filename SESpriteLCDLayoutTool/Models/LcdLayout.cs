@@ -19,5 +19,12 @@ namespace SESpriteLCDLayoutTool.Models
         /// Null when the layout was created from scratch.
         /// </summary>
         public string OriginalSourceCode { get; set; }
+
+        /// <summary>
+        /// Runtime snapshot data captured from Torch plugin (!lcd snapshot file)
+        /// or live capture pipe. Used to replay render methods with real game values
+        /// instead of placeholder text.
+        /// </summary>
+        public List<SnapshotRowData> CapturedRows { get; set; }
     }
 }
