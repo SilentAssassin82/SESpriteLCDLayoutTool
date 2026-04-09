@@ -114,6 +114,7 @@
     <Compile Include="Models\LcdLayout.cs" />
     <Compile Include="Models\SnapshotRowData.cs" />
     <Compile Include="Models\SpriteEntry.cs" />
+    <Compile Include="Models\TemplateDefinition.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Services\AnimationPlayer.cs" />
@@ -129,7 +130,11 @@
     <Compile Include="Services\SeFontAtlas.cs" />
     <Compile Include="Services\SnapshotMerger.cs" />
     <Compile Include="Services\SpriteTextureCache.cs" />
+    <Compile Include="Services\TemplateGallery.cs" />
     <Compile Include="Services\UndoManager.cs" />
+    <Compile Include="TemplateGalleryDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />

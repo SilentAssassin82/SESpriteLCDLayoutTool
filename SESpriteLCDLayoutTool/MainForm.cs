@@ -324,6 +324,21 @@ namespace SESpriteLCDLayoutTool
             edit.DropDownItems.Add("Layer Down\tCtrl+[",          null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); RefreshCode(); });
             ms.Items.Add(edit);
 
+            // ── Insert menu ──
+            var insert = new ToolStripMenuItem("Insert");
+            insert.DropDownItems.Add("Template Gallery…\tCtrl+T", null, (s, e) => ShowTemplateGallery());
+            insert.DropDownItems.Add(new ToolStripSeparator());
+            insert.DropDownItems.Add("Add Texture Sprite", null, (s, e) => AddSelectedTreeSprite());
+            insert.DropDownItems.Add("Add Text Sprite", null, (s, e) =>
+            {
+                string font = _cmbFont.SelectedItem?.ToString() ?? "White";
+                PushUndo();
+                var sp = _canvas.AddSprite("Text", isText: true);
+                if (sp != null) { sp.FontId = font; OnSelectionChanged(_canvas, EventArgs.Empty); }
+                RefreshLayerList(); RefreshCode();
+            });
+            ms.Items.Add(insert);
+
             var view = new ToolStripMenuItem("View");
             var snapItem = new ToolStripMenuItem("Snap to Grid\tCtrl+G") { CheckOnClick = true };
             snapItem.CheckedChanged += (s, e) => { _canvas.SnapToGrid = snapItem.Checked; SetStatus(snapItem.Checked ? "Snap to grid enabled" : "Snap to grid disabled"); };
@@ -4118,6 +4133,44 @@ namespace SESpriteLCDLayoutTool
             SetStatus("Full view restored.");
         }
 
+        /// <summary>
+        /// Opens the Template Gallery dialog where users can browse and insert pre-built sprite patterns.
+        /// </summary>
+        private void ShowTemplateGallery()
+        {
+            float surfW = _layout?.SurfaceWidth ?? 512f;
+            float surfH = _layout?.SurfaceHeight ?? 512f;
+            int targetIdx = _cmbCodeStyle?.SelectedIndex ?? 0;
+
+            using (var dlg = new TemplateGalleryDialog(surfW, surfH, targetIdx))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                if (string.IsNullOrEmpty(dlg.GeneratedCode)) return;
+
+                // Insert the generated code at the cursor in the code editor
+                if (_codeBox != null)
+                {
+                    _codeBox.Focus();
+                    _suppressCodeBoxEvents = true;
+                    try
+                    {
+                        _codeBox.SelectedText = dlg.GeneratedCode;
+                    }
+                    finally
+                    {
+                        _suppressCodeBoxEvents = false;
+                    }
+
+                    _codeBoxDirty = true;
+                    _lblCodeTitle.Text = "✏ Code (edited)";
+                    _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);
+                    if (_btnApplyCode != null) _btnApplyCode.Visible = true;
+
+                    SetStatus("Template inserted — click 'Apply Code' or '▶ Execute Code' to see it on canvas.");
+                }
+            }
+        }
+
         // Duplicate removed - using implementation at line 2073
 
 
@@ -5416,6 +5469,7 @@ namespace SESpriteLCDLayoutTool
                     case Keys.Control | Keys.S:
                     case Keys.Control | Keys.N:
                     case Keys.Control | Keys.E:
+                    case Keys.Control | Keys.T:
                         break; // fall through to global handler
                     default:
                         return base.ProcessCmdKey(ref msg, keyData);
@@ -5505,6 +5559,11 @@ namespace SESpriteLCDLayoutTool
                 // Paste layout code
                 case Keys.Control | Keys.V:
                     ShowPasteLayoutDialog();
+                    return true;
+
+                // Template gallery
+                case Keys.Control | Keys.T:
+                    ShowTemplateGallery();
                     return true;
 
                 // Pop out / dock code editor
