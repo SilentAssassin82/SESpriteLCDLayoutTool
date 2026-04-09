@@ -501,7 +501,6 @@ namespace SESpriteLCDLayoutTool
             _btnAddText.Click += (s, e) => {
                 string font = _cmbFont.SelectedItem?.ToString() ?? "White";
                 PushUndo();
-                InvalidateOriginalSourceIfSet();
                 var sp = _canvas.AddSprite("Text", isText: true);
                 if (sp != null) { sp.FontId = font; OnSelectionChanged(_canvas, EventArgs.Empty); }
                 RefreshLayerList(); RefreshCode();
@@ -1508,7 +1507,6 @@ namespace SESpriteLCDLayoutTool
                 name = "SquareSimple";
 
             PushUndo();
-            InvalidateOriginalSourceIfSet();
             _canvas.AddSprite(name, isText: false);
             RefreshLayerList();
             RefreshCode();
@@ -1518,7 +1516,6 @@ namespace SESpriteLCDLayoutTool
         {
             string font = _cmbFont.SelectedItem?.ToString() ?? "White";
             PushUndo();
-            InvalidateOriginalSourceIfSet();
             var sprite = _canvas.AddSprite(glyph.Character.ToString(), isText: true);
             if (sprite == null) return;
             sprite.Text   = glyph.Character.ToString();
@@ -2493,6 +2490,12 @@ namespace SESpriteLCDLayoutTool
                 string patched = CodeGenerator.PatchOriginalSource(_layout);
                 if (patched != null)
                 {
+                    // Check for newly added sprites (SourceStart < 0) and insert their code
+                    patched = CodeGenerator.InsertNewSpritesIntoSource(_layout, patched);
+
+                    // Update OriginalSourceCode so future patches work against the new baseline
+                    _layout.OriginalSourceCode = patched;
+
                     SetCodeText(patched);
                     RefreshDetectedCalls();
                     if (writeBack) WriteBackToWatchedFile(patched);
@@ -2503,6 +2506,10 @@ namespace SESpriteLCDLayoutTool
                 string roundTrip = CodeGenerator.GenerateRoundTrip(_layout);
                 if (roundTrip != null)
                 {
+                    // Also insert new sprites into region-based round-trip code
+                    roundTrip = CodeGenerator.InsertNewSpritesIntoSource(_layout, roundTrip);
+                    _layout.OriginalSourceCode = roundTrip;
+
                     SetCodeText(roundTrip);
                     RefreshDetectedCalls();
                     if (writeBack) WriteBackToWatchedFile(roundTrip);
@@ -5565,7 +5572,6 @@ namespace SESpriteLCDLayoutTool
             if (selected.Count == 0) { SetStatus("Nothing selected to duplicate."); return; }
 
             PushUndo();
-            InvalidateOriginalSourceIfSet();
             SpriteEntry lastDup = null;
             foreach (var src in selected)
             {

@@ -903,6 +903,242 @@ namespace SESpriteLCDLayoutTool.Services
             return final;
         }
 
+        /// <summary>
+        /// Inserts code blocks for newly added sprites (those with SourceStart &lt; 0) into the
+        /// patched source code. After insertion, updates each sprite's SourceStart/SourceEnd
+        /// and creates an ImportBaseline so they become tracked for future round-trip patching.
+        /// Returns the modified code with new sprites inserted, or the original if no insertion needed.
+        /// </summary>
+        public static string InsertNewSpritesIntoSource(LcdLayout layout, string patchedCode)
+        {
+            if (layout == null || string.IsNullOrWhiteSpace(patchedCode)) return patchedCode;
+
+            // Find untracked sprites (newly added, not yet in the code)
+            var newSprites = new List<SpriteEntry>();
+            foreach (var sp in layout.Sprites)
+            {
+                if (sp.IsReferenceLayout) continue;
+                if (sp.SourceStart >= 0) continue; // already tracked
+                newSprites.Add(sp);
+            }
+
+            if (newSprites.Count == 0) return patchedCode;
+
+            // Find the insertion point: look for the last "frame.Add(" or ".Add(new MySprite"
+            // and insert after its closing ");", or before "}" if we can find the frame block end.
+            int insertPos = FindSpriteInsertionPoint(patchedCode);
+            if (insertPos < 0) return patchedCode; // couldn't find a safe insertion point
+
+            // Detect indentation from surrounding code
+            string indent = DetectIndentation(patchedCode, insertPos);
+
+            var sb = new StringBuilder(patchedCode);
+            int offset = 0; // track how much we've shifted positions
+
+            foreach (var sp in newSprites)
+            {
+                string spriteCode = GenerateSingleSpriteCode(sp, indent);
+                int actualInsertPos = insertPos + offset;
+
+                sb.Insert(actualInsertPos, spriteCode);
+
+                // Update the sprite's source tracking so it becomes a tracked sprite
+                sp.SourceStart = actualInsertPos;
+                sp.SourceEnd = actualInsertPos + spriteCode.Length;
+                sp.ImportBaseline = sp.CloneValues();
+                sp.ImportLabel = sp.Type == SpriteEntryType.Text ? "Text" : (sp.SpriteName ?? "Texture");
+
+                offset += spriteCode.Length;
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Finds the best position to insert new sprite code blocks.
+        /// Looks for patterns like "frame.Add(new MySprite" or ".Add(new MySprite"
+        /// and returns the position after the last such block's closing ");".
+        /// </summary>
+        private static int FindSpriteInsertionPoint(string code)
+        {
+            // Strategy: Find all ".Add(new MySprite" occurrences and pick the last one's end
+            int lastAddEnd = -1;
+            int searchPos = 0;
+
+            while (searchPos < code.Length)
+            {
+                // Look for frame.Add or .Add patterns followed by MySprite
+                int addIdx = code.IndexOf(".Add(new MySprite", searchPos, StringComparison.Ordinal);
+                if (addIdx < 0)
+                    addIdx = code.IndexOf(".Add(MySprite.Create", searchPos, StringComparison.Ordinal);
+                if (addIdx < 0) break;
+
+                // Find the closing ");" for this sprite block
+                int closePos = FindSpriteBlockEnd(code, addIdx);
+                if (closePos > lastAddEnd)
+                    lastAddEnd = closePos;
+
+                searchPos = addIdx + 10;
+            }
+
+            // If we found sprite adds, insert after the last one
+            if (lastAddEnd > 0)
+                return lastAddEnd;
+
+            // Fallback: look for "using (var frame = " and insert before its closing "}"
+            int frameStart = code.IndexOf("using (var frame =", StringComparison.Ordinal);
+            if (frameStart < 0)
+                frameStart = code.IndexOf("using(var frame =", StringComparison.Ordinal);
+            if (frameStart >= 0)
+            {
+                // Find the opening brace of the using block
+                int braceOpen = code.IndexOf('{', frameStart);
+                if (braceOpen >= 0)
+                {
+                    // Find matching closing brace
+                    int depth = 1;
+                    int pos = braceOpen + 1;
+                    while (pos < code.Length && depth > 0)
+                    {
+                        if (code[pos] == '{') depth++;
+                        else if (code[pos] == '}') depth--;
+                        if (depth > 0) pos++;
+                    }
+                    // Insert before the closing brace, with proper newlines
+                    if (depth == 0 && pos > braceOpen)
+                        return pos;
+                }
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Finds the end position of a sprite block starting from a ".Add(" call.
+        /// Returns the position after the closing ");" or "});" for object initializers.
+        /// </summary>
+        private static int FindSpriteBlockEnd(string code, int addStart)
+        {
+            // Look for object initializer pattern: .Add(new MySprite { ... });
+            int braceOpen = code.IndexOf('{', addStart);
+            int parenClose = code.IndexOf(");", addStart, StringComparison.Ordinal);
+
+            // If there's a brace before the first ");", it's an object initializer
+            if (braceOpen >= 0 && (parenClose < 0 || braceOpen < parenClose))
+            {
+                // Find matching closing brace
+                int depth = 1;
+                int pos = braceOpen + 1;
+                while (pos < code.Length && depth > 0)
+                {
+                    if (code[pos] == '{') depth++;
+                    else if (code[pos] == '}') depth--;
+                    pos++;
+                }
+                // Now find ");" after the closing brace
+                int endMarker = code.IndexOf(");", pos, StringComparison.Ordinal);
+                if (endMarker >= 0)
+                {
+                    // Include trailing newline if present
+                    int end = endMarker + 2;
+                    if (end < code.Length && code[end] == '\r') end++;
+                    if (end < code.Length && code[end] == '\n') end++;
+                    return end;
+                }
+            }
+            else if (parenClose >= 0)
+            {
+                // Simple constructor call: .Add(MySprite.CreateText(...));
+                int end = parenClose + 2;
+                if (end < code.Length && code[end] == '\r') end++;
+                if (end < code.Length && code[end] == '\n') end++;
+                return end;
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Detects the indentation level at the given position by looking at surrounding code.
+        /// </summary>
+        private static string DetectIndentation(string code, int pos)
+        {
+            // Walk backward to find the start of the previous line
+            int lineStart = pos - 1;
+            while (lineStart > 0 && code[lineStart] != '\n') lineStart--;
+            if (lineStart > 0) lineStart++; // skip the \n
+
+            // Count leading whitespace
+            var indent = new StringBuilder();
+            int i = lineStart;
+            while (i < code.Length && (code[i] == ' ' || code[i] == '\t'))
+            {
+                indent.Append(code[i]);
+                i++;
+            }
+
+            // Default to 8 spaces if we couldn't detect
+            return indent.Length > 0 ? indent.ToString() : "        ";
+        }
+
+        /// <summary>
+        /// Generates the code block for a single sprite, ready to be inserted into existing source.
+        /// Uses the standard frame.Add(new MySprite { ... }); pattern.
+        /// </summary>
+        public static string GenerateSingleSpriteCode(SpriteEntry sp, string indent = "        ")
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine();
+            sb.Append(indent);
+            sb.AppendLine($"// [+] {sp.DisplayName}");
+            sb.Append(indent);
+            sb.AppendLine("frame.Add(new MySprite");
+            sb.Append(indent);
+            sb.AppendLine("{");
+
+            string innerIndent = indent + "    ";
+
+            if (sp.Type == SpriteEntryType.Text)
+            {
+                sb.Append(innerIndent);
+                sb.AppendLine("Type           = SpriteType.TEXT,");
+                sb.Append(innerIndent);
+                sb.AppendLine($"Data           = {Q(sp.Text)},");
+                sb.Append(innerIndent);
+                sb.AppendLine($"Position       = new Vector2({sp.X:F4}f, {sp.Y:F4}f),");
+                sb.Append(innerIndent);
+                sb.AppendLine($"Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+                sb.Append(innerIndent);
+                sb.AppendLine($"FontId         = {Q(sp.FontId)},");
+                sb.Append(innerIndent);
+                sb.AppendLine($"Alignment      = TextAlignment.{sp.Alignment.ToString().ToUpperInvariant()},");
+                sb.Append(innerIndent);
+                sb.AppendLine($"RotationOrScale = {sp.Scale:F2}f,");
+            }
+            else
+            {
+                sb.Append(innerIndent);
+                sb.AppendLine("Type           = SpriteType.TEXTURE,");
+                sb.Append(innerIndent);
+                sb.AppendLine($"Data           = {Q(sp.SpriteName)},");
+                sb.Append(innerIndent);
+                sb.AppendLine($"Position       = new Vector2({sp.X:F4}f, {sp.Y:F4}f),");
+                sb.Append(innerIndent);
+                sb.AppendLine($"Size           = new Vector2({sp.Width:F4}f, {sp.Height:F4}f),");
+                sb.Append(innerIndent);
+                sb.AppendLine($"Color          = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+                sb.Append(innerIndent);
+                sb.AppendLine("Alignment      = TextAlignment.CENTER,");
+                sb.Append(innerIndent);
+                sb.AppendLine($"RotationOrScale = {sp.Rotation:F4}f,");
+            }
+
+            sb.Append(indent);
+            sb.AppendLine("});");
+
+            return sb.ToString();
+        }
+
         /// <summary>Replaces a quoted string literal in the source text.</summary>
         private static string ReplaceStringLiteral(string text, string oldValue, string newValue)
         {
