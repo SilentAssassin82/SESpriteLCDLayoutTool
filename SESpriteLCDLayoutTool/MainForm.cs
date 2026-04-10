@@ -2421,6 +2421,15 @@ namespace SESpriteLCDLayoutTool
                 _lstLayers.Items.Clear();
                 if (_layout == null) return;
 
+                // CRITICAL FIX: Clear SpriteName for ALL text sprites before displaying
+                // to ensure DisplayName shows text content, not texture sprite names.
+                // This handles sprites loaded from old .splcd files or cached before the fix.
+                foreach (var sprite in _layout.Sprites)
+                {
+                    if (sprite.Type == SpriteEntryType.Text)
+                        sprite.SpriteName = null;
+                }
+
                 // Safety: if isolation is active but HighlightedSprites was
                 // cleared by another path, re-sync from _isolatedCallSprites.
                 var highlighted = _canvas.HighlightedSprites;

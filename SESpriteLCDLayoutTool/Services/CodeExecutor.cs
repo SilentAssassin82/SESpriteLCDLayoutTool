@@ -1926,7 +1926,10 @@ namespace SESpriteLCDLayoutTool.Services
                     };
 
                     if (isText)
+                    {
                         entry.Text = row[1];
+                        entry.SpriteName = null; // Clear default SpriteName so DisplayName shows text
+                    }
                     else
                         entry.SpriteName = string.IsNullOrEmpty(row[1]) ? "SquareSimple" : row[1];
 

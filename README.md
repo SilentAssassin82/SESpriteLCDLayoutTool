@@ -720,6 +720,39 @@ MIT License
   - Median offset calculation remains for robustness against outliers
   - Debug output shows match confidence: `(70/70 exact matches)` and `Indexed by 447 unique X positions (O(1) lookup!)`
 - **Architecture fix for generic sprite environments** — Space Engineers uses only generic sprite names (Circle, SquareSimple, Triangle) across all methods, making name-based indexing unreliable; X-coordinate indexing eliminates all ambiguity
+- **Roslyn Syntax Tree Merge** — new `RoslynCodeMerger` service provides intelligent code patching using Microsoft.CodeAnalysis (Roslyn)
+  - **AST-aware merging** instead of fragile string replacement — understands C# syntax structure
+  - **Method body extraction and replacement** — uses `MethodBodyAnalyzer` to isolate method bodies via syntax trees
+  - **Preserves formatting and comments** — patches code while maintaining indentation, spacing, and inline comments
+  - **Fallback to string patching** — gracefully degrades to offset-based patching when Roslyn fails (unsupported syntax, parsing errors)
+  - Fixes edge cases where generated code had different whitespace or method ordering than original source
+- **MethodBodyAnalyzer service** — extracts method bodies from source code using Roslyn syntax trees
+  - `ExtractMethodBody(sourceCode, methodName)` returns the exact body text with original formatting
+  - Used by `RoslynCodeMerger` for targeted method replacement
+  - Handles multiple overloads, nested methods, and complex syntax
+- **ElementSpriteMapping enhancements** — `.sprmap` v3 format with Y offset persistence
+  - `MethodYOffsets` dictionary stores calculated Y offsets per method for correct positioning during isolation
+  - `SpritesBelongsToMethodByName()` for position-independent animation filtering
+  - Position-based signatures (`ApproxX`, `ApproxY`) distinguish sprites with same texture in different locations
+  - Reverse lookup optimization via `BuildReverseLookup()` for fast sprite→method queries
+- **SpriteMappingBuilder improvements** — multi-frame orchestrator and exact property matching
+  - Runs full orchestrator for 30 frames to capture animated sprites with correct stacked positions
+  - Individual method execution for sprite attribution (which method created which sprite)
+  - X-coordinate indexed matching for O(1) lookup during Y offset calculation
+  - `SpritesMatchExceptY()` compares all properties except Y for deterministic matching
+- **Text sprite label fix** — Text sprites in the layer list now always display `"TEXT 'content'"` instead of showing texture sprite names from cached state
+  - Global cleanup in `RefreshLayerList()` clears `SpriteName` for all text sprites before display
+  - `DisplayName` property enhanced with fallback logic for null SpriteName
+  - `ConvertFromMatrix` (sprite deserialization) explicitly sets `SpriteName = null` for text sprites
+  - Fixes issue where old sprites from files or previous executions showed misleading labels during Execute & Isolate
+
+**Troubleshooting Execute & Isolate:**
+- If text sprite labels show incorrect names (e.g. "Circle" instead of "TEXT 'SIGNAL'"):
+  1. Double-click the method to **Execute & Isolate**
+  2. Right-click the detected method → **🗺 Build Sprite Map (for isolation)**
+  3. Layer list labels will update with correct text content
+- Building the sprite map runs fresh execution with correct sprite property tracking, refreshing all cached sprite data
+- This is only needed once per layout file - subsequent Execute & Isolate operations will use the updated mapping
 
 ### v2.4.0
 - **Canvas multi-select** — Shift+click sprites directly on the canvas to add/remove them from the selection, enabling batch operations without switching to the layer list

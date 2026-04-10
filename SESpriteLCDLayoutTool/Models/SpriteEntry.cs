@@ -215,9 +215,12 @@ namespace SESpriteLCDLayoutTool.Models
             get
             {
                 if (ImportLabel != null) return ImportLabel;
-                return Type == SpriteEntryType.Text
-                    ? $"TEXT \"{(Text != null && Text.Length > 12 ? Text.Substring(0, 9) + "..." : Text)}\""
-                    : SpriteName;
+                if (Type == SpriteEntryType.Text)
+                    return $"TEXT \"{(Text != null && Text.Length > 12 ? Text.Substring(0, 9) + "..." : Text)}\"";
+                // Fallback: even if Type is wrong, show text if SpriteName is null/empty and Text is set
+                if (string.IsNullOrEmpty(SpriteName) && !string.IsNullOrEmpty(Text))
+                    return $"TEXT \"{(Text.Length > 12 ? Text.Substring(0, 9) + "..." : Text)}\"";
+                return SpriteName;
             }
         }
 
