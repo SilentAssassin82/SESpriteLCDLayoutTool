@@ -21,10 +21,27 @@ namespace SESpriteLCDLayoutTool.Models
         public string OriginalSourceCode { get; set; }
 
         /// <summary>
+        /// When true, the layout contains sprites from a Pulsar plugin or Mod script
+        /// execution. These sprites have no source tracking (SourceStart = -1) because
+        /// they come from runtime DrawFrame() calls. Code regeneration should be
+        /// skipped to preserve the original source code in the code panel.
+        /// </summary>
+        public bool IsPulsarOrModLayout { get; set; }
+
+        /// <summary>
         /// Runtime snapshot data captured from Torch plugin (!lcd snapshot file)
         /// or live capture pipe. Used to replay render methods with real game values
         /// instead of placeholder text.
         /// </summary>
         public List<SnapshotRowData> CapturedRows { get; set; }
+
+        /// <summary>
+        /// Runtime mapping of element/method names to the sprites they produce.
+        /// Built by running N frames of animation and collecting all unique sprites.
+        /// Used for accurate Execute &amp; Isolate filtering.
+        /// Not serialized - rebuilt when needed or loaded from .sprmap file.
+        /// </summary>
+        [NonSerialized]
+        public ElementSpriteMapping SpriteMapping;
     }
 }

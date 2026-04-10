@@ -205,8 +205,9 @@ namespace SESpriteLCDLayoutTool.Controls
 
         private RectangleF GetSpriteScreenRect(SpriteEntry sprite, float scale, PointF origin)
         {
-            float w = sprite.Width  * scale;
-            float h = sprite.Height * scale;
+            // Use absolute values for rect calculation - negative sizes mean "flip" in SE
+            float w = Math.Abs(sprite.Width)  * scale;
+            float h = Math.Abs(sprite.Height) * scale;
 
             if (sprite.Type == SpriteEntryType.Text)
             {
@@ -607,6 +608,13 @@ namespace SESpriteLCDLayoutTool.Controls
             var state = g.Save();
 
             g.TranslateTransform(rect.X + rect.Width  / 2f, rect.Y + rect.Height / 2f);
+
+            // Apply flipping if sprite has negative width/height (SE convention)
+            float scaleX = sprite.Width < 0 ? -1f : 1f;
+            float scaleY = sprite.Height < 0 ? -1f : 1f;
+            if (scaleX != 1f || scaleY != 1f)
+                g.ScaleTransform(scaleX, scaleY);
+
             g.RotateTransform(sprite.Rotation * 180f / (float)Math.PI);
             var r = new RectangleF(-rect.Width / 2f, -rect.Height / 2f, rect.Width, rect.Height);
 

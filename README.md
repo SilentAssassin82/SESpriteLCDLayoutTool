@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.4.0) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.5.0) |
 
 ---
 
@@ -709,6 +709,17 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.5.0
+- **Execute & Isolate: X-Coordinate Indexing** — Sprite position matching now uses **O(1) lookup** by X coordinate instead of O(n) linear search through all sprites
+  - **100% deterministic sprite matching** — no guessing, no weighted voting, no fallbacks
+  - X position is the **invariant property** between isolated and full scene execution (only Y changes)
+  - Index structure changed from `Dictionary<spriteName, List<sprites>>` to `Dictionary<X, List<sprites>>`
+  - Reduces search space from ~1700 sprites to ~5-10 sprites per X coordinate
+  - **Exact property matching** compares Type, SpriteName/Text, X (±1px), Width, Height, Color (exact), Rotation (±0.01°)
+  - Median offset calculation remains for robustness against outliers
+  - Debug output shows match confidence: `(70/70 exact matches)` and `Indexed by 447 unique X positions (O(1) lookup!)`
+- **Architecture fix for generic sprite environments** — Space Engineers uses only generic sprite names (Circle, SquareSimple, Triangle) across all methods, making name-based indexing unreliable; X-coordinate indexing eliminates all ambiguity
 
 ### v2.4.0
 - **Canvas multi-select** — Shift+click sprites directly on the canvas to add/remove them from the selection, enabling batch operations without switching to the layer list

@@ -22,6 +22,10 @@ namespace SESpriteLCDLayoutTool
         private NumericUpDown _numHeight;
         private TemplateDefinition _selectedTemplate;
 
+        // SplitContainers (distances set in Load event)
+        private SplitContainer _splitMain;
+        private SplitContainer _splitRight;
+
         /// <summary>The generated code to insert (set when user clicks Insert).</summary>
         public string GeneratedCode { get; private set; }
 
@@ -45,6 +49,20 @@ namespace SESpriteLCDLayoutTool
             BuildUI(defaultTargetIndex);
             PopulateCategories();
             SelectCategory(null); // Show all
+
+            // Set all SplitContainer sizing properties in Load event after form is laid out
+            Load += (s, e) =>
+            {
+                _splitMain.Panel1MinSize = 120;
+                _splitMain.Panel2MinSize = 400;
+                _splitMain.SplitterDistance = Math.Max(120,
+                    Math.Min(_splitMain.Width - 400 - _splitMain.SplitterWidth, 150));
+
+                _splitRight.Panel1MinSize = 150;
+                _splitRight.Panel2MinSize = 150;
+                _splitRight.SplitterDistance = Math.Max(150,
+                    Math.Min(_splitRight.Height - 150 - _splitRight.SplitterWidth, 280));
+            };
         }
 
         private void BuildUI(int defaultTargetIndex)
@@ -53,14 +71,11 @@ namespace SESpriteLCDLayoutTool
             // MAIN SPLIT: Left (categories) | Right (templates + preview)
             // ═══════════════════════════════════════════════════════════════════
 
-            var splitMain = new SplitContainer
+            _splitMain = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
-                SplitterDistance = 150,
                 BackColor = Color.FromArgb(30, 30, 30),
-                Panel1MinSize = 120,
-                Panel2MinSize = 400,
             };
 
             // ── Left panel: Categories ──
@@ -94,17 +109,14 @@ namespace SESpriteLCDLayoutTool
 
             pnlLeft.Controls.Add(_lstCategories);
             pnlLeft.Controls.Add(lblCategories);
-            splitMain.Panel1.Controls.Add(pnlLeft);
+            _splitMain.Panel1.Controls.Add(pnlLeft);
 
             // ── Right panel split: Top (templates) | Bottom (preview) ──
-            var splitRight = new SplitContainer
+            _splitRight = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                SplitterDistance = 280,
                 BackColor = Color.FromArgb(30, 30, 30),
-                Panel1MinSize = 150,
-                Panel2MinSize = 150,
             };
 
             // ── Templates grid ──
@@ -137,7 +149,7 @@ namespace SESpriteLCDLayoutTool
 
             pnlTemplatesOuter.Controls.Add(_pnlTemplates);
             pnlTemplatesOuter.Controls.Add(lblTemplates);
-            splitRight.Panel1.Controls.Add(pnlTemplatesOuter);
+            _splitRight.Panel1.Controls.Add(pnlTemplatesOuter);
 
             // ── Preview panel ──
             var pnlPreviewOuter = new Panel
@@ -173,10 +185,10 @@ namespace SESpriteLCDLayoutTool
 
             pnlPreviewOuter.Controls.Add(_txtPreview);
             pnlPreviewOuter.Controls.Add(_lblDescription);
-            splitRight.Panel2.Controls.Add(pnlPreviewOuter);
+            _splitRight.Panel2.Controls.Add(pnlPreviewOuter);
 
-            splitMain.Panel2.Controls.Add(splitRight);
-            Controls.Add(splitMain);
+            _splitMain.Panel2.Controls.Add(_splitRight);
+            Controls.Add(_splitMain);
 
             // ═══════════════════════════════════════════════════════════════════
             // TOP OPTIONS BAR

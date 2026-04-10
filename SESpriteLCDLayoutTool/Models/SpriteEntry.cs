@@ -136,6 +136,14 @@ namespace SESpriteLCDLayoutTool.Models
         public bool IsSnapshotData { get; set; }
 
         /// <summary>
+        /// When true, this sprite came from executing code (Pulsar/Mod script).
+        /// These sprites have no source tracking but should NOT be inserted as new code -
+        /// they already exist in the original source as runtime-generated sprites.
+        /// Only sprites with IsFromExecution=false AND SourceStart=-1 are truly "new".
+        /// </summary>
+        [XmlIgnore] public bool IsFromExecution { get; set; }
+
+        /// <summary>
         /// Optional note displayed in UI showing which runtime snapshot row this sprite represents
         /// (e.g. "Header: Inventory", "ItemBar: Steel Plate (800/1000)").
         /// </summary>
@@ -154,6 +162,19 @@ namespace SESpriteLCDLayoutTool.Models
 
         /// <summary>Variable name extracted from code (e.g. "sprites.Add(header)", "frame.Add(titleBar)") for layer list annotation.</summary>
         [XmlIgnore] public string VariableName { get; set; }
+
+        /// <summary>
+        /// The name of the method that created this sprite during execution.
+        /// Populated when running full code with method tracking enabled.
+        /// Used for Execute &amp; Isolate to filter sprites by source method.
+        /// </summary>
+        [XmlIgnore] public string SourceMethodName { get; set; }
+
+        /// <summary>
+        /// Index of this sprite within its source method (0-based).
+        /// Allows distinguishing multiple sprites with the same name from the same method.
+        /// </summary>
+        [XmlIgnore] public int SourceMethodIndex { get; set; } = -1;
 
         /// <summary>Snapshot of property values at import time, used for diffing in per-sprite round-trip.</summary>
         [XmlIgnore] public SpriteEntry ImportBaseline { get; set; }

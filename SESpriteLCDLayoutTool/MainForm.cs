@@ -320,8 +320,8 @@ namespace SESpriteLCDLayoutTool
             edit.DropDownItems.Add("Delete Selected\tDel",        null, (s, e) => DeleteSelected());
             edit.DropDownItems.Add(new ToolStripSeparator());
             edit.DropDownItems.Add("Center on Surface",           null, (s, e) => CenterSelectedOnSurface());
-            edit.DropDownItems.Add("Layer Up\tCtrl+]",            null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); RefreshCode(); });
-            edit.DropDownItems.Add("Layer Down\tCtrl+[",          null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); RefreshCode(); });
+            edit.DropDownItems.Add("Layer Up\tCtrl+]",            null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
+            edit.DropDownItems.Add("Layer Down\tCtrl+[",          null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
             ms.Items.Add(edit);
 
             // ── Insert menu ──
@@ -335,7 +335,7 @@ namespace SESpriteLCDLayoutTool
                 PushUndo();
                 var sp = _canvas.AddSprite("Text", isText: true);
                 if (sp != null) { sp.FontId = font; OnSelectionChanged(_canvas, EventArgs.Empty); }
-                RefreshLayerList(); RefreshCode();
+                RefreshLayerList(); if (!_codeBoxDirty) RefreshCode();
             });
             ms.Items.Add(insert);
 
@@ -518,7 +518,7 @@ namespace SESpriteLCDLayoutTool
                 PushUndo();
                 var sp = _canvas.AddSprite("Text", isText: true);
                 if (sp != null) { sp.FontId = font; OnSelectionChanged(_canvas, EventArgs.Empty); }
-                RefreshLayerList(); RefreshCode();
+                RefreshLayerList(); if (!_codeBoxDirty) RefreshCode();
             };
 
             bottomTable.Controls.Add(lblCustom,      0, 0);
@@ -807,6 +807,18 @@ namespace SESpriteLCDLayoutTool
             string code = _codeBox.Text;
             if (string.IsNullOrWhiteSpace(code)) { SetStatus("Code panel is empty."); return; }
 
+            // Track if user had edited the code (e.g., inserted a template).
+            // We'll preserve their code instead of regenerating from captured sprites.
+            bool preserveUserCode = _codeBoxDirty;
+            string originalCodeText = preserveUserCode ? code : null;
+
+            // Clear any stale OriginalSourceCode when user executes from the code box.
+            // Templates with expressions (like "thermX") can't round-trip properly —
+            // the parser may return sprites with default values that don't match the code.
+            // Starting fresh prevents mixing template code with generated literal code.
+            if (_codeBoxDirty)
+                _layout.OriginalSourceCode = null;
+
             // Use stored call expression, or auto-detect from the code
             string call = _execCallBox.Text.Trim();
 
@@ -847,9 +859,16 @@ namespace SESpriteLCDLayoutTool
 
                             _layout.Sprites.Clear();
                             _layout.Sprites.AddRange(parsed);
+
+                            // Note: We intentionally do NOT set OriginalSourceCode here.
+                            // The parser may have returned sprites with default values
+                            // if the code uses expressions (like "thermX" in templates).
+                            // Clearing it at the start of OnExecCodeClick handles this.
+
                             _canvas.CanvasLayout = _layout;
                             _canvas.SelectedSprite = parsed.Count > 0 ? parsed[0] : null;
                             RefreshLayerList();
+                            RefreshCode();  // Will be skipped if _codeBoxDirty (template code)
                             _execResultLabel.Text      = "✔ " + parsed.Count + " sprites [Import]";
                             _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
                             SetStatus($"Imported {parsed.Count} sprite(s) from pasted code" + (hadImportSnapshot ? " (snapshot positions preserved)" : ""));
@@ -893,6 +912,8 @@ namespace SESpriteLCDLayoutTool
 
             string typeTag = result.ScriptType == ScriptType.ProgrammableBlock ? " [PB]"
                            : result.ScriptType == ScriptType.ModSurface        ? " [Mod]"
+                           : result.ScriptType == ScriptType.PulsarPlugin      ? " [Pulsar]"
+                           : result.ScriptType == ScriptType.TorchPlugin       ? " [Torch]"
                            : "";
             _execResultLabel.Text      = "✔ " + result.Sprites.Count + typeTag;
             _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
@@ -918,13 +939,14 @@ namespace SESpriteLCDLayoutTool
 
             // When source-tracked sprites exist, merge execution results as a
             // snapshot so round-trip editing and click-to-jump continue to work.
-            // Skip merge for Pulsar/Mod scripts — their sprites come from runtime
+            // Skip merge for Pulsar/Mod/Torch scripts — their sprites come from runtime
             // surface.DrawFrame() calls and don't match CodeParser's static analysis,
             // causing all execution sprites to be added as orphans (doubling).
             // ALSO skip when we just applied snapshot positions (hadSnapshot=true)
             // because the second merge would overwrite the snapshot positions.
             bool useFullReplacement = result.ScriptType == ScriptType.PulsarPlugin
                                    || result.ScriptType == ScriptType.ModSurface
+                                   || result.ScriptType == ScriptType.TorchPlugin
                                    || hadSnapshot;
 
             if (!useFullReplacement && _layout.OriginalSourceCode != null)
@@ -956,7 +978,8 @@ namespace SESpriteLCDLayoutTool
                     _canvas.SelectedSprite = editable.Count > 0 ? editable[0] : null;
                     _canvas.Invalidate();
                     RefreshLayerList();
-                    RefreshCode();
+                    if (!preserveUserCode)
+                        RefreshCode();
                     SetStatus($"Executed — {mergeResult.Summary}");
                     RefreshDebugStats();
                     return;
@@ -966,14 +989,72 @@ namespace SESpriteLCDLayoutTool
             // No source tracking — full replacement
             _layout.Sprites.Clear();
             foreach (var sp in result.Sprites)
+            {
+                // Mark sprites as coming from execution so they're not treated as "new"
+                sp.IsFromExecution = true;
                 _layout.Sprites.Add(sp);
+            }
+
+            // For Pulsar/Mod/Torch scripts: PRESERVE the original source code.
+            // These scripts use DrawFrame() at runtime so sprites have no static
+            // source tracking, but we still want to keep the original code in the
+            // code panel so the user can edit and re-execute. Clearing OriginalSourceCode
+            // and calling RefreshCode() would regenerate broken code from untracked sprites.
+            bool isPulsarOrMod = result.ScriptType == ScriptType.PulsarPlugin
+                              || result.ScriptType == ScriptType.ModSurface
+                              || result.ScriptType == ScriptType.TorchPlugin;
+
+            if (isPulsarOrMod)
+            {
+                // Mark the layout as Pulsar/Mod/Torch so RefreshCode() skips regeneration
+                // for ALL subsequent canvas operations (add sprite, delete, drag, etc.)
+                _layout.IsPulsarOrModLayout = true;
+            }
+            else
+            {
+                // For other script types (templates, etc.) without source tracking,
+                // clear OriginalSourceCode to prevent round-trip patching issues.
+                _layout.OriginalSourceCode = null;
+                _layout.IsPulsarOrModLayout = false;
+            }
 
             _canvas.SelectedSprite = result.Sprites.Count > 0 ? result.Sprites[0] : null;
             _canvas.Invalidate();
             RefreshLayerList();
-            RefreshCode();
+
+            // Don't regenerate code for Pulsar/Mod scripts - keep original code intact.
+            // For other scripts, RefreshCode is protected by _codeBoxDirty check.
+            if (!isPulsarOrMod)
+                RefreshCode();
+
             SetStatus($"Executed — {result.Sprites.Count} sprite(s) captured.");
             RefreshDebugStats();
+
+            // ══════════════════════════════════════════════════════════════════════════
+            // AUTOMATIC SPRITE MAPPING: Build method-to-sprite mapping after execution
+            // This enables "Execute & Isolate" to work correctly by knowing which sprites
+            // belong to which methods. Uses static code analysis + pattern matching.
+            // ══════════════════════════════════════════════════════════════════════════
+            System.Diagnostics.Debug.WriteLine("\n[MainForm] ========== AUTO-BUILDING SPRITE MAPPING ==========");
+            var mappingResult = SpriteMappingBuilder.BuildMapping(
+                code, 
+                call, 
+                frameCount: 30, 
+                capturedRows: _layout?.CapturedRows);
+
+            if (mappingResult.Success)
+            {
+                _layout.SpriteMapping = mappingResult.Mapping;
+                System.Diagnostics.Debug.WriteLine($"[MainForm] Sprite mapping built successfully:");
+                System.Diagnostics.Debug.WriteLine($"  - {mappingResult.Mapping.MethodToSprites.Count} methods");
+                System.Diagnostics.Debug.WriteLine($"  - {mappingResult.TotalSpritesCollected} sprite attributions");
+                System.Diagnostics.Debug.WriteLine($"[MainForm] ===================================================\n");
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine($"[MainForm] Sprite mapping build failed: {mappingResult.Error}");
+                // Don't show error to user - isolation will just fall back to other matching methods
+            }
         }
 
         private Panel BuildCodePanel()
@@ -1013,15 +1094,14 @@ namespace SESpriteLCDLayoutTool
 
             var btnRefresh = DarkButton("⟳ Generate Code", Color.FromArgb(0, 122, 60));
             btnRefresh.Size   = new Size(120, 26);
-            btnRefresh.Click += (s, e) => { ClearCodeDirty(); RefreshCode(); };
+            btnRefresh.Click += (s, e) => RefreshCode(force: true);  // User explicitly wants fresh code
 
             var btnResetSource = DarkButton("Reset Source", Color.FromArgb(120, 60, 0));
             btnResetSource.Size = new Size(95, 26);
             btnResetSource.Click += (s, e) =>
             {
                 if (_layout != null) _layout.OriginalSourceCode = null;
-                ClearCodeDirty();
-                RefreshCode();
+                RefreshCode(force: true);  // User explicitly wants to reset
                 SetStatus("Round-trip source cleared — using generated template.");
             };
 
@@ -1322,6 +1402,10 @@ namespace SESpriteLCDLayoutTool
                 IsolateCallSprites(call);
             };
             ctxCalls.Items.Add(mnuExecIsolate);
+
+            var mnuBuildMap = new ToolStripMenuItem("🗺 Build Sprite Map (for isolation)");
+            mnuBuildMap.Click += (s2, e2) => BuildSpriteMappingAsync();
+            ctxCalls.Items.Add(mnuBuildMap);
 
             var mnuFocusAnim = new ToolStripMenuItem("▶ Start Focused Animation");
             mnuFocusAnim.Click += (s2, e2) =>
@@ -1641,7 +1725,7 @@ namespace SESpriteLCDLayoutTool
             finally { _updatingProps = false; }
 
             RefreshExpressionColors();
-            RefreshCode();
+            RefreshCode();  // Protected by _codeBoxDirty check inside RefreshCode()
             UpdateStatus();
         }
 
@@ -1670,8 +1754,7 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
-            ClearCodeDirty();
-            RefreshCode(writeBack: true);
+            RefreshCode(writeBack: true);  // Protected by _codeBoxDirty check inside RefreshCode()
             UpdateStatus();
         }
 
@@ -2450,6 +2533,7 @@ namespace SESpriteLCDLayoutTool
             switch (detectedType)
             {
                 case ScriptType.ProgrammableBlock: targetIndex = 0; break;
+                case ScriptType.TorchPlugin:       targetIndex = 2; break; // "Plugin / Torch"
                 case ScriptType.ModSurface:
                     // Distinguish between generic Mod (index 1) and Torch/Plugin (index 2)
                     if (code.Contains("#if TORCH") ||
@@ -2477,9 +2561,43 @@ namespace SESpriteLCDLayoutTool
             || (_fileWatcher != null && _fileWatcher.IsListening && !_fileWatcher.IsPaused)
             || (_clipboardTimer != null);
 
-        private void RefreshCode(bool writeBack = false)
+        /// <summary>
+        /// Regenerates the code panel from the current layout.
+        /// IMPORTANT: By default, this respects _codeBoxDirty — if the user has manually
+        /// edited the code (templates, animations, etc.), it will NOT overwrite their edits.
+        /// Use force=true only when you explicitly want to overwrite user edits.
+        /// </summary>
+        private void RefreshCode(bool writeBack = false, bool force = false)
         {
             if (_layout == null) { SetCodeText(""); RefreshDetectedCalls(); return; }
+
+            // CRITICAL: Respect user's manual code edits unless force=true.
+            // This prevents templates, animation snippets, and other manual edits
+            // from being overwritten by canvas interactions or other operations.
+            if (_codeBoxDirty && !force)
+                return;
+
+            // FAST PATH: For Pulsar/Mod layouts, only proceed if there are truly new sprites.
+            // This avoids expensive operations during animation playback.
+            if (_layout.IsPulsarOrModLayout && !force)
+            {
+                // Quick check: do we have any user-added sprites that need inserting?
+                bool hasNewSprites = false;
+                foreach (var sp in _layout.Sprites)
+                {
+                    if (sp.SourceStart < 0 && !sp.IsFromExecution)
+                    {
+                        hasNewSprites = true;
+                        break;
+                    }
+                }
+
+                if (!hasNewSprites)
+                {
+                    // No new sprites - nothing to do, keep original code
+                    return;
+                }
+            }
 
             // Clear the "user has manually edited" state — any action that calls
             // RefreshCode wants the code panel to reflect the current layout.
@@ -2505,8 +2623,19 @@ namespace SESpriteLCDLayoutTool
                 string patched = CodeGenerator.PatchOriginalSource(_layout);
                 if (patched != null)
                 {
-                    // Check for newly added sprites (SourceStart < 0) and insert their code
-                    patched = CodeGenerator.InsertNewSpritesIntoSource(_layout, patched);
+                    // Only use Roslyn if there are actually NEW sprites to insert
+                    // (not from execution, and not already tracked)
+                    bool hasNewSprites = _layout.Sprites.Any(sp => sp.SourceStart < 0 && !sp.IsFromExecution);
+                    if (hasNewSprites)
+                    {
+                        // Use Roslyn for proper syntax-aware insertion
+                        string listVar = RoslynCodeMerger.DetectListVariable(patched);
+                        var roslynResult = RoslynCodeMerger.InsertSprites(patched, _layout.Sprites, listVar);
+                        if (roslynResult.Success && roslynResult.SpritesInserted > 0)
+                            patched = roslynResult.Code;
+                        else
+                            patched = CodeGenerator.InsertNewSpritesIntoSource(_layout, patched); // Fallback
+                    }
 
                     // Update OriginalSourceCode so future patches work against the new baseline
                     _layout.OriginalSourceCode = patched;
@@ -2521,8 +2650,18 @@ namespace SESpriteLCDLayoutTool
                 string roundTrip = CodeGenerator.GenerateRoundTrip(_layout);
                 if (roundTrip != null)
                 {
-                    // Also insert new sprites into region-based round-trip code
-                    roundTrip = CodeGenerator.InsertNewSpritesIntoSource(_layout, roundTrip);
+                    // Only use Roslyn if there are actually NEW sprites to insert
+                    bool hasNewSprites = _layout.Sprites.Any(sp => sp.SourceStart < 0 && !sp.IsFromExecution);
+                    if (hasNewSprites)
+                    {
+                        string listVar = RoslynCodeMerger.DetectListVariable(roundTrip);
+                        var roslynResult = RoslynCodeMerger.InsertSprites(roundTrip, _layout.Sprites, listVar);
+                        if (roslynResult.Success && roslynResult.SpritesInserted > 0)
+                            roundTrip = roslynResult.Code;
+                        else
+                            roundTrip = CodeGenerator.InsertNewSpritesIntoSource(_layout, roundTrip); // Fallback
+                    }
+
                     _layout.OriginalSourceCode = roundTrip;
 
                     SetCodeText(roundTrip);
@@ -2532,18 +2671,53 @@ namespace SESpriteLCDLayoutTool
                 }
 
                 // Both round-trip paths failed.  If no sprites have source tracking
-                // (e.g. sprites were replaced by a live stream) keep the original
-                // source instead of producing verbose per-sprite Generate() output.
+                // (e.g. Pulsar/Mod execution, live stream) we still want to INSERT
+                // new sprites into the code while preserving the original structure.
                 bool hasTracking = false;
                 foreach (var sp in _layout.Sprites)
                     if (sp.SourceStart >= 0 && sp.ImportBaseline != null) { hasTracking = true; break; }
 
                 if (!hasTracking)
                 {
+                    // Check if there are any truly NEW sprites that need inserting
+                    // (SourceStart < 0 AND not from execution)
+                    bool hasNewSprites = false;
+                    foreach (var sp in _layout.Sprites)
+                        if (sp.SourceStart < 0 && !sp.IsFromExecution) { hasNewSprites = true; break; }
+
+                    if (hasNewSprites)
+                    {
+                        // For Pulsar/Mod layouts: use Roslyn to insert new sprites into the original code
+                        // This properly parses the syntax tree and inserts after the last frame.Add()
+                        string listVar = RoslynCodeMerger.DetectListVariable(_layout.OriginalSourceCode);
+                        var mergeResult = RoslynCodeMerger.InsertSprites(_layout.OriginalSourceCode, _layout.Sprites, listVar);
+
+                        if (mergeResult.Success && mergeResult.SpritesInserted > 0)
+                        {
+                            _layout.OriginalSourceCode = mergeResult.Code;
+                            SetCodeText(mergeResult.Code);
+                            RefreshDetectedCalls();
+                            if (writeBack) WriteBackToWatchedFile(mergeResult.Code);
+                            SetStatus($"Inserted {mergeResult.SpritesInserted} sprite(s) via Roslyn");
+                            return;
+                        }
+                    }
+
+                    // No new sprites or Roslyn merge succeeded with no changes
+                    // Just show the original code without parsing
                     SetCodeText(_layout.OriginalSourceCode);
                     RefreshDetectedCalls();
                     return;
                 }
+            }
+
+            // Full regeneration fallback - but NOT for Pulsar/Mod layouts
+            // (their sprites have no source tracking, regeneration produces broken code)
+            if (_layout.IsPulsarOrModLayout && !force)
+            {
+                // Keep whatever is in the code box - don't regenerate
+                RefreshDetectedCalls();
+                return;
             }
 
             SetCodeText(CodeGenerator.Generate(_layout, SelectedCodeStyle));
@@ -3497,6 +3671,7 @@ namespace SESpriteLCDLayoutTool
                 _layout.Sprites.Clear();
                 _layout.Sprites.AddRange(sprites);
                 _layout.OriginalSourceCode = frame;
+                _layout.IsPulsarOrModLayout = false;  // Fresh import has source tracking
 
                 _canvas.CanvasLayout = _layout;
                 _canvas.SelectedSprite = sprites.Count > 0 ? sprites[0] : null;
@@ -3960,52 +4135,100 @@ namespace SESpriteLCDLayoutTool
 
             PushUndo();
 
-            // For Pulsar/Mod scripts, runtime sprites from surface.DrawFrame()
-            // don't match CodeParser's static analysis — match by Type+Data and
-            // keep ALL sprites in the layout, dimming the non-isolated ones.
+            // Extract method name from call expression for mapping-based matching
+            string targetMethodName = null;
+            int parenIdx = call.IndexOf('(');
+            if (parenIdx > 0)
+            {
+                targetMethodName = call.Substring(0, parenIdx).Trim();
+                int eqIdx = targetMethodName.LastIndexOf('=');
+                if (eqIdx >= 0)
+                    targetMethodName = targetMethodName.Substring(eqIdx + 1).Trim();
+            }
+
+            // For Pulsar/Mod/Torch scripts, runtime sprites from surface.DrawFrame()
+            // don't match CodeParser's static analysis — use sprite mapping when available,
+            // otherwise match by Type+Data and keep ALL sprites in the layout.
             if (result.ScriptType == ScriptType.PulsarPlugin ||
-                result.ScriptType == ScriptType.ModSurface)
+                result.ScriptType == ScriptType.ModSurface ||
+                result.ScriptType == ScriptType.TorchPlugin)
             {
                 _isolatedCallSprites = new HashSet<SpriteEntry>();
-                var usedExec = new HashSet<int>();
-                foreach (var layoutSp in _layout.Sprites)
+
+                // Prefer SpriteMapping when available (built via "Build Sprite Map")
+                bool usedMapping = false;
+                if (_layout?.SpriteMapping != null && _layout.SpriteMapping.HasData && !string.IsNullOrEmpty(targetMethodName))
                 {
-                    for (int ei = 0; ei < result.Sprites.Count; ei++)
+                    foreach (var layoutSp in _layout.Sprites)
                     {
-                        if (usedExec.Contains(ei)) continue;
-                        var execSp = result.Sprites[ei];
-                        bool typeMatch = layoutSp.Type == execSp.Type
-                            && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
-                             || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
-                        if (typeMatch)
+                        if (_layout.SpriteMapping.SpritesBelongsToMethod(layoutSp, targetMethodName))
                         {
                             _isolatedCallSprites.Add(layoutSp);
-                            usedExec.Add(ei);
-                            break;
+                            usedMapping = true;
                         }
                     }
                 }
 
-                // Add orphan executed sprites not matched to existing layout
-                if (!highlightOnly)
+                // Fallback to SourceMethodName matching
+                if (!usedMapping && !string.IsNullOrEmpty(targetMethodName))
                 {
-                    for (int ei = 0; ei < result.Sprites.Count; ei++)
+                    bool hasMethodTags = _layout.Sprites.Any(sp => !string.IsNullOrEmpty(sp.SourceMethodName));
+                    if (hasMethodTags)
                     {
-                        if (usedExec.Contains(ei)) continue;
-                        var orphan = result.Sprites[ei];
-                        orphan.SourceStart = -1;
-                        orphan.SourceEnd   = -1;
-                        _layout.Sprites.Add(orphan);
-                        _isolatedCallSprites.Add(orphan);
+                        foreach (var layoutSp in _layout.Sprites)
+                        {
+                            if (string.Equals(layoutSp.SourceMethodName, targetMethodName, StringComparison.Ordinal))
+                            {
+                                _isolatedCallSprites.Add(layoutSp);
+                                usedMapping = true;
+                            }
+                        }
+                    }
+                }
+
+                // Final fallback: Type+Data matching
+                if (!usedMapping)
+                {
+                    var usedExec = new HashSet<int>();
+                    foreach (var layoutSp in _layout.Sprites)
+                    {
+                        for (int ei = 0; ei < result.Sprites.Count; ei++)
+                        {
+                            if (usedExec.Contains(ei)) continue;
+                            var execSp = result.Sprites[ei];
+                            bool typeMatch = layoutSp.Type == execSp.Type
+                                && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
+                                 || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
+                            if (typeMatch)
+                            {
+                                _isolatedCallSprites.Add(layoutSp);
+                                usedExec.Add(ei);
+                                break;
+                            }
+                        }
                     }
 
-                    // If no matches at all, add all executed sprites directly
-                    if (_isolatedCallSprites.Count == 0)
+                    // Add orphan executed sprites not matched to existing layout
+                    if (!highlightOnly)
                     {
-                        foreach (var sp in result.Sprites)
+                        for (int ei = 0; ei < result.Sprites.Count; ei++)
                         {
-                            _layout.Sprites.Add(sp);
-                            _isolatedCallSprites.Add(sp);
+                            if (usedExec.Contains(ei)) continue;
+                            var orphan = result.Sprites[ei];
+                            orphan.SourceStart = -1;
+                            orphan.SourceEnd   = -1;
+                            _layout.Sprites.Add(orphan);
+                            _isolatedCallSprites.Add(orphan);
+                        }
+
+                        // If no matches at all, add all executed sprites directly
+                        if (_isolatedCallSprites.Count == 0)
+                        {
+                            foreach (var sp in result.Sprites)
+                            {
+                                _layout.Sprites.Add(sp);
+                                _isolatedCallSprites.Add(sp);
+                            }
                         }
                     }
                 }
@@ -4018,7 +4241,8 @@ namespace SESpriteLCDLayoutTool
                 _canvas.SelectedSprite = firstIso;
                 if (_btnShowAll != null) _btnShowAll.Visible = true;
                 UpdateActionBarVisibility();
-                SetStatus($"Isolated: {call} — {_isolatedCallSprites.Count} sprite(s). Click Show All to restore.");
+                string matchMethod = usedMapping ? " (via mapping)" : "";
+                SetStatus($"Isolated: {call} — {_isolatedCallSprites.Count} sprite(s){matchMethod}. Click Show All to restore.");
                 return;
             }
 
@@ -4027,24 +4251,56 @@ namespace SESpriteLCDLayoutTool
             // so the live frame data is not modified.
             _isolatedCallSprites = new HashSet<SpriteEntry>();
 
+            // targetMethodName was already extracted above for Pulsar/Mod handling
+
             if (highlightOnly)
             {
-                // Type+data matching only — no position/colour transfer.
-                var usedExec2 = new HashSet<int>();
-                foreach (var layoutSp in _layout.Sprites)
+                // First priority: SpriteMapping (built via "Build Sprite Map")
+                bool usedMapping = false;
+                if (_layout?.SpriteMapping != null && _layout.SpriteMapping.HasData && !string.IsNullOrEmpty(targetMethodName))
                 {
-                    for (int ei = 0; ei < result.Sprites.Count; ei++)
+                    foreach (var layoutSp in _layout.Sprites)
                     {
-                        if (usedExec2.Contains(ei)) continue;
-                        var execSp = result.Sprites[ei];
-                        bool typeMatch = layoutSp.Type == execSp.Type
-                            && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
-                             || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
-                        if (typeMatch)
+                        if (_layout.SpriteMapping.SpritesBelongsToMethod(layoutSp, targetMethodName))
                         {
                             _isolatedCallSprites.Add(layoutSp);
-                            usedExec2.Add(ei);
-                            break;
+                            usedMapping = true;
+                        }
+                    }
+                }
+
+                // Second priority: SourceMethodName from per-sprite tags
+                if (!usedMapping)
+                {
+                    bool hasMethodTags = _layout.Sprites.Any(sp => !string.IsNullOrEmpty(sp.SourceMethodName));
+                    if (hasMethodTags && !string.IsNullOrEmpty(targetMethodName))
+                    {
+                        foreach (var layoutSp in _layout.Sprites)
+                        {
+                            if (string.Equals(layoutSp.SourceMethodName, targetMethodName, StringComparison.Ordinal))
+                                _isolatedCallSprites.Add(layoutSp);
+                        }
+                    }
+                    else
+                    {
+                        // Fallback: Type+data matching only — no position/colour transfer.
+                        var usedExec2 = new HashSet<int>();
+                        foreach (var layoutSp in _layout.Sprites)
+                        {
+                            for (int ei = 0; ei < result.Sprites.Count; ei++)
+                            {
+                                if (usedExec2.Contains(ei)) continue;
+                                var execSp = result.Sprites[ei];
+                                bool typeMatch = layoutSp.Type == execSp.Type
+                                    && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
+                                     || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
+                                if (typeMatch)
+                                {
+                                    _isolatedCallSprites.Add(layoutSp);
+                                    usedExec2.Add(ei);
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -4057,19 +4313,64 @@ namespace SESpriteLCDLayoutTool
 
                 var mergeResult = SnapshotMerger.Merge(nonRef, result.Sprites, applyColors: true);
 
-                // The highlighted set = sprites that matched the executed call
-                foreach (var sp in nonRef)
+                // First priority: SpriteMapping (built via "Build Sprite Map")
+                bool usedMapping = false;
+                if (_layout?.SpriteMapping != null && _layout.SpriteMapping.HasData && !string.IsNullOrEmpty(targetMethodName))
                 {
+                    // Check the newly executed sprites (result.Sprites), not old layout sprites
                     foreach (var execSp in result.Sprites)
                     {
-                        bool typeMatch = (sp.Type == SpriteEntryType.Text && execSp.Type == SpriteEntryType.Text
-                                            && sp.Text == execSp.Text)
-                                       || (sp.Type == SpriteEntryType.Texture && execSp.Type == SpriteEntryType.Texture
-                                            && sp.SpriteName == execSp.SpriteName);
-                        if (typeMatch && Math.Abs(sp.X - execSp.X) < 1f && Math.Abs(sp.Y - execSp.Y) < 1f)
+                        if (_layout.SpriteMapping.SpritesBelongsToMethod(execSp, targetMethodName))
                         {
-                            _isolatedCallSprites.Add(sp);
-                            break;
+                            // Find the corresponding merged sprite in the layout to highlight
+                            var matchedLayoutSp = nonRef.FirstOrDefault(layoutSp =>
+                                layoutSp.Type == execSp.Type &&
+                                ((layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName) ||
+                                 (layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)) &&
+                                Math.Abs(layoutSp.X - execSp.X) < 5 && Math.Abs(layoutSp.Y - execSp.Y) < 5);
+
+                            if (matchedLayoutSp != null)
+                            {
+                                _isolatedCallSprites.Add(matchedLayoutSp);
+                                usedMapping = true;
+                            }
+                        }
+                    }
+                }
+
+                // Second priority: SourceMethodName from per-sprite tags
+                if (!usedMapping)
+                {
+                    bool hasMethodTags = nonRef.Any(sp => !string.IsNullOrEmpty(sp.SourceMethodName));
+                    if (hasMethodTags && !string.IsNullOrEmpty(targetMethodName))
+                    {
+                        foreach (var sp in nonRef)
+                        {
+                            if (string.Equals(sp.SourceMethodName, targetMethodName, StringComparison.Ordinal))
+                                _isolatedCallSprites.Add(sp);
+                        }
+                    }
+                    else
+                    {
+                        // Fallback: Type+name matching only
+                        var usedExec = new HashSet<int>();
+                        foreach (var sp in nonRef)
+                        {
+                            for (int ei = 0; ei < result.Sprites.Count; ei++)
+                            {
+                                if (usedExec.Contains(ei)) continue;
+                                var execSp = result.Sprites[ei];
+                                bool typeMatch = (sp.Type == SpriteEntryType.Text && execSp.Type == SpriteEntryType.Text
+                                                    && sp.Text == execSp.Text)
+                                               || (sp.Type == SpriteEntryType.Texture && execSp.Type == SpriteEntryType.Texture
+                                                    && sp.SpriteName == execSp.SpriteName);
+                                if (typeMatch)
+                                {
+                                    _isolatedCallSprites.Add(sp);
+                                    usedExec.Add(ei);
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -4091,6 +4392,12 @@ namespace SESpriteLCDLayoutTool
                     _isolatedCallSprites.Add(sp);
             }
 
+            // Hide all sprites that are NOT in the isolation set
+            foreach (var sp in _layout.Sprites)
+            {
+                sp.IsHidden = !_isolatedCallSprites.Contains(sp);
+            }
+
             _canvas.HighlightedSprites = _isolatedCallSprites;
             _canvas.Invalidate();
             RefreshLayerList();
@@ -4100,6 +4407,78 @@ namespace SESpriteLCDLayoutTool
             if (_btnShowAll != null) _btnShowAll.Visible = true;
             UpdateActionBarVisibility();
             SetStatus($"Isolated: {call} — {_isolatedCallSprites.Count} sprite(s). Edit, then click Show All.");
+        }
+
+        /// <summary>
+        /// Builds an element-to-sprite mapping by running the animation for N frames.
+        /// This captures all sprite states across the animation lifecycle and enables
+        /// accurate Execute &amp; Isolate filtering.
+        /// </summary>
+        private async void BuildSpriteMappingAsync()
+        {
+            string code = _codeBox?.Text;
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                SetStatus("Code panel is empty. Nothing to map.");
+                return;
+            }
+
+            SetStatus("Building sprite map (running 30 frames)...");
+            _execResultLabel.Text = "Mapping…";
+            _execResultLabel.ForeColor = Color.FromArgb(200, 180, 60);
+
+            SpriteMappingBuilder.BuildResult buildResult = null;
+            await System.Threading.Tasks.Task.Run(() =>
+            {
+                buildResult = SpriteMappingBuilder.BuildMapping(
+                    code,
+                    callExpression: null,  // Auto-detect all methods
+                    frameCount: 30,
+                    capturedRows: _layout?.CapturedRows);
+            });
+
+            if (buildResult == null || !buildResult.Success)
+            {
+                _execResultLabel.Text = "✗ Map failed";
+                _execResultLabel.ForeColor = Color.FromArgb(220, 80, 80);
+                SetStatus($"Failed to build sprite map: {buildResult?.Error ?? "Unknown error"}");
+                return;
+            }
+
+            // Store the mapping in the layout
+            if (_layout != null)
+            {
+                _layout.SpriteMapping = buildResult.Mapping;
+
+                // Also propagate SourceMethodName to layout sprites based on the mapping
+                // This updates existing sprites so isolation works immediately
+                foreach (var sprite in _layout.Sprites)
+                {
+                    var methods = buildResult.Mapping.GetMethodsForSprite(sprite);
+                    var methodList = methods.ToList();
+                    if (methodList.Count == 1)
+                    {
+                        // Unambiguous ownership
+                        sprite.SourceMethodName = methodList[0];
+                    }
+                    else if (methodList.Count > 1)
+                    {
+                        // Multiple methods produce this sprite - use first for now
+                        sprite.SourceMethodName = methodList[0];
+                    }
+                }
+            }
+
+            int methodCount = buildResult.Mapping.MethodToSprites.Count;
+            int uniqueSprites = buildResult.Mapping.MethodToSprites.Values
+                .SelectMany(s => s).Distinct().Count();
+
+            _execResultLabel.Text = $"✔ Map: {methodCount} methods";
+            _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
+            SetStatus($"Sprite map built: {methodCount} methods, {uniqueSprites} unique sprites across {buildResult.FramesExecuted} frames. Isolation will now use this map.");
+
+            // Refresh layer list to show updated method names
+            RefreshLayerList();
         }
 
         /// <summary>
@@ -4861,6 +5240,10 @@ namespace SESpriteLCDLayoutTool
                                   + "with an IMyTextSurface/IMyTextPanel parameter.\n\n"
                                   + "Enter the call expression manually, e.g.:\n"
                                   + "  DrawLayout(surface)"
+                                : st == ScriptType.TorchPlugin
+                                ? "Detected a Torch plugin class but could not find a render method.\n\n"
+                                  + "Enter the call expression manually, e.g.:\n"
+                                  + "  BuildSprites(new Vector2(512, 512))"
                                 : st == ScriptType.ModSurface
                                 ? "Could not detect a render method with an IMyTextSurface parameter.\n\n"
                                   + "Enter the call expression manually, e.g.:\n"
@@ -4894,6 +5277,7 @@ namespace SESpriteLCDLayoutTool
                     string typeTag = execResult.ScriptType == ScriptType.ProgrammableBlock ? " [PB]"
                                    : execResult.ScriptType == ScriptType.ModSurface        ? " [Mod]"
                                    : execResult.ScriptType == ScriptType.PulsarPlugin      ? " [Pulsar]"
+                                   : execResult.ScriptType == ScriptType.TorchPlugin       ? " [Torch]"
                                    : " [LCD]";
                     lblExecResult.Text = "✔ " + executedSprites.Count + " sprites" + typeTag;
                     lblExecResult.ForeColor = Color.FromArgb(80, 220, 100);
@@ -5497,36 +5881,36 @@ namespace SESpriteLCDLayoutTool
 
                 // Arrow-key nudge (1 px) and Shift+Arrow (10 px)
                 case Keys.Up:
-                    PushUndo(); _canvas.NudgeSelected(0, -1); RefreshCode();
+                    PushUndo(); _canvas.NudgeSelected(0, -1); if (!_codeBoxDirty) RefreshCode();
                     return true;
                 case Keys.Down:
-                    PushUndo(); _canvas.NudgeSelected(0, 1); RefreshCode();
+                    PushUndo(); _canvas.NudgeSelected(0, 1); if (!_codeBoxDirty) RefreshCode();
                     return true;
                 case Keys.Left:
-                    PushUndo(); _canvas.NudgeSelected(-1, 0); RefreshCode();
+                    PushUndo(); _canvas.NudgeSelected(-1, 0); if (!_codeBoxDirty) RefreshCode();
                     return true;
                 case Keys.Right:
-                    PushUndo(); _canvas.NudgeSelected(1, 0); RefreshCode();
+                    PushUndo(); _canvas.NudgeSelected(1, 0); if (!_codeBoxDirty) RefreshCode();
                     return true;
                 case Keys.Shift | Keys.Up:
-                    PushUndo(); _canvas.NudgeSelected(0, -10); RefreshCode();
+                    PushUndo(); _canvas.NudgeSelected(0, -10); if (!_codeBoxDirty) RefreshCode();
                     return true;
                 case Keys.Shift | Keys.Down:
-                    PushUndo(); _canvas.NudgeSelected(0, 10); RefreshCode();
+                    PushUndo(); _canvas.NudgeSelected(0, 10); if (!_codeBoxDirty) RefreshCode();
                     return true;
                 case Keys.Shift | Keys.Left:
-                    PushUndo(); _canvas.NudgeSelected(-10, 0); RefreshCode();
+                    PushUndo(); _canvas.NudgeSelected(-10, 0); if (!_codeBoxDirty) RefreshCode();
                     return true;
                 case Keys.Shift | Keys.Right:
-                    PushUndo(); _canvas.NudgeSelected(10, 0); RefreshCode();
+                    PushUndo(); _canvas.NudgeSelected(10, 0); if (!_codeBoxDirty) RefreshCode();
                     return true;
 
                 // Layer order
                 case Keys.Control | Keys.OemCloseBrackets:
-                    PushUndo(); _canvas.MoveSelectedUp(); RefreshLayerList(); RefreshCode();
+                    PushUndo(); _canvas.MoveSelectedUp(); RefreshLayerList(); if (!_codeBoxDirty) RefreshCode();
                     return true;
                 case Keys.Control | Keys.OemOpenBrackets:
-                    PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); RefreshCode();
+                    PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); if (!_codeBoxDirty) RefreshCode();
                     return true;
 
                 // Snap-to-grid toggle
@@ -5725,8 +6109,8 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add(animMenu);
 
             ctx.Items.Add(new ToolStripSeparator());
-            ctx.Items.Add("Layer Up\tCtrl+]",         null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); RefreshCode(); });
-            ctx.Items.Add("Layer Down\tCtrl+[",       null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); RefreshCode(); });
+            ctx.Items.Add("Layer Up\tCtrl+]",         null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
+            ctx.Items.Add("Layer Down\tCtrl+[",       null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
             ctx.Items.Add(new ToolStripSeparator());
             ctx.Items.Add("Reset View\tCtrl+0",       null, (s, e) => _canvas.ResetView());
 
@@ -5748,8 +6132,8 @@ namespace SESpriteLCDLayoutTool
             var ctx = new ContextMenuStrip { BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.FromArgb(220, 220, 220) };
             ctx.Renderer = new DarkMenuRenderer();
 
-            var moveUp   = ctx.Items.Add("Move Up",    null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); RefreshCode(); });
-            var moveDown = ctx.Items.Add("Move Down",  null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); RefreshCode(); });
+            var moveUp   = ctx.Items.Add("Move Up",    null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
+            var moveDown = ctx.Items.Add("Move Down",  null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
             ctx.Items.Add(new ToolStripSeparator());
             var dupItem  = ctx.Items.Add("Duplicate",  null, (s, e) => DuplicateSelected());
             var delItem  = ctx.Items.Add("Delete",     null, (s, e) => DeleteSelected());
@@ -5971,8 +6355,9 @@ namespace SESpriteLCDLayoutTool
         // ── Animation playback handlers ───────────────────────────────────────────
 
         /// <summary>
-        /// Starts (or restarts) animation in focused mode: the full scene plays but
-        /// sprites from other methods are dimmed so only the focused call is prominent.
+        /// Starts (or restarts) animation in focused mode.
+        /// - ISOLATION MODE (when _isolatedCallSprites is active): Runs ONLY the isolated method
+        /// - FOCUSED MODE (normal): Runs full scene but dims other methods' sprites
         /// </summary>
         private void StartFocusedAnimation(string call)
         {
@@ -6024,15 +6409,25 @@ namespace SESpriteLCDLayoutTool
                 _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var sp in result.Sprites)
                 {
-                    string key = (sp.Type == SpriteEntryType.Text ? "T:" : "X:") +
-                                 (sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName);
+                    string key = BuildFocusSpriteKey(sp);
                     _animFocusSprites.Add(key);
                 }
                 _animFocusCall = call;
 
-                // For animation, run the full scene (null call) with all captured rows
-                execCall = null;
-                execRows = _layout?.CapturedRows;
+                // ISOLATION MODE: If isolation is active, run ONLY this method (not full scene)
+                // Otherwise run full scene with all captured rows for normal focused mode
+                if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                {
+                    // Keep execCall pointing to this specific method - don't run full orchestrator
+                    execCall = call;
+                    execRows = filteredRows;
+                }
+                else
+                {
+                    // Normal focused mode: run full scene (null call) with all captured rows
+                    execCall = null;
+                    execRows = _layout?.CapturedRows;
+                }
             }
             else
             {
@@ -6044,14 +6439,33 @@ namespace SESpriteLCDLayoutTool
                     return;
                 }
 
+                // Build focus set using type + name + approximate position to uniquely
+                // identify sprites from this method even when other methods use the
+                // same sprite names (e.g., Circle, SquareSimple).
                 _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var sp in result.Sprites)
                 {
-                    string key = (sp.Type == SpriteEntryType.Text ? "T:" : "X:") +
-                                 (sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName);
+                    string key = BuildFocusSpriteKey(sp);
                     _animFocusSprites.Add(key);
                 }
                 _animFocusCall = call;
+
+                // ISOLATION MODE: If isolation is active, run ONLY this method (not full scene)
+                // Otherwise run full scene for normal focused mode (dim others, show all)
+                if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                {
+                    // Keep execCall pointing to this specific method - don't run full orchestrator
+                    // This ensures animation runs ONLY the isolated method
+                    execCall = call;
+                }
+                else
+                {
+                    // Normal focused mode: run the full scene (null call) so the orchestrator
+                    // calculates correct positions; _animFocusSprites will highlight
+                    // only sprites belonging to this focused method.
+                    execCall = null;
+                }
+                execRows = _layout?.CapturedRows;
             }
 
             // If animation is already running, just apply the focus — the next
@@ -6062,7 +6476,8 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
-            // Start animation — full scene for virtual methods, focused call for real ones
+            // Start animation — always run full scene so orchestrator calculates
+            // correct positions; _animFocusSprites highlights only the focused method.
             EnsureAnimPlayer();
             PushUndo();
             CaptureAnimPositionSnapshot();
@@ -6096,15 +6511,15 @@ namespace SESpriteLCDLayoutTool
             }
 
             // If a call is currently isolated (via Execute & Isolate), carry
-            // that isolation into focused animation mode so only those sprites
-            // play at full opacity.
+            // that isolation into animation mode so only those sprites are shown.
+            // DON'T call RestoreFullView() here - we want to keep _isolatedCallSprites
+            // active so OnAnimFrame can filter the animation frames.
             if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
             {
                 string call = _execCallBox.Text.Trim();
                 if (!string.IsNullOrEmpty(call))
                 {
-                    // Restore full sprite set before starting animation
-                    RestoreFullView();
+                    // Keep isolation active - OnAnimFrame will filter sprites using the mapping
                     StartFocusedAnimation(call);
                     return;
                 }
@@ -6174,13 +6589,14 @@ namespace SESpriteLCDLayoutTool
             // If not yet prepared, prepare first
             if (_animPlayer == null || !_animPlayer.IsPlaying)
             {
-                // If a call is currently isolated, carry that into focused animation
+                // If a call is currently isolated, carry that into animation
+                // Keep _isolatedCallSprites active so OnAnimFrame can filter frames
                 if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
                 {
                     string isoCall = _execCallBox.Text.Trim();
                     if (!string.IsNullOrEmpty(isoCall))
                     {
-                        RestoreFullView();
+                        // Keep isolation active - OnAnimFrame will filter sprites using the mapping
                         StartFocusedAnimation(isoCall);
                         // Now step the freshly started animation
                         if (_animPlayer != null && _animPlayer.IsPlaying)
@@ -6229,12 +6645,59 @@ namespace SESpriteLCDLayoutTool
         {
             _layout.Sprites.Clear();
 
+            // Isolation mode: when a specific method is isolated (via Execute & Isolate),
+            // filter animation frames to show ONLY sprites that belong to that method.
+            // Uses position-independent matching (type + name only) because animation
+            // sprites have different positions than the sprite map build phase.
+            List<SpriteEntry> frameSprites = sprites;
+            float yOffset = 0f;
+            if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0 &&
+                _layout?.SpriteMapping != null && _layout.SpriteMapping.HasData)
+            {
+                string targetMethodName = CodeExecutor.ExtractMethodName(_execCallBox.Text.Trim());
+                if (!string.IsNullOrEmpty(targetMethodName))
+                {
+                    var filtered = new List<SpriteEntry>();
+                    foreach (var sp in sprites)
+                    {
+                        // Match by type + name only (ignores position) because animation sprites
+                        // have different positions than sprite map build phase
+                        if (_layout.SpriteMapping.SpritesBelongsToMethodByName(sp, targetMethodName))
+                        {
+                            filtered.Add(sp);
+                        }
+                    }
+                    frameSprites = filtered;
+
+                    // Apply Y offset from sprite mapping to position isolated sprites correctly
+                    if (_layout.SpriteMapping.MethodYOffsets.TryGetValue(targetMethodName, out float methodOffset))
+                    {
+                        yOffset = methodOffset;
+                        System.Diagnostics.Debug.WriteLine($"[OnAnimFrame] Isolated animation '{targetMethodName}': yOffset={yOffset:F1}, sprites={frameSprites.Count}");
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[OnAnimFrame] WARNING: No Y offset found for '{targetMethodName}'. Available offsets: {string.Join(", ", _layout.SpriteMapping.MethodYOffsets.Keys)}");
+                    }
+                }
+            }
+
             // Show executor sprites directly — the compiled code produces sprites
             // with correct positions (via orchestrator like BuildSprites, or individual
             // render methods).  No merge with snapshot positions needed; the pre-play
             // layout is saved and restored when animation stops.
-            foreach (var sp in sprites)
+            foreach (var sp in frameSprites)
+            {
+                // Apply Y offset for isolated animations to position them correctly
+                if (yOffset != 0f)
+                {
+                    float oldY = sp.Y;
+                    sp.Y += yOffset;
+                    if (frameSprites.Count < 5) // Only log for small sprite counts to avoid spam
+                        System.Diagnostics.Debug.WriteLine($"  Sprite '{sp.SpriteName ?? sp.Text}': Y {oldY:F1} → {sp.Y:F1}");
+                }
                 _layout.Sprites.Add(sp);
+            }
 
             // Focused animation mode: dim sprites not belonging to the focused call
             if (_animFocusCall != null && _animFocusSprites != null && _animFocusSprites.Count > 0)
@@ -6242,8 +6705,7 @@ namespace SESpriteLCDLayoutTool
                 var highlighted = new HashSet<SpriteEntry>();
                 foreach (var sp in _layout.Sprites)
                 {
-                    string key = (sp.Type == SpriteEntryType.Text ? "T:" : "X:") +
-                                 (sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName);
+                    string key = BuildFocusSpriteKey(sp);
                     if (_animFocusSprites.Contains(key))
                         highlighted.Add(sp);
                 }
@@ -6256,6 +6718,7 @@ namespace SESpriteLCDLayoutTool
             string typeTag = _animPlayer?.ScriptType == ScriptType.ProgrammableBlock ? "PB"
                            : _animPlayer?.ScriptType == ScriptType.ModSurface        ? "Mod"
                            : _animPlayer?.ScriptType == ScriptType.PulsarPlugin      ? "Pulsar"
+                           : _animPlayer?.ScriptType == ScriptType.TorchPlugin       ? "Torch"
                            : "LCD";
             double ms = _animPlayer?.LastFrameMs ?? 0;
             string focusTag = _animFocusCall != null ? " 🔍" : "";
@@ -6268,6 +6731,21 @@ namespace SESpriteLCDLayoutTool
             UpdateAnimButtonStates();
             MessageBox.Show(error, "Animation Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        /// <summary>
+        /// Builds a key for a sprite based on type and name/text.
+        /// Used for focused animation to identify which sprites belong to the focused method.
+        /// </summary>
+        private static string BuildFocusSpriteKey(SpriteEntry sp)
+        {
+            // Use type prefix + name only (no position) because:
+            // - Focus set is built from isolated execution (default positions)
+            // - Animation runs full orchestrator (calculated positions)
+            // - Position-based keys would never match
+            string prefix = sp.Type == SpriteEntryType.Text ? "T:" : "X:";
+            string name = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
+            return $"{prefix}{name}";
         }
 
         private void OnAnimStopped()
@@ -6292,6 +6770,11 @@ namespace SESpriteLCDLayoutTool
             _lblAnimTick.Text = "Animation";
             UpdateAnimButtonStates();
             SetStatus("Animation stopped.");
+
+            // Force garbage collection to immediately reclaim the thousands of
+            // temporary SpriteEntry objects created during animation frames.
+            // Without this, GC pressure accumulates and causes lingering UI lag.
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false);
         }
 
         private void EnsureAnimPlayer()
