@@ -14,7 +14,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 
 | Section | Description |
 |---|---|
-| [✨ Features](#-features) | Visual canvas, texture previews, sprite catalog, code generation, compiler, animation, snapshots, multi-select layers |
+| [✨ Features](#-features) | Visual canvas, texture previews, sprite catalog, code generation, compiler, animation, debugging & profiling, snapshots, multi-select layers |
 | [🚀 Getting Started](#-getting-started) | Requirements, running the tool, importing sprite names |
 | [📖 Workflow](#-workflow) | Step-by-step usage guide |
 | [📸 Snapshot Helpers & Live Streaming](#-snapshot-helpers--live-lcd-streaming) | Optional — mostly superseded by the built-in compiler; still useful without Roslyn or for live streaming. Includes snapshot tagging |
@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.5.0) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.6.0) |
 
 ---
 
@@ -122,6 +122,65 @@ Design your screens with drag & drop, preview real in-game textures, then export
 - **Works with all four script types** — Programmable Block, Mod, Pulsar, and LCD Helper scripts
 - Layout is **fully restored** when animation stops — your editable sprites, source tracking, and positions return to their pre-animation state
 
+### 🔍 Runtime Debugging & Profiling
+- **Variables panel** — after executing code or during animation playback, the **Variables** tab shows all instance fields of the compiled script class with live values updated every tick
+  - Fields are discovered via reflection on the compiled runner class — no annotations or configuration needed
+  - Supports all SE types: `int`, `float`, `double`, `bool`, `string`, `Vector2`, `Color`, `List<T>`, arrays, and user-defined types
+  - **Sparkline mini-charts** — numeric fields display a tiny inline trend graph in the Variables list, drawn from the tick history buffer (last 500 ticks)
+  - **Linked variable highlighting** — selecting a sprite in the layer list highlights variables that appear in its source context, making it easy to see which fields drive a specific sprite
+  - **Double-click to edit** — double-click any variable value to modify it directly; the change takes effect on the next animation tick
+- **Watch expressions** — add custom C# expressions (e.g. `counter % 10`, `angle > 180`, `speed * deltaTime`) to the **Watch** tab
+  - Expressions are compiled once via Roslyn into delegates and evaluated each tick with fresh field values — zero overhead after compilation
+  - Shows result value and type; errors are displayed inline if compilation fails
+  - Watch expressions can reference any instance field by name
+- **Conditional breakpoints** — enter a C# boolean expression as a break condition (e.g. `tick > 100`, `health <= 0`)
+  - Animation pauses automatically when the condition evaluates to `true`
+  - Edge-triggered — only fires on the transition from false→true, so it pauses once per event rather than locking up
+  - Status indicator shows whether the breakpoint is armed, triggered, or has a compilation error
+- **Console / Output tab** — captures `Echo()` output from PB scripts and displays it in a scrollable console panel
+  - Output is tagged with tick numbers during animation playback
+  - Compilation errors are also routed to the console with red formatting
+- **Method performance heatmap** — the code editor highlights method bodies with background colors based on per-method execution time
+  - Colors use absolute thresholds: green (< 0.5 ms) → yellow (0.5–1 ms) → orange (1–2 ms) → red (> 2 ms)
+  - Timings are injected automatically via `Stopwatch` instrumentation inserted into each method body at compile time
+  - Heatmap updates live during animation playback so you can see hot methods in real time
+  - Per-method timing data is also shown in the animation tick label (e.g. `PB  Tick: 42  (1.3 ms)`)
+- **Timeline scrubber** — a track bar at the bottom of the animation panel lets you scrub through the tick history buffer
+  - Scrubbing updates the Variables panel to show historical field values at any past tick
+  - The tick history ring buffer stores the last 500 snapshots of all script fields
+  - Scrubber range updates automatically as new ticks are recorded
+- **Tick history buffer** (`TickHistoryBuffer`) — a fixed-capacity ring buffer storing per-tick snapshots of all runner fields
+  - `GetSnapshot(tick)` retrieves the nearest recorded state
+  - `GetNumericSeries(fieldName)` extracts time-series data for sparkline rendering
+  - Capacity: 500 ticks (configurable)
+
+### 🧭 Code Navigation
+- **Sprite-to-code navigation** — double-click any sprite in the **layer list** to jump to its exact source code location in the editor
+  - Uses Roslyn to parse the CURRENT code every time — works even after edits, no stale tracking
+  - **Strategy 0 (SourceStart):** Direct character offset from source tracking — most reliable, works for file-synced and parsed sprites
+  - **Strategy 1 (SpriteAddMapper):** Falls back to matching `frame.Add()` / `s.Add()` calls by method name and occurrence index when SourceStart is unavailable
+  - **Strategy 2 (Roslyn parse):** Full Roslyn syntax tree search for `new MySprite` expressions as a last resort
+- **`SpriteAddMapper` service** — parses render methods to build a map of all `.Add()` calls with line numbers, variable names, and sprite names
+  - Handles both `List<MySprite>` patterns (`s.Add`) and `MySpriteDrawFrame` patterns (`frame.Add`)
+  - Tracks indirect additions via variable assignment (`var lbl = new MySprite {...}; s.Add(lbl);`)
+- **`SpriteSourceMapper` service** — uses Roslyn syntax trees to map sprite creation calls to exact source locations
+  - Groups results by method name with creation index for ordered matching
+  - Produces `SpriteSourceLocation` objects with line number, character position, span, and code snippet
+- **`CodeNavigationService`** — orchestrates the multi-strategy navigation with detailed Debug output showing which strategy was used
+- **Source tracking enrichment** — `SpriteEntry` now carries `SourceLineNumber`, `SourceCharacterPosition`, and `SourceCodeSnippet` for precise navigation metadata
+
+### 📐 Template Gallery
+- **File → Template Gallery** — browse and insert pre-built sprite layout templates
+  - 15+ templates covering common LCD patterns: status bars, gauges, headers, grids, borders, progress indicators
+  - Each template includes a description, preview, and ready-to-insert sprite definitions
+  - Templates are inserted at the current canvas position and added to the layout for immediate editing
+
+### 📝 Code Editor Enhancements
+- **Line number gutter** — the code editor now displays a line number margin on the left side
+  - Syncs with the editor's scroll position and highlights the current line
+  - Custom-drawn with dark theme styling (dark background, dim gray numbers)
+  - Handles all scroll events (mouse wheel, keyboard, vertical scroll bar)
+
 ### 📸 LCD Snapshot Capture & Live Streaming
 - **Four ready-to-paste helper snippets** generated by the tool — one each for **Programmable Block**, **Mod**, **Torch/Plugin**, and **Pulsar** targets
 - Capture live LCD panels (resolved sprites with final positions, sizes, colors, etc.)
@@ -195,6 +254,9 @@ Copy the Custom Data, then in the tool: **Edit → Import Sprite Names** and pas
 3. Arrange, resize, rotate, and reorder layers
 4. Select your target output style (In-Game / Mod / Plugin)
 5. Click **Copy Code** and paste into your script!
+
+> **💡 Tip — Rebuilding sprite layers after loading a file:**
+> When you load or sync a script file, the layer list may not yet reflect the true code order. To fix this: select your **main render method** (e.g. `BuildSprites`) in the method dropdown, click **Step Forward** once to step into it, then click **▶ Execute**. This runs the method with full source tracking so the layer list rebuilds in correct code order — and double-click sprite-to-code navigation will work properly.
 
 ---
 
@@ -709,6 +771,56 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.6.0
+- **Runtime Variable Inspector** — new **Variables** tab shows all instance fields of the compiled script class with live values, updated every animation tick
+  - Fields discovered via reflection — supports `int`, `float`, `double`, `bool`, `string`, `Vector2`, `Color`, `List<T>`, arrays, and user-defined types
+  - **Sparkline mini-charts** — numeric fields display inline trend graphs drawn from the tick history buffer (last 500 ticks), with owner-drawn `ListView` rendering
+  - **Linked variable highlighting** — selecting a sprite in the layer list highlights variables referenced in its source context
+  - **Double-click to edit** — modify field values directly during animation; changes take effect on the next tick
+  - Auto-populates after both **▶ Execute Code** and animation playback
+- **Watch Expressions** — add custom C# expressions (e.g. `counter % 10`, `angle > 180`) to the **Watch** tab
+  - Compiled once via Roslyn into delegates, evaluated each tick with zero overhead
+  - `WatchExpression` model + `WatchExpressionEvaluator` service with field-name-aware compilation
+  - Shows result value and type; inline error display on compilation failure
+- **Conditional Breakpoints** — enter a boolean C# expression as a break condition
+  - Animation pauses automatically on false→true transition (edge-triggered, single-fire)
+  - Status indicator shows armed/triggered/error state
+  - Break + resume workflow: condition rearms after resuming playback
+- **Console / Output Tab** — captures `Echo()` output from PB scripts and displays in a scrollable `RichTextBox` console
+  - Output tagged with tick numbers during animation
+  - Compilation and runtime errors shown with red formatting
+  - `Echo()` capture injected into all script type builders (PB, Mod, LCD Helper)
+- **Method Performance Heatmap** — code editor background highlights method bodies by execution time
+  - Absolute thresholds: green (< 0.5 ms) → yellow (0.5–1 ms) → orange (1–2 ms) → red (> 2 ms)
+  - `Stopwatch` instrumentation auto-injected into each method body at compile time via `InjectMethodTimings`
+  - Live updates during animation playback; per-method timing data in animation tick label
+  - `CurrentMethod` save/restore around injected timing blocks prevents nested method tracking corruption
+- **Timeline Scrubber** — `TrackBar` at the bottom of the animation panel scrubs through tick history
+  - Scrubbing updates the Variables panel to show historical field values at any past tick
+  - `TickHistoryBuffer` ring buffer (500-tick capacity) stores per-tick snapshots of all runner fields
+  - `GetNumericSeries()` provides time-series data for sparkline rendering
+- **Sprite-to-Code Navigation** — double-click any sprite in the layer list to jump to its exact source location
+  - **`CodeNavigationService`** — multi-strategy navigation using Roslyn real-time parsing (works after edits):
+    - Strategy 0: `SourceStart` direct character offset (most reliable — file sync and parsed sprites)
+    - Strategy 1: `SpriteAddMapper` — matches `frame.Add()` / `s.Add()` calls by method name and occurrence index
+    - Strategy 2: Roslyn syntax tree search for `new MySprite` expressions (last resort)
+  - **`SpriteAddMapper` service** — builds a map of all `.Add()` calls with line numbers, variable names, and sprite identifiers; handles both `List<MySprite>` and `MySpriteDrawFrame` patterns
+  - **`SpriteSourceMapper` service** — Roslyn syntax tree analysis producing `SpriteSourceLocation` objects (method, line, char, span, code snippet)
+  - `SpriteEntry` enriched with `SourceLineNumber`, `SourceCharacterPosition`, and `SourceCodeSnippet`
+- **Template Gallery** — **File → Template Gallery** opens a dialog with 15+ pre-built LCD layout templates (status bars, gauges, headers, grids, borders, progress indicators) ready to insert onto the canvas
+- **Line Number Gutter** — custom `LineNumberGutter` control draws a synced line number margin alongside the code editor, with current-line highlighting and dark theme styling
+- **Code Heatmap / Profiling Infrastructure** — `AnimationPlayer` now exposes `LastMethodTimings` (per-method `Dictionary<string, double>`) and `LastOutputLines` (Echo capture) alongside existing `LastFrameMs`
+- **Roslyn Code Merger: Data property patching** — `RoslynCodeMerger` now patches `Data` property changes (sprite name or text content) back into original source code, in addition to existing Position, Size, Color, Rotation, Alignment, and Font patching
+- **Source tracking stabilisation** — layer list now uses **stable LINQ sort** (`OrderBy`/`ThenBy`) instead of `List.Sort` (unstable introsort), preserving execution order for sprites without source tracking (`SourceStart = -1`)
+- **Layer list consistency** — `RefreshLayerList`, `OnSelectionChanged`, and `SpriteFromLayerIndex` all operate on a shared `_layerListSprites` list, eliminating index mismatches between the ListBox and sprite data
+- **`.seld` serialization fix** — added `[XmlIgnore]` attribute to `LcdLayout.SpriteMapping` field to prevent XML serialization failures when saving layouts with active sprite maps
+- **CodeExecutor fixes:**
+  - Fixed `AddRange` instrumentation incorrectly suppressing `_skipNextRecord` flag
+  - Fixed `InjectMethodTimings` corrupting `CurrentMethod` tracking by adding save/restore around timing blocks
+  - Exposed `Compile(string source)` as `internal static` for use by `WatchExpressionEvaluator`
+- **Fixed Variables tab auto-switch** — `HighlightLinkedVariables` no longer force-switches to the Variables tab when selecting sprites, preventing unexpected tab focus changes during layer navigation
+- **Fixed layer list focus theft** — `OnLayerListDoubleClick` now uses `BeginInvoke` to defer focus transfer to the code editor, preventing the layer list from stealing focus back after double-click navigation
 
 ### v2.5.0
 - **Execute & Isolate: X-Coordinate Indexing** — Sprite position matching now uses **O(1) lookup** by X coordinate instead of O(n) linear search through all sprites

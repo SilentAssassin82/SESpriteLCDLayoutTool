@@ -116,6 +116,8 @@
     <Compile Include="Models\SnapshotRowData.cs" />
     <Compile Include="Models\SpriteEntry.cs" />
     <Compile Include="Models\TemplateDefinition.cs" />
+    <Compile Include="Models\TickHistoryBuffer.cs" />
+    <Compile Include="Models\WatchExpression.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Services\AnimationPlayer.cs" />
@@ -123,6 +125,7 @@
     <Compile Include="Services\CodeAutoComplete.cs" />
     <Compile Include="Services\CodeExecutor.cs" />
     <Compile Include="Services\CodeGenerator.cs" />
+    <Compile Include="Services\CodeNavigationService.cs" />
     <Compile Include="Services\CodeParser.cs" />
     <Compile Include="Services\DdsLoader.cs" />
     <Compile Include="Services\DebugAnalyzer.cs" />
@@ -132,10 +135,13 @@
     <Compile Include="Services\RoslynCodeMerger.cs" />
     <Compile Include="Services\SeFontAtlas.cs" />
     <Compile Include="Services\SnapshotMerger.cs" />
+    <Compile Include="Services\SpriteAddMapper.cs" />
     <Compile Include="Services\SpriteMappingBuilder.cs" />
+    <Compile Include="Services\SpriteSourceMapper.cs" />
     <Compile Include="Services\SpriteTextureCache.cs" />
     <Compile Include="Services\TemplateGallery.cs" />
     <Compile Include="Services\UndoManager.cs" />
+    <Compile Include="Services\WatchExpressionEvaluator.cs" />
     <Compile Include="TemplateGalleryDialog.cs">
       <SubType>Form</SubType>
     </Compile>

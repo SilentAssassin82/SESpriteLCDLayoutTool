@@ -487,13 +487,31 @@ namespace SESpriteLCDLayoutTool.Services
                         case "Color":
                             if (sprite.ImportBaseline != null &&
                                 (sprite.ColorR != sprite.ImportBaseline.ColorR ||
-                                 sprite.ColorG != sprite.ImportBaseline.ColorG ||
-                                 sprite.ColorB != sprite.ImportBaseline.ColorB ||
-                                 sprite.ColorA != sprite.ImportBaseline.ColorA))
+                                  sprite.ColorG != sprite.ImportBaseline.ColorG ||
+                                  sprite.ColorB != sprite.ImportBaseline.ColorB ||
+                                  sprite.ColorA != sprite.ImportBaseline.ColorA))
                             {
                                 newValue = sprite.ColorA != 255
                                     ? SyntaxFactory.ParseExpression($"new Color({sprite.ColorR}, {sprite.ColorG}, {sprite.ColorB}, {sprite.ColorA})")
                                     : SyntaxFactory.ParseExpression($"new Color({sprite.ColorR}, {sprite.ColorG}, {sprite.ColorB})");
+                            }
+                            break;
+
+                        case "Data":
+                            // For TEXT sprites, Data contains the text content
+                            // For TEXTURE sprites, Data contains the sprite name
+                            if (sprite.ImportBaseline != null)
+                            {
+                                string currentData = sprite.Type == SpriteEntryType.Text ? sprite.Text : sprite.SpriteName;
+                                string baselineData = sprite.ImportBaseline.Type == SpriteEntryType.Text 
+                                    ? sprite.ImportBaseline.Text 
+                                    : sprite.ImportBaseline.SpriteName;
+
+                                if (currentData != baselineData)
+                                {
+                                    string escaped = EscapeString(currentData ?? "");
+                                    newValue = SyntaxFactory.ParseExpression("\"" + escaped + "\"");
+                                }
                             }
                             break;
                     }

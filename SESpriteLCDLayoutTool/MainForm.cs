@@ -40,6 +40,7 @@ namespace SESpriteLCDLayoutTool
         private ComboBox      _cmbAlignment;
         private Label         _lblRuntimeData;
         private ListBox       _lstLayers;
+        private List<SpriteEntry> _layerListSprites = new List<SpriteEntry>();
 
         // ── Code panel ────────────────────────────────────────────────────────────
         private RichTextBox _codeBox;
@@ -48,6 +49,42 @@ namespace SESpriteLCDLayoutTool
         private Label       _execResultLabel;
         private ListBox     _lstDetectedCalls;
         private List<DetectedMethodInfo> _detectedMethods;
+        private ListView    _lstVariables;
+        private CheckBox    _chkShowInternalFields;
+        private TabPage     _tabVariables;  // Track Variables tab to update title
+        private AnimationPlayer _lastAnimPlayer; // Held for variable inspection
+
+        // ── Watch expressions ─────────────────────────────────────────────────
+        private TabPage     _tabWatch;
+        private ListView    _lstWatch;
+        private TextBox     _txtWatchExpr;
+        private readonly List<Models.WatchExpression> _watchExpressions = new List<Models.WatchExpression>();
+
+        // ── Conditional breakpoint ────────────────────────────────────────────
+        private Models.WatchExpression _breakCondition;
+        private TextBox     _txtBreakCondition;
+        private Label       _lblBreakStatus;
+
+        // ── Console / Output log ──────────────────────────────────────────────
+        private TabPage     _tabConsole;
+        private RichTextBox _rtbConsole;
+        private bool        _breakHitThisTick; // Prevents re-triggering until condition goes false
+
+        // ── Diff view for patched code ────────────────────────────────────────
+        private TabPage     _tabDiff;
+        private RichTextBox _rtbDiffBefore;
+        private RichTextBox _rtbDiffAfter;
+        private string      _lastPatchOriginal;
+
+        // ── Code heatmap / profiling ──────────────────────────────────────────
+        private Dictionary<string, double> _lastHeatmapTimings;
+        private bool _heatmapEnabled = true;
+
+        // ── Timeline scrubber ─────────────────────────────────────────────────
+        private Panel    _timelineBar;
+        private TrackBar _timelineScrubber;
+        private Label    _lblTimelineTick;
+        private bool     _isScrubbing;  // true when user is dragging the scrubber
 
         // ── Split containers (distances set on Load) ──────────────────────────────
         private SplitContainer _mainSplit, _workSplit, _topSplit;
@@ -905,10 +942,14 @@ namespace SESpriteLCDLayoutTool
             {
                 _execResultLabel.Text      = "✗ Error";
                 _execResultLabel.ForeColor = Color.FromArgb(220, 80, 80);
+                AppendConsoleError(result.Error);
                 MessageBox.Show(result.Error, "Execution Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+
+            // Show Echo output in Console tab
+            AppendConsoleOutput(result.OutputLines);
 
             string typeTag = result.ScriptType == ScriptType.ProgrammableBlock ? " [PB]"
                            : result.ScriptType == ScriptType.ModSurface        ? " [Mod]"
@@ -995,6 +1036,71 @@ namespace SESpriteLCDLayoutTool
                 _layout.Sprites.Add(sp);
             }
 
+            // ══════════════════════════════════════════════════════════════════════════
+            // ESTABLISH SOURCE TRACKING: Execution sprites have runtime values but no
+            // SourceStart/SourceEnd/ImportBaseline, so PatchOriginalSource can't
+            // round-trip property edits (text, color, etc.) back to code.
+            // Fix: Parse OriginalSourceCode to get source positions, match to execution
+            // sprites by type+content, and transfer the source range.
+            // ══════════════════════════════════════════════════════════════════════════
+            if (_layout.OriginalSourceCode != null)
+            {
+                var parsedSprites = CodeParser.Parse(_layout.OriginalSourceCode);
+                System.Diagnostics.Debug.WriteLine($"[ExecuteCode] OriginalSourceCode length={_layout.OriginalSourceCode.Length}, parsed {parsedSprites.Count} sprites, execution has {_layout.Sprites.Count} sprites");
+                if (parsedSprites.Count > 0)
+                {
+                    // Sort by SourceStart so matching is in source order
+                    parsedSprites.Sort((a, b) =>
+                    {
+                        if (a.SourceStart < 0 && b.SourceStart < 0) return 0;
+                        if (a.SourceStart < 0) return 1;
+                        if (b.SourceStart < 0) return -1;
+                        return a.SourceStart.CompareTo(b.SourceStart);
+                    });
+
+                    // Build pool of parsed sprites keyed by (Type, Data) in source order
+                    var pool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var ps in parsedSprites)
+                    {
+                        string key = ps.Type == SpriteEntryType.Text
+                            ? "TEXT|" + (ps.Text ?? "")
+                            : "TEXTURE|" + (ps.SpriteName ?? "");
+                        if (!pool.ContainsKey(key))
+                            pool[key] = new Queue<SpriteEntry>();
+                        pool[key].Enqueue(ps);
+                    }
+
+                    // Match execution sprites to parsed sprites and transfer source tracking
+                    int tracked = 0;
+                    int unmatched = 0;
+                    foreach (var sp in _layout.Sprites)
+                    {
+                        string key = sp.Type == SpriteEntryType.Text
+                            ? "TEXT|" + (sp.Text ?? "")
+                            : "TEXTURE|" + (sp.SpriteName ?? "");
+
+                        if (pool.TryGetValue(key, out var queue) && queue.Count > 0)
+                        {
+                            var parsed = queue.Dequeue();
+                            sp.SourceStart = parsed.SourceStart;
+                            sp.SourceEnd = parsed.SourceEnd;
+                            sp.ImportBaseline = sp.CloneValues();
+                            tracked++;
+                        }
+                        else
+                        {
+                            unmatched++;
+                        }
+                    }
+
+                    System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Source tracking: {tracked} matched, {unmatched} unmatched out of {_layout.Sprites.Count} sprites");
+                }
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine($"[ExecuteCode] OriginalSourceCode is NULL — skipping source tracking");
+            }
+
             // For Pulsar/Mod/Torch scripts: PRESERVE the original source code.
             // These scripts use DrawFrame() at runtime so sprites have no static
             // source tracking, but we still want to keep the original code in the
@@ -1022,6 +1128,25 @@ namespace SESpriteLCDLayoutTool
             _canvas.Invalidate();
             RefreshLayerList();
 
+            // DIAGNOSTIC: Log sprite method attribution for code jump debugging
+            {
+                int withMethod = 0, withIndex = 0, total = _layout.Sprites.Count;
+                foreach (var sp in _layout.Sprites)
+                {
+                    if (!string.IsNullOrEmpty(sp.SourceMethodName)) withMethod++;
+                    if (sp.SourceMethodIndex >= 0) withIndex++;
+                }
+                System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Sprite method attribution: {withMethod}/{total} have SourceMethodName, {withIndex}/{total} have SourceMethodIndex");
+                if (total > 0 && total <= 20)
+                {
+                    for (int di = 0; di < total; di++)
+                    {
+                        var dsp = _layout.Sprites[di];
+                        System.Diagnostics.Debug.WriteLine($"[ExecuteCode]   [{di}] {dsp.DisplayName}: Method='{dsp.SourceMethodName ?? "(null)"}' Idx={dsp.SourceMethodIndex} SourceStart={dsp.SourceStart}");
+                    }
+                }
+            }
+
             // Don't regenerate code for Pulsar/Mod scripts - keep original code intact.
             // For other scripts, RefreshCode is protected by _codeBoxDirty check.
             if (!isPulsarOrMod)
@@ -1031,30 +1156,1268 @@ namespace SESpriteLCDLayoutTool
             RefreshDebugStats();
 
             // ══════════════════════════════════════════════════════════════════════════
-            // AUTOMATIC SPRITE MAPPING: Build method-to-sprite mapping after execution
-            // This enables "Execute & Isolate" to work correctly by knowing which sprites
-            // belong to which methods. Uses static code analysis + pattern matching.
+            // AUTOMATIC VARIABLE INSPECTION: Show instance fields after execution
+            // This helps debug "why isn't my counter incrementing?" without MessageBox spam
             // ══════════════════════════════════════════════════════════════════════════
-            System.Diagnostics.Debug.WriteLine("\n[MainForm] ========== AUTO-BUILDING SPRITE MAPPING ==========");
-            var mappingResult = SpriteMappingBuilder.BuildMapping(
-                code, 
-                call, 
-                frameCount: 30, 
-                capturedRows: _layout?.CapturedRows);
+            AutoInspectVariablesAfterExecution(code, call);
 
-            if (mappingResult.Success)
+            // SpriteMappingBuilder removed: the instrumentation pipeline (SetCurrentMethod + RecordSpriteMethod)
+            // now tags each sprite with SourceMethodName/SourceMethodIndex at execution time, making the
+            // expensive re-compile-and-re-run approach redundant. Isolation fallback uses SourceMethodName.
+        }
+
+        // ── Variable Inspector Test ───────────────────────────────────────────────
+
+        /// <summary>
+        /// Tests the variable inspector MVP by compiling the current code as an animation
+        /// and displaying all instance fields using reflection.
+        /// 
+        /// USAGE:
+        /// 1. Paste/write code with class-level fields (e.g., int counter; float angle;)
+        /// 2. Click "🔍 Inspect Variables" in the code panel toolbar
+        /// 3. See all instance fields and their initial values after constructor runs
+        /// 
+        /// EXAMPLE CODE TO TEST:
+        /// <code>
+        /// int counter = 0;
+        /// float angle = 0f;
+        /// string[] items = new string[] { "foo", "bar", "baz" };
+        /// 
+        /// public void DrawHUD(IMyTextSurface surface) {
+        ///     counter++;
+        ///     angle += 0.1f;
+        ///     // ... sprite drawing code ...
+        /// }
+        /// </code>
+        /// </summary>
+        private void TestVariableInspector()
+        {
+            string code = _codeBox.Text;
+            if (string.IsNullOrWhiteSpace(code))
             {
-                _layout.SpriteMapping = mappingResult.Mapping;
-                System.Diagnostics.Debug.WriteLine($"[MainForm] Sprite mapping built successfully:");
-                System.Diagnostics.Debug.WriteLine($"  - {mappingResult.Mapping.MethodToSprites.Count} methods");
-                System.Diagnostics.Debug.WriteLine($"  - {mappingResult.TotalSpritesCollected} sprite attributions");
-                System.Diagnostics.Debug.WriteLine($"[MainForm] ===================================================\n");
+                MessageBox.Show("No code to inspect.", "Variable Inspector", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string call = _execCallBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(call) && _detectedMethods != null && _detectedMethods.Count > 0)
+            {
+                call = _detectedMethods[0].CallExpression;
+            }
+
+            // Use AnimationPlayer to compile and initialize the script
+            using (var animPlayer = new AnimationPlayer(this))
+            {
+                string prepError = animPlayer.Prepare(code, call, _layout?.CapturedRows);
+                if (prepError != null)
+                {
+                    MessageBox.Show(prepError, "Variable Inspector - Compile Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Inspect all instance fields
+                var fields = animPlayer.InspectFields();
+                if (fields == null || fields.Count == 0)
+                {
+                    MessageBox.Show("No instance fields found.", "Variable Inspector", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                // Populate ListView
+                _lstVariables.Items.Clear();
+                foreach (var kv in fields.OrderBy(x => x.Key))
+                {
+                    string value = FormatFieldValue(kv.Value);
+                    var item = new ListViewItem(new[] { kv.Key, value });
+                    item.ForeColor = Color.FromArgb(160, 220, 255);
+                    _lstVariables.Items.Add(item);
+                }
+
+                // Format the output for MessageBox
+                var output = new System.Text.StringBuilder();
+                output.AppendLine($"Script Type: {animPlayer.ScriptType}");
+                output.AppendLine($"Instance Fields ({fields.Count}):\n");
+
+                foreach (var kv in fields.OrderBy(x => x.Key))
+                {
+                    string value = FormatFieldValue(kv.Value);
+                    output.AppendLine($"{kv.Key} = {value}");
+                }
+
+                // Show in a scrollable message box + switch to Variables tab
+                MessageBox.Show(output.ToString(), "Variable Inspector", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        /// <summary>
+        /// Formats a field value for display in the variable inspector.
+        /// </summary>
+        private string FormatFieldValue(object value)
+        {
+            if (value == null)
+                return "(null)";
+
+            if (value is string str)
+                return $"\"{str}\"";
+
+            if (value is System.Collections.IEnumerable enumerable && !(value is string))
+            {
+                var items = new List<string>();
+                int count = 0;
+                foreach (var item in enumerable)
+                {
+                    if (count >= 5)
+                    {
+                        items.Add("...");
+                        break;
+                    }
+                    items.Add(item?.ToString() ?? "(null)");
+                    count++;
+                }
+                return $"[{string.Join(", ", items)}] (count: {count}{(count >= 5 ? "+" : "")})";
+            }
+
+            return value.ToString();
+        }
+
+        /// <summary>
+        /// Gets the display color for a variable based on its type.
+        /// VIBRANT colors for visibility on dark backgrounds.
+        /// </summary>
+        private Color GetColorForType(object value)
+        {
+            if (value == null)
+                return Color.FromArgb(160, 160, 160); // Brighter gray for null
+
+            var type = value.GetType();
+
+            // Numeric types - Bright blue shades
+            if (type == typeof(int) || type == typeof(long) || type == typeof(short) || type == typeof(byte) ||
+                type == typeof(uint) || type == typeof(ulong) || type == typeof(ushort) || type == typeof(sbyte))
+                return Color.FromArgb(80, 160, 255); // Vivid blue for integers
+
+            if (type == typeof(float) || type == typeof(double) || type == typeof(decimal))
+                return Color.FromArgb(0, 220, 255); // Bright cyan for floats
+
+            // String - Bright green
+            if (type == typeof(string))
+                return Color.FromArgb(80, 255, 120); // Vivid green
+
+            // Boolean - Bright orange
+            if (type == typeof(bool))
+                return Color.FromArgb(255, 160, 60); // Vivid orange
+
+            // VRageMath types - Bright purple/magenta
+            if (type.Name.Contains("Vector") || type.Name.Contains("Matrix"))
+                return Color.FromArgb(220, 100, 255); // Vivid purple for vectors/matrices
+
+            if (type.Name.Contains("Color"))
+                return Color.FromArgb(255, 220, 60); // Bright yellow for colors
+
+            // Collections - Aqua
+            if (value is System.Collections.IEnumerable && !(value is string))
+                return Color.FromArgb(100, 200, 255); // Aqua for arrays/lists
+
+            // Default for objects
+            return Color.FromArgb(140, 200, 255); // Default light blue
+        }
+
+        /// <summary>
+        /// Brightens a color to indicate a changed value during animation.
+        /// </summary>
+        private Color BrightenColor(Color baseColor)
+        {
+            // Increase RGB values by 30% and add yellow tint for visibility
+            int r = Math.Min(255, baseColor.R + (int)((255 - baseColor.R) * 0.4f) + 20);
+            int g = Math.Min(255, baseColor.G + (int)((255 - baseColor.G) * 0.4f) + 20);
+            int b = Math.Min(255, baseColor.B + (int)((255 - baseColor.B) * 0.2f)); // Less blue boost
+            return Color.FromArgb(r, g, b);
+        }
+
+        /// <summary>
+        /// Automatically inspects variables after Execute Code completes successfully.
+        /// Populates the Variables tab and writes to Debug output.
+        /// </summary>
+        private void AutoInspectVariablesAfterExecution(string code, string call)
+        {
+            try
+            {
+                // Dispose previous AnimationPlayer only if it's NOT the same as _animPlayer
+                if (_lastAnimPlayer != null && _lastAnimPlayer != _animPlayer)
+                {
+                    _lastAnimPlayer.Dispose();
+                }
+
+                _lastAnimPlayer = new AnimationPlayer(this);
+                string prepError = _lastAnimPlayer.Prepare(code, call, _layout?.CapturedRows);
+                if (prepError != null)
+                {
+                    _lastAnimPlayer?.Dispose();
+                    _lastAnimPlayer = null;
+                    return; // Silent failure - execution already succeeded, inspection is bonus
+                }
+
+                var fields = _lastAnimPlayer.InspectFields();
+                if (fields == null || fields.Count == 0)
+                    return;
+
+                // Populate ListView
+                _lstVariables.Items.Clear();
+                foreach (var kv in fields.OrderBy(x => x.Key))
+                {
+                    if (!ShouldShowField(kv.Key))
+                        continue; // Skip internal fields
+
+                    string value = FormatFieldValue(kv.Value);
+                    var item = new ListViewItem(new[] { kv.Key, value, "" });
+                    item.ForeColor = GetColorForType(kv.Value); // Type-based color coding
+                    _lstVariables.Items.Add(item);
+                }
+
+                // Update tab title (no frame number for initial Execute)
+                if (_tabVariables != null)
+                {
+                    _tabVariables.Text = "Variables";
+                }
+
+                // Write to Debug output for reference
+                System.Diagnostics.Debug.WriteLine("\n========== VARIABLE INSPECTION ==========");
+                System.Diagnostics.Debug.WriteLine($"Script Type: {_lastAnimPlayer.ScriptType}");
+                System.Diagnostics.Debug.WriteLine($"Instance Fields ({fields.Count}):");
+
+                foreach (var kv in fields.OrderBy(x => x.Key))
+                {
+                    string value = FormatFieldValue(kv.Value);
+                    System.Diagnostics.Debug.WriteLine($"  {kv.Key} = {value}");
+                }
+
+                System.Diagnostics.Debug.WriteLine("=========================================\n");
+
+                // Evaluate watch expressions with initial field values
+                EvaluateWatches(_lastAnimPlayer);
+            }
+            catch (Exception ex)
+            {
+                // Silent failure - don't interrupt successful execution
+                System.Diagnostics.Debug.WriteLine($"[AutoInspect] Error: {ex.Message}");
+                if (_lastAnimPlayer != null && _lastAnimPlayer != _animPlayer)
+                {
+                    _lastAnimPlayer.Dispose();
+                }
+                _lastAnimPlayer = null;
+            }
+        }
+
+        /// <summary>
+        /// Determines if a field should be shown based on the "Show internal fields" checkbox.
+        /// </summary>
+        private bool ShouldShowField(string fieldName)
+        {
+            if (_chkShowInternalFields?.Checked == true)
+                return true; // Show all fields
+
+            // Hide fields starting with _ (private convention: _stubSurface, _timer)
+            if (fieldName.StartsWith("_"))
+                return false;
+
+            // Hide compiler-generated fields (e.g., <>f__AnonymousType)
+            if (fieldName.StartsWith("<"))
+                return false;
+
+            return true; // Show user-defined fields
+        }
+
+        /// <summary>
+        /// Updates the Variables tab during animation playback to show live field values.
+        /// </summary>
+        private void UpdateVariablesDuringAnimation(int tick)
+        {
+            // If we have a dedicated animation player (not _lastAnimPlayer from Execute),
+            // use it for inspection. Otherwise fall back to _lastAnimPlayer.
+            AnimationPlayer inspectPlayer = _animPlayer ?? _lastAnimPlayer;
+
+            if (inspectPlayer == null)
+                return;
+
+            try
+            {
+                var fields = inspectPlayer.InspectFields();
+                if (fields == null || fields.Count == 0)
+                    return;
+
+                // Track previous values for change highlighting
+                var previousValues = new Dictionary<string, string>();
+                foreach (ListViewItem item in _lstVariables.Items)
+                {
+                    previousValues[item.Text] = item.SubItems[1].Text;
+                }
+
+                // Update ListView WITHOUT clearing (prevents flashing)
+                _lstVariables.BeginUpdate();
+
+                var orderedFields = fields.OrderBy(x => x.Key).Where(kv => ShouldShowField(kv.Key)).ToList();
+
+                // If field count changed, rebuild the list
+                if (_lstVariables.Items.Count != orderedFields.Count)
+                {
+                    _lstVariables.Items.Clear();
+                    foreach (var kv in orderedFields)
+                    {
+                        string value = FormatFieldValue(kv.Value);
+                        var item = new ListViewItem(new[] { kv.Key, value, "" });
+                        item.ForeColor = GetColorForType(kv.Value);
+                        _lstVariables.Items.Add(item);
+                    }
+                }
+                else
+                {
+                    // Update existing items in-place (no flashing)
+                    for (int i = 0; i < orderedFields.Count; i++)
+                    {
+                        var kv = orderedFields[i];
+                        string value = FormatFieldValue(kv.Value);
+                        var item = _lstVariables.Items[i];
+
+                        // Update value if changed
+                        if (item.SubItems[1].Text != value)
+                        {
+                            item.SubItems[1].Text = value;
+                        }
+
+                        // Get type-based color, brighten if value changed from previous tick
+                        Color baseColor = GetColorForType(kv.Value);
+                        if (previousValues.TryGetValue(kv.Key, out string oldValue) && oldValue != value)
+                        {
+                            item.ForeColor = BrightenColor(baseColor); // Brighten to show change
+                        }
+                        else
+                        {
+                            item.ForeColor = baseColor; // Normal type-based color
+                        }
+                    }
+                }
+
+                _lstVariables.EndUpdate();
+
+                // Update tab title with tick number
+                if (_tabVariables != null)
+                {
+                    _tabVariables.Text = $"Variables (Tick {tick})";
+                }
+
+                // Evaluate watch expressions each tick
+                EvaluateWatches(inspectPlayer);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[UpdateVariables] Error: {ex.Message}");
+            }
+        }
+
+        // ── Timeline scrubber ───────────────────────────────────────────────────
+
+        /// <summary>
+        /// Called each animation frame to keep the scrubber range and position
+        /// in sync with the tick history.
+        /// </summary>
+        private void UpdateTimelineScrubber(int currentTick)
+        {
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            if (player == null || _timelineScrubber == null) return;
+
+            var history = player.TickHistory;
+            if (history == null || history.Count == 0)
+            {
+                _timelineBar.Visible = false;
+                return;
+            }
+
+            _timelineBar.Visible = true;
+            _timelineScrubber.Minimum = history.MinTick;
+            _timelineScrubber.Maximum = Math.Max(history.MinTick, history.MaxTick);
+
+            // Track live unless user is scrubbing
+            if (!_isScrubbing)
+            {
+                _timelineScrubber.Value = Math.Min(currentTick, _timelineScrubber.Maximum);
+                _lblTimelineTick.Text = $"Tick {currentTick} / {history.MaxTick}";
+            }
+        }
+
+        /// <summary>
+        /// Handles the user dragging the timeline scrubber to a historical tick.
+        /// Populates the Variables tab from the stored snapshot.
+        /// </summary>
+        private void OnTimelineScrub(object sender, EventArgs e)
+        {
+            if (_timelineScrubber == null) return;
+
+            int scrubTick = _timelineScrubber.Value;
+            _isScrubbing = true;
+            _lblTimelineTick.Text = $"⏪ Tick {scrubTick}";
+
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            if (player == null) return;
+
+            var history = player.TickHistory;
+            if (history == null || history.Count == 0) return;
+
+            var snapshot = history.GetSnapshot(scrubTick);
+            if (snapshot == null) return;
+
+            // Populate _lstVariables from the historical snapshot
+            _lstVariables.BeginUpdate();
+            var orderedFields = new List<KeyValuePair<string, object>>();
+            foreach (var kv in snapshot)
+            {
+                if (ShouldShowField(kv.Key))
+                    orderedFields.Add(kv);
+            }
+            orderedFields.Sort((a, b) => string.Compare(a.Key, b.Key, StringComparison.Ordinal));
+
+            if (_lstVariables.Items.Count != orderedFields.Count)
+            {
+                _lstVariables.Items.Clear();
+                foreach (var kv in orderedFields)
+                {
+                    string value = FormatFieldValue(kv.Value);
+                    var item = new ListViewItem(new[] { kv.Key, value, "" });
+                    item.ForeColor = GetColorForType(kv.Value);
+                    _lstVariables.Items.Add(item);
+                }
             }
             else
             {
-                System.Diagnostics.Debug.WriteLine($"[MainForm] Sprite mapping build failed: {mappingResult.Error}");
-                // Don't show error to user - isolation will just fall back to other matching methods
+                for (int i = 0; i < orderedFields.Count; i++)
+                {
+                    var kv = orderedFields[i];
+                    string value = FormatFieldValue(kv.Value);
+                    var item = _lstVariables.Items[i];
+                    if (item.Text != kv.Key) item.Text = kv.Key;
+                    if (item.SubItems[1].Text != value) item.SubItems[1].Text = value;
+                    item.ForeColor = GetColorForType(kv.Value);
+                }
             }
+            _lstVariables.EndUpdate();
+
+            if (_tabVariables != null)
+                _tabVariables.Text = $"Variables (Tick {scrubTick})";
+        }
+
+        /// <summary>
+        /// Resets the scrubbing flag so the scrubber tracks live ticks again.
+        /// Called when animation resumes or a new frame arrives after the user
+        /// stops dragging.
+        /// </summary>
+        private void ResetScrubbing()
+        {
+            _isScrubbing = false;
+        }
+
+        // ── Variables ListView owner-draw (sparklines) ──────────────────────────
+
+        private void LstVariables_DrawColumnHeader(object sender, DrawListViewColumnHeaderEventArgs e)
+        {
+            e.DrawDefault = true;
+        }
+
+        private void LstVariables_DrawSubItem(object sender, DrawListViewSubItemEventArgs e)
+        {
+            // Columns 0 (Field) and 1 (Value): default text drawing
+            if (e.ColumnIndex < 2)
+            {
+                // Use item forecolor for proper highlighting support
+                var textColor = e.Item.ForeColor;
+                using (var brush = new System.Drawing.SolidBrush(textColor))
+                {
+                    var sf = new System.Drawing.StringFormat
+                    {
+                        Alignment     = StringAlignment.Near,
+                        LineAlignment = StringAlignment.Center,
+                        Trimming      = StringTrimming.EllipsisCharacter,
+                        FormatFlags   = StringFormatFlags.NoWrap,
+                    };
+                    var rect = e.Bounds;
+                    rect.X += 2;
+                    rect.Width -= 4;
+                    e.Graphics.DrawString(e.SubItem.Text, _lstVariables.Font, brush, rect, sf);
+                }
+                return;
+            }
+
+            // Column 2 (Trend): draw sparkline for numeric fields
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            var history = player?.TickHistory;
+            if (history == null || history.Count < 2)
+            {
+                e.DrawDefault = false;
+                return;
+            }
+
+            string fieldName = e.Item.Text;
+            int[] ticks;
+            float[] values;
+            history.GetNumericSeries(fieldName, out ticks, out values);
+
+            // Check if this field has any real numeric data
+            bool hasData = false;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (!float.IsNaN(values[i])) { hasData = true; break; }
+            }
+
+            if (!hasData) return;
+
+            // Draw sparkline
+            var bounds = e.Bounds;
+            int pad = 2;
+            int left = bounds.X + pad;
+            int top = bounds.Y + pad;
+            int width = bounds.Width - pad * 2;
+            int height = bounds.Height - pad * 2;
+            if (width < 8 || height < 4) return;
+
+            // Find min/max for scaling
+            float min = float.MaxValue, max = float.MinValue;
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (float.IsNaN(values[i])) continue;
+                if (values[i] < min) min = values[i];
+                if (values[i] > max) max = values[i];
+            }
+
+            float range = max - min;
+            if (range < 0.0001f) range = 1f; // flat line
+
+            // Build points
+            var points = new List<System.Drawing.Point>();
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (float.IsNaN(values[i])) continue;
+                int px = left + (int)((float)i / Math.Max(1, values.Length - 1) * width);
+                int py = top + height - (int)((values[i] - min) / range * height);
+                points.Add(new System.Drawing.Point(px, py));
+            }
+
+            if (points.Count >= 2)
+            {
+                using (var pen = new System.Drawing.Pen(Color.FromArgb(100, 200, 255), 1f))
+                {
+                    e.Graphics.DrawLines(pen, points.ToArray());
+                }
+
+                // Draw current value dot (last point)
+                var last = points[points.Count - 1];
+                using (var dotBrush = new System.Drawing.SolidBrush(Color.FromArgb(255, 220, 80)))
+                {
+                    e.Graphics.FillEllipse(dotBrush, last.X - 2, last.Y - 2, 4, 4);
+                }
+            }
+        }
+
+        // ── Sprite-to-Variable linking ──────────────────────────────────────────
+
+        /// <summary>
+        /// Scans a source code region for identifiers that match known runner
+        /// field names.  Returns the set of field names referenced in the region.
+        /// </summary>
+        private static HashSet<string> GetLinkedFieldNames(
+            string sourceCode, int start, int end, ICollection<string> knownFields)
+        {
+            var linked = new HashSet<string>();
+            if (string.IsNullOrEmpty(sourceCode) || start < 0 || end <= start)
+                return linked;
+
+            start = Math.Max(0, start);
+            end = Math.Min(sourceCode.Length, end);
+            string region = sourceCode.Substring(start, end - start);
+
+            foreach (var field in knownFields)
+            {
+                if (string.IsNullOrEmpty(field)) continue;
+
+                int idx = 0;
+                while (idx < region.Length)
+                {
+                    int pos = region.IndexOf(field, idx, StringComparison.Ordinal);
+                    if (pos < 0) break;
+
+                    // Ensure it's a whole-word match (not part of a longer identifier)
+                    bool leftOk = pos == 0 || !char.IsLetterOrDigit(region[pos - 1]) && region[pos - 1] != '_';
+                    int afterEnd = pos + field.Length;
+                    bool rightOk = afterEnd >= region.Length || !char.IsLetterOrDigit(region[afterEnd]) && region[afterEnd] != '_';
+
+                    if (leftOk && rightOk)
+                    {
+                        linked.Add(field);
+                        break; // found once is enough
+                    }
+                    idx = pos + 1;
+                }
+            }
+
+            return linked;
+        }
+
+        /// <summary>
+        /// Highlights rows in the Variables tab that correspond to fields
+        /// referenced in the selected sprite's source code region.
+        /// Resets all rows to normal when nothing is selected or no links found.
+        /// </summary>
+        private void HighlightLinkedVariables(SpriteEntry sprite)
+        {
+            if (_lstVariables == null || _lstVariables.Items.Count == 0) return;
+
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            HashSet<string> linked = null;
+
+            if (sprite != null && player != null)
+            {
+                string sourceCode = _layout?.OriginalSourceCode ?? _codeBox?.Text;
+                var fields = player.InspectFields();
+
+                if (fields != null && fields.Count > 0 && !string.IsNullOrEmpty(sourceCode))
+                {
+                    // Primary: use SourceStart/SourceEnd character offsets
+                    if (sprite.SourceStart >= 0 && sprite.SourceEnd > sprite.SourceStart)
+                    {
+                        linked = GetLinkedFieldNames(sourceCode, sprite.SourceStart, sprite.SourceEnd, fields.Keys);
+                    }
+
+                    // Fallback: use SourceCodeSnippet if available
+                    if ((linked == null || linked.Count == 0) && !string.IsNullOrEmpty(sprite.SourceCodeSnippet))
+                    {
+                        linked = GetLinkedFieldNames(sprite.SourceCodeSnippet, 0, sprite.SourceCodeSnippet.Length, fields.Keys);
+                    }
+
+                    // Fallback: if sprite has a SourceMethodName, scan that entire method body
+                    if ((linked == null || linked.Count == 0) && !string.IsNullOrEmpty(sprite.SourceMethodName))
+                    {
+                        int mStart = sourceCode.IndexOf(sprite.SourceMethodName, StringComparison.Ordinal);
+                        if (mStart >= 0)
+                        {
+                            // Find the method body (from method name to next closing brace block)
+                            int braceStart = sourceCode.IndexOf('{', mStart);
+                            if (braceStart >= 0)
+                            {
+                                int depth = 1;
+                                int scan = braceStart + 1;
+                                while (scan < sourceCode.Length && depth > 0)
+                                {
+                                    if (sourceCode[scan] == '{') depth++;
+                                    else if (sourceCode[scan] == '}') depth--;
+                                    scan++;
+                                }
+                                linked = GetLinkedFieldNames(sourceCode, braceStart, scan, fields.Keys);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Apply highlighting
+            bool hasLinks = linked != null && linked.Count > 0;
+            Color linkedColor = Color.FromArgb(255, 220, 80);     // Bright gold for linked fields
+            Color dimColor = Color.FromArgb(80, 90, 100);          // Dimmed for unrelated fields
+
+            _lstVariables.BeginUpdate();
+            foreach (ListViewItem item in _lstVariables.Items)
+            {
+                if (hasLinks)
+                {
+                    item.ForeColor = linked.Contains(item.Text) ? linkedColor : dimColor;
+                }
+                else
+                {
+                    // No links — restore type-based color
+                    var fields = (player ?? _lastAnimPlayer)?.InspectFields();
+                    object value = null;
+                    fields?.TryGetValue(item.Text, out value);
+                    item.ForeColor = GetColorForType(value);
+                }
+            }
+            _lstVariables.EndUpdate();
+        }
+
+        // ── Variable editing at runtime ─────────────────────────────────────────
+
+        /// <summary>
+        /// Edits the currently selected variable in the Variables list via a
+        /// simple input dialog, then applies the new value to the live runner
+        /// instance using reflection.
+        /// </summary>
+        private void EditSelectedVariable()
+        {
+            if (_lstVariables.SelectedItems.Count == 0) return;
+
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            if (player == null)
+            {
+                SetStatus("No active session — run or animate code first.");
+                return;
+            }
+
+            var selected = _lstVariables.SelectedItems[0];
+            string fieldName = selected.Text;
+            string currentValue = selected.SubItems[1].Text;
+
+            // Look up the field type for display
+            string typeName = "";
+            var fieldTypes = player.InspectFieldTypes();
+            if (fieldTypes != null && fieldTypes.TryGetValue(fieldName, out Type ft))
+                typeName = ft.Name;
+
+            string newValue = ShowEditVariableDialog(fieldName, currentValue, typeName);
+            if (newValue == null) return; // cancelled
+
+            string error = player.SetFieldValue(fieldName, newValue);
+            if (error != null)
+            {
+                MessageBox.Show(error, "Edit Variable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Refresh display immediately
+            UpdateVariablesDuringAnimation(_animPlayer?.CurrentTick ?? 0);
+            SetStatus($"Set {fieldName} = {newValue}");
+        }
+
+        /// <summary>
+        /// Shows a dark-themed input dialog for editing a variable value.
+        /// Returns the new value string, or null if cancelled.
+        /// </summary>
+        private string ShowEditVariableDialog(string fieldName, string currentValue, string typeName)
+        {
+            using (var dlg = new Form())
+            {
+                dlg.Text = "Edit Variable";
+                dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dlg.StartPosition = FormStartPosition.CenterParent;
+                dlg.MaximizeBox = false;
+                dlg.MinimizeBox = false;
+                dlg.Size = new Size(380, 180);
+                dlg.BackColor = Color.FromArgb(30, 30, 38);
+                dlg.ForeColor = Color.FromArgb(220, 220, 220);
+
+                var lblField = new Label
+                {
+                    Text = $"{fieldName}  ({typeName})",
+                    Location = new Point(12, 12),
+                    Size = new Size(350, 20),
+                    ForeColor = Color.FromArgb(130, 190, 255),
+                    Font = new Font("Consolas", 10f, FontStyle.Bold),
+                };
+
+                var txtValue = new TextBox
+                {
+                    Text = currentValue.TrimStart('"').TrimEnd('"'),
+                    Location = new Point(12, 40),
+                    Size = new Size(340, 24),
+                    BackColor = Color.FromArgb(18, 18, 24),
+                    ForeColor = Color.FromArgb(220, 255, 220),
+                    Font = new Font("Consolas", 10f),
+                    BorderStyle = BorderStyle.FixedSingle,
+                };
+                txtValue.SelectAll();
+
+                var btnOk = new Button
+                {
+                    Text = "Apply",
+                    DialogResult = DialogResult.OK,
+                    Location = new Point(190, 100),
+                    Size = new Size(75, 28),
+                    BackColor = Color.FromArgb(40, 80, 50),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                };
+
+                var btnCancel = new Button
+                {
+                    Text = "Cancel",
+                    DialogResult = DialogResult.Cancel,
+                    Location = new Point(275, 100),
+                    Size = new Size(75, 28),
+                    BackColor = Color.FromArgb(60, 40, 40),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                };
+
+                dlg.AcceptButton = btnOk;
+                dlg.CancelButton = btnCancel;
+                dlg.Controls.AddRange(new Control[] { lblField, txtValue, btnOk, btnCancel });
+
+                return dlg.ShowDialog(this) == DialogResult.OK ? txtValue.Text : null;
+            }
+        }
+
+        // ── Watch expression management ───────────────────────────────────────────
+
+        /// <summary>
+        /// Adds a new watch expression. Attempts immediate compilation if an
+        /// animation player is available for field type discovery.
+        /// </summary>
+        private void AddWatchExpression(string expression)
+        {
+            if (string.IsNullOrWhiteSpace(expression)) return;
+
+            // Don't add duplicates
+            if (_watchExpressions.Any(w => w.Expression == expression.Trim()))
+            {
+                SetStatus($"Watch already exists: {expression.Trim()}");
+                return;
+            }
+
+            var watch = new Models.WatchExpression { Expression = expression.Trim() };
+            _watchExpressions.Add(watch);
+
+            // Try to compile immediately if we have a player
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            if (player != null)
+            {
+                TryCompileWatch(watch, player);
+            }
+
+            RefreshWatchList();
+        }
+
+        /// <summary>
+        /// Removes the currently selected watch expression from the list.
+        /// </summary>
+        private void RemoveSelectedWatch()
+        {
+            if (_lstWatch == null || _lstWatch.SelectedIndices.Count == 0) return;
+
+            int idx = _lstWatch.SelectedIndices[0];
+            if (idx >= 0 && idx < _watchExpressions.Count)
+            {
+                _watchExpressions.RemoveAt(idx);
+                RefreshWatchList();
+            }
+        }
+
+        /// <summary>
+        /// Compiles a single watch expression using field types from the player.
+        /// </summary>
+        private void TryCompileWatch(Models.WatchExpression watch, AnimationPlayer player)
+        {
+            try
+            {
+                var fieldTypes = player.InspectFieldTypes();
+                if (fieldTypes == null || fieldTypes.Count == 0) return;
+
+                var orderedNames = fieldTypes.Keys.OrderBy(k => k).ToArray();
+                var orderedTypes = orderedNames.Select(n => fieldTypes[n]).ToArray();
+
+                Services.WatchExpressionEvaluator.Compile(watch, orderedNames, orderedTypes);
+            }
+            catch (Exception ex)
+            {
+                watch.Error = ex.Message;
+            }
+        }
+
+        /// <summary>
+        /// Evaluates all watch expressions using current field values and updates the Watch ListView.
+        /// Called each animation tick and after one-shot execution.
+        /// </summary>
+        private void EvaluateWatches(AnimationPlayer player)
+        {
+            if (player == null || _lstWatch == null || _watchExpressions.Count == 0)
+                return;
+
+            try
+            {
+                var fields = player.InspectFields();
+                var fieldTypes = player.InspectFieldTypes();
+                if (fields == null || fieldTypes == null) return;
+
+                var orderedNames = fieldTypes.Keys.OrderBy(k => k).ToArray();
+                var orderedTypes = orderedNames.Select(n => fieldTypes[n]).ToArray();
+                var orderedValues = orderedNames.Select(n => fields.ContainsKey(n) ? fields[n] : null).ToArray();
+
+                // Track previous values for change highlighting
+                var previousValues = new Dictionary<string, string>();
+                foreach (ListViewItem item in _lstWatch.Items)
+                {
+                    previousValues[item.Text] = item.SubItems[1].Text;
+                }
+
+                _lstWatch.BeginUpdate();
+
+                foreach (var watch in _watchExpressions)
+                {
+                    // Recompile if needed (field set changed or not yet compiled)
+                    if (Services.WatchExpressionEvaluator.NeedsRecompile(watch, orderedNames))
+                    {
+                        Services.WatchExpressionEvaluator.Compile(watch, orderedNames, orderedTypes);
+                    }
+
+                    // Evaluate
+                    if (watch.IsCompiled)
+                    {
+                        Services.WatchExpressionEvaluator.Evaluate(watch, orderedValues);
+                    }
+                }
+
+                // Update the ListView to match current state
+                RefreshWatchListInPlace(previousValues);
+
+                _lstWatch.EndUpdate();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[EvaluateWatches] Error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Fully rebuilds the Watch ListView from _watchExpressions. Used after add/remove.
+        /// </summary>
+        private void RefreshWatchList()
+        {
+            if (_lstWatch == null) return;
+
+            _lstWatch.BeginUpdate();
+            _lstWatch.Items.Clear();
+
+            foreach (var watch in _watchExpressions)
+            {
+                string value = watch.Error != null ? $"⚠ {watch.Error}" : (watch.LastValue ?? "(not evaluated)");
+                string type = watch.Error != null ? "error" : (watch.LastTypeName ?? "—");
+
+                var item = new ListViewItem(new[] { watch.Expression, value, type });
+                item.ForeColor = watch.Error != null
+                    ? Color.FromArgb(255, 120, 100) // Red for errors
+                    : watch.LastValue != null
+                        ? GetColorForType(ConvertDisplayType(watch.LastTypeName))
+                        : Color.FromArgb(120, 120, 120); // Gray for not-yet-evaluated
+                _lstWatch.Items.Add(item);
+            }
+
+            _lstWatch.EndUpdate();
+        }
+
+        /// <summary>
+        /// Updates watch ListView items in-place with change highlighting (no flicker).
+        /// </summary>
+        private void RefreshWatchListInPlace(Dictionary<string, string> previousValues)
+        {
+            // If count mismatch, do a full rebuild
+            if (_lstWatch.Items.Count != _watchExpressions.Count)
+            {
+                _lstWatch.Items.Clear();
+                foreach (var watch in _watchExpressions)
+                {
+                    string value = watch.Error != null ? $"⚠ {watch.Error}" : (watch.LastValue ?? "(not evaluated)");
+                    string type = watch.Error != null ? "error" : (watch.LastTypeName ?? "—");
+                    var item = new ListViewItem(new[] { watch.Expression, value, type });
+                    item.ForeColor = watch.Error != null
+                        ? Color.FromArgb(255, 120, 100)
+                        : Color.FromArgb(160, 220, 255);
+                    _lstWatch.Items.Add(item);
+                }
+                return;
+            }
+
+            // In-place update
+            for (int i = 0; i < _watchExpressions.Count; i++)
+            {
+                var watch = _watchExpressions[i];
+                var item = _lstWatch.Items[i];
+
+                string value = watch.Error != null ? $"⚠ {watch.Error}" : (watch.LastValue ?? "(not evaluated)");
+                string type = watch.Error != null ? "error" : (watch.LastTypeName ?? "—");
+
+                if (item.SubItems[1].Text != value)
+                    item.SubItems[1].Text = value;
+                if (item.SubItems[2].Text != type)
+                    item.SubItems[2].Text = type;
+
+                // Color: red for errors, type-colored for values, bright on change
+                if (watch.Error != null)
+                {
+                    item.ForeColor = Color.FromArgb(255, 120, 100);
+                }
+                else
+                {
+                    Color baseColor = watch.LastValue != null
+                        ? GetColorForType(ConvertDisplayType(watch.LastTypeName))
+                        : Color.FromArgb(160, 220, 255);
+
+                    if (previousValues.TryGetValue(watch.Expression, out string oldVal) && oldVal != value)
+                        item.ForeColor = BrightenColor(baseColor);
+                    else
+                        item.ForeColor = baseColor;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Converts a type name string back to a dummy value for color coding.
+        /// </summary>
+        private static object ConvertDisplayType(string typeName)
+        {
+            if (typeName == null) return null;
+            switch (typeName)
+            {
+                case "Int32": case "Int64": case "Int16": case "Byte":
+                case "UInt32": case "UInt64": case "UInt16": case "SByte":
+                    return 0;
+                case "Single": case "Double": case "Decimal":
+                    return 0f;
+                case "String":
+                    return "";
+                case "Boolean":
+                    return false;
+                default:
+                    return new object();
+            }
+        }
+
+        // ── Conditional breakpoint management ─────────────────────────────────────
+
+        /// <summary>
+        /// Sets a break condition expression. Compiles it immediately if a player is available.
+        /// Animation will pause when this expression evaluates to true.
+        /// </summary>
+        private void SetBreakCondition(string expression)
+        {
+            if (string.IsNullOrWhiteSpace(expression))
+            {
+                ClearBreakCondition();
+                return;
+            }
+
+            _breakCondition = new Models.WatchExpression { Expression = expression.Trim() };
+            _breakHitThisTick = false;
+
+            // Try to compile immediately
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            if (player != null)
+            {
+                TryCompileWatch(_breakCondition, player);
+            }
+
+            if (_breakCondition.Error != null)
+            {
+                _lblBreakStatus.Text = "⚠ " + _breakCondition.Error;
+                _lblBreakStatus.ForeColor = Color.FromArgb(255, 120, 100);
+                _lblBreakStatus.Width = 200;
+            }
+            else if (_breakCondition.IsCompiled)
+            {
+                _lblBreakStatus.Text = "🔴 Armed";
+                _lblBreakStatus.ForeColor = Color.FromArgb(255, 100, 80);
+                _lblBreakStatus.Width = 120;
+            }
+            else
+            {
+                _lblBreakStatus.Text = "⏳ Pending";
+                _lblBreakStatus.ForeColor = Color.FromArgb(200, 200, 100);
+                _lblBreakStatus.Width = 120;
+            }
+
+            SetStatus($"Break condition set: {expression.Trim()}");
+        }
+
+        /// <summary>
+        /// Clears the break condition.
+        /// </summary>
+        private void ClearBreakCondition()
+        {
+            _breakCondition = null;
+            _breakHitThisTick = false;
+            if (_txtBreakCondition != null) _txtBreakCondition.Clear();
+            if (_lblBreakStatus != null)
+            {
+                _lblBreakStatus.Text = "";
+                _lblBreakStatus.ForeColor = Color.FromArgb(120, 120, 120);
+            }
+            SetStatus("Break condition cleared.");
+        }
+
+        /// <summary>
+        /// Checks the break condition against current field values.
+        /// Returns true if the condition evaluated to true and animation should pause.
+        /// Uses edge detection: only triggers on false→true transitions.
+        /// </summary>
+        private bool CheckBreakCondition(AnimationPlayer player)
+        {
+            if (_breakCondition == null || player == null)
+                return false;
+
+            try
+            {
+                var fields = player.InspectFields();
+                var fieldTypes = player.InspectFieldTypes();
+                if (fields == null || fieldTypes == null) return false;
+
+                var orderedNames = fieldTypes.Keys.OrderBy(k => k).ToArray();
+                var orderedTypes = orderedNames.Select(n => fieldTypes[n]).ToArray();
+                var orderedValues = orderedNames.Select(n => fields.ContainsKey(n) ? fields[n] : null).ToArray();
+
+                // Compile if needed
+                if (Services.WatchExpressionEvaluator.NeedsRecompile(_breakCondition, orderedNames))
+                {
+                    Services.WatchExpressionEvaluator.Compile(_breakCondition, orderedNames, orderedTypes);
+                    if (_breakCondition.Error != null)
+                    {
+                        _lblBreakStatus.Text = "⚠ " + _breakCondition.Error;
+                        _lblBreakStatus.ForeColor = Color.FromArgb(255, 120, 100);
+                        return false;
+                    }
+                }
+
+                if (!_breakCondition.IsCompiled) return false;
+
+                // Evaluate
+                Services.WatchExpressionEvaluator.Evaluate(_breakCondition, orderedValues);
+
+                if (_breakCondition.Error != null)
+                {
+                    _lblBreakStatus.Text = "⚠ " + _breakCondition.Error;
+                    _lblBreakStatus.ForeColor = Color.FromArgb(255, 120, 100);
+                    return false;
+                }
+
+                // Check if result is truthy
+                bool isTruthy = IsTruthy(_breakCondition.LastValue);
+
+                if (isTruthy && !_breakHitThisTick)
+                {
+                    // Edge trigger: false → true
+                    _breakHitThisTick = true;
+                    _lblBreakStatus.Text = "⏸ HIT!";
+                    _lblBreakStatus.ForeColor = Color.FromArgb(255, 255, 80);
+                    return true;
+                }
+                else if (!isTruthy)
+                {
+                    // Reset edge detection when condition goes false
+                    _breakHitThisTick = false;
+                    _lblBreakStatus.Text = "🔴 Armed";
+                    _lblBreakStatus.ForeColor = Color.FromArgb(255, 100, 80);
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[CheckBreakCondition] Error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Determines if a watch expression result string is "truthy" (non-zero, non-null, non-false).
+        /// </summary>
+        private static bool IsTruthy(string formattedValue)
+        {
+            if (string.IsNullOrEmpty(formattedValue)) return false;
+            if (formattedValue == "(null)") return false;
+            if (formattedValue == "false") return false;
+            if (formattedValue == "0") return false;
+            if (formattedValue == "0f" || formattedValue == "0.0" || formattedValue == "0E0") return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Starts a focused animation that immediately pauses at tick 1 for step-through debugging.
+        /// Used by the "Execute & Break" context menu on detected methods.
+        /// </summary>
+        private void StartFocusedAnimationAndBreak(string call)
+        {
+            if (_layout == null || string.IsNullOrWhiteSpace(call)) return;
+
+            string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
+            if (string.IsNullOrWhiteSpace(code)) return;
+
+            // Stop any existing animation
+            if (_animPlayer != null && _animPlayer.IsPlaying)
+            {
+                _animPlayer.Stop();
+            }
+
+            // Use the same setup as StartFocusedAnimation for focus/isolation
+            // but after Prepare, do StepForward (single frame) instead of Play
+            DetectedMethodInfo methodInfo = _detectedMethods?.FirstOrDefault(m => m.CallExpression == call);
+            bool isVirtual = methodInfo != null && methodInfo.Kind == MethodKind.SwitchCase;
+
+            List<SnapshotRowData> execRows = _layout?.CapturedRows;
+            string execCall = call;
+
+            if (isVirtual)
+            {
+                var filteredRows = execRows?
+                    .Where(r => string.Equals(r.Kind, methodInfo.CaseName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (filteredRows == null || filteredRows.Count == 0)
+                {
+                    filteredRows = new List<SnapshotRowData>
+                    {
+                        new SnapshotRowData
+                        {
+                            Kind = methodInfo.CaseName,
+                            Text = methodInfo.CaseName,
+                            StatText = "1,000",
+                            TextColorR = 255, TextColorG = 255, TextColorB = 255, TextColorA = 255,
+                        }
+                    };
+                }
+
+                var result = CodeExecutor.ExecuteWithInit(code, null, filteredRows);
+                if (result.Success && result.Sprites.Count > 0)
+                {
+                    _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var sp in result.Sprites)
+                        _animFocusSprites.Add(BuildFocusSpriteKey(sp));
+                    _animFocusCall = call;
+                }
+
+                if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                { execCall = call; execRows = filteredRows; }
+                else
+                { execCall = null; execRows = _layout?.CapturedRows; }
+            }
+            else
+            {
+                var result = CodeExecutor.ExecuteWithInit(code, call, _layout?.CapturedRows);
+                if (result.Success && result.Sprites.Count > 0)
+                {
+                    _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var sp in result.Sprites)
+                        _animFocusSprites.Add(BuildFocusSpriteKey(sp));
+                    _animFocusCall = call;
+                }
+
+                if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                    execCall = call;
+                else
+                    execCall = null;
+                execRows = _layout?.CapturedRows;
+            }
+
+            EnsureAnimPlayer();
+            PushUndo();
+            CaptureAnimPositionSnapshot();
+
+            string error = _animPlayer.Prepare(code, execCall, execRows);
+            if (error != null)
+            {
+                MessageBox.Show(error, "Animation Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _animPositionSnapshot = null;
+                _animFocusCall = null;
+                _animFocusSprites = null;
+                UpdateAnimButtonStates();
+                return;
+            }
+
+            // Execute single frame and stay paused — ready for step-through
+            _animPlayer.StepForward();
+            UpdateAnimButtonStates();
+            SetStatus($"⏸ Paused at tick 1 — step with ⏭ | {call}");
         }
 
         private Panel BuildCodePanel()
@@ -1094,7 +2457,7 @@ namespace SESpriteLCDLayoutTool
 
             var btnRefresh = DarkButton("⟳ Generate Code", Color.FromArgb(0, 122, 60));
             btnRefresh.Size   = new Size(120, 26);
-            btnRefresh.Click += (s, e) => RefreshCode(force: true);  // User explicitly wants fresh code
+            btnRefresh.Click += (s, e) => RefreshCode(writeBack: true, force: true);  // User explicitly wants fresh code + write back to project
 
             var btnResetSource = DarkButton("Reset Source", Color.FromArgb(120, 60, 0));
             btnResetSource.Size = new Size(95, 26);
@@ -1136,6 +2499,10 @@ namespace SESpriteLCDLayoutTool
             btnPaste.Size = new Size(110, 26);
             btnPaste.Click += (s, e) => ShowPasteLayoutDialog();
 
+            var btnInspect = DarkButton("🔍 Inspect Variables", Color.FromArgb(60, 120, 140));
+            btnInspect.Size = new Size(130, 26);
+            btnInspect.Click += (s, e) => TestVariableInspector();
+
             toolbar.Controls.Add(_lblCodeTitle);
             toolbar.Controls.Add(_lblCodeMode);
             toolbar.Controls.Add(btnPaste);
@@ -1145,6 +2512,7 @@ namespace SESpriteLCDLayoutTool
             toolbar.Controls.Add(_cmbCodeStyle);
             toolbar.Controls.Add(_btnApplyCode);
             toolbar.Controls.Add(_btnCaptureSnapshot);
+            toolbar.Controls.Add(btnInspect);
 
             _btnPopOut = DarkButton("⬈ Pop Out", Color.FromArgb(80, 80, 100));
             _btnPopOut.Size = new Size(80, 26);
@@ -1338,20 +2706,72 @@ namespace SESpriteLCDLayoutTool
             _animBar.Controls.Add(_btnAnimPlay);
             panel.Controls.Add(_animBar);
 
-            // ── Detected calls list (bottom of code panel, above exec bar) ────────
-            var lblDetected = new Label
+            // ── Timeline scrubber bar (below animation bar) ───────────────────────
+            _timelineBar = new Panel
             {
-                Text      = "Detected methods (double-click to execute):",
                 Dock      = DockStyle.Bottom,
-                Height    = 18,
-                ForeColor = Color.FromArgb(130, 180, 230),
-                Font      = new Font("Segoe UI", 7.5f, FontStyle.Bold),
-                Padding   = new Padding(4, 3, 0, 0),
+                Height    = 28,
+                BackColor = Color.FromArgb(18, 22, 32),
+                Visible   = false, // shown once history has data
             };
-            _lstDetectedCalls = new ListBox
+
+            _lblTimelineTick = new Label
+            {
+                Text      = "⏪ History",
+                Dock      = DockStyle.Right,
+                Width     = 120,
+                ForeColor = Color.FromArgb(180, 180, 255),
+                TextAlign = ContentAlignment.MiddleRight,
+                Padding   = new Padding(0, 0, 6, 0),
+                Font      = new Font("Consolas", 8f),
+            };
+
+            _timelineScrubber = new TrackBar
+            {
+                Dock      = DockStyle.Fill,
+                Minimum   = 0,
+                Maximum   = 1,
+                Value     = 0,
+                TickStyle = TickStyle.None,
+                BackColor = Color.FromArgb(18, 22, 32),
+                AutoSize  = false,
+                Height    = 28,
+            };
+            _timelineScrubber.Scroll += OnTimelineScrub;
+
+            _timelineBar.Controls.Add(_timelineScrubber);
+            _timelineBar.Controls.Add(_lblTimelineTick);
+            panel.Controls.Add(_timelineBar);
+
+            // ── Splitter for resizing the tabs section ────────────────────────────────
+            var splitter = new Splitter
             {
                 Dock        = DockStyle.Bottom,
-                Height      = 52,
+                Height      = 8,  // Bigger for easier grabbing
+                BackColor   = Color.FromArgb(100, 110, 140),  // Bright blue-gray
+                BorderStyle = BorderStyle.FixedSingle,  // Add border to make it obvious
+                Cursor      = Cursors.HSplit,
+                MinExtra    = 100,  // Min space for code box above
+                MinSize     = 60,   // Min size for tabs below
+            };
+            panel.Controls.Add(splitter);  // Add after animBar so it's between anim and tabs
+
+            // ── Bottom tabs (Detected Methods + Variables) ────────────────────────────
+            var tabControl = new TabControl
+            {
+                Dock        = DockStyle.Bottom,
+                Height      = 150,  // Increased from 90 to accommodate checkbox + variables
+                BackColor   = Color.FromArgb(22, 26, 38),
+                ForeColor   = Color.FromArgb(130, 180, 230),
+            };
+
+            // ── Tab 1: Detected Methods ───────────────────────────────────────────────
+            var tabMethods = new TabPage("Detected Methods");
+            tabMethods.BackColor = Color.FromArgb(22, 26, 38);
+
+            _lstDetectedCalls = new ListBox
+            {
+                Dock        = DockStyle.Fill,
                 BackColor   = Color.FromArgb(22, 26, 38),
                 ForeColor   = Color.FromArgb(160, 220, 255),
                 BorderStyle = BorderStyle.None,
@@ -1403,9 +2823,8 @@ namespace SESpriteLCDLayoutTool
             };
             ctxCalls.Items.Add(mnuExecIsolate);
 
-            var mnuBuildMap = new ToolStripMenuItem("🗺 Build Sprite Map (for isolation)");
-            mnuBuildMap.Click += (s2, e2) => BuildSpriteMappingAsync();
-            ctxCalls.Items.Add(mnuBuildMap);
+            // "Build Sprite Map" removed: instrumentation pipeline (SetCurrentMethod + RecordSpriteMethod)
+            // now handles method attribution at execution time. No need to re-run methods in isolation.
 
             var mnuFocusAnim = new ToolStripMenuItem("▶ Start Focused Animation");
             mnuFocusAnim.Click += (s2, e2) =>
@@ -1416,6 +2835,16 @@ namespace SESpriteLCDLayoutTool
                 StartFocusedAnimation(call);
             };
             ctxCalls.Items.Add(mnuFocusAnim);
+
+            var mnuExecBreak = new ToolStripMenuItem("⏸ Execute & Break");
+            mnuExecBreak.Click += (s2, e2) =>
+            {
+                if (_lstDetectedCalls.SelectedItem == null) return;
+                string call = _lstDetectedCalls.SelectedItem.ToString();
+                _execCallBox.Text = call;
+                StartFocusedAnimationAndBreak(call);
+            };
+            ctxCalls.Items.Add(mnuExecBreak);
 
             var mnuJump = new ToolStripMenuItem("↗ Jump to Definition");
             mnuJump.Click += (s2, e2) =>
@@ -1429,10 +2858,815 @@ namespace SESpriteLCDLayoutTool
 
             _lstDetectedCalls.ContextMenuStrip = ctxCalls;
 
-            panel.Controls.Add(_lstDetectedCalls);
-            panel.Controls.Add(lblDetected);
+            tabMethods.Controls.Add(_lstDetectedCalls);
+            tabControl.TabPages.Add(tabMethods);
+
+            // ── Tab 2: Variables ───────────────────────────────────────────────────────
+            _tabVariables = new TabPage("Variables");
+            _tabVariables.BackColor = Color.FromArgb(22, 26, 38);
+
+            _lstVariables = new ListView
+            {
+                Dock          = DockStyle.Fill,
+                BackColor     = Color.FromArgb(22, 26, 38),
+                ForeColor     = Color.FromArgb(160, 220, 255),
+                BorderStyle   = BorderStyle.None,
+                Font          = new Font("Consolas", 9f),
+                View          = View.Details,
+                FullRowSelect = true,
+                GridLines     = true,
+                OwnerDraw     = true,
+            };
+            _lstVariables.Columns.Add("Field", 120);
+            _lstVariables.Columns.Add("Value", 170);
+            _lstVariables.Columns.Add("Trend", 110);
+            _lstVariables.DrawColumnHeader += LstVariables_DrawColumnHeader;
+            _lstVariables.DrawSubItem      += LstVariables_DrawSubItem;
+
+            var varsTooltip = new ToolTip();
+            varsTooltip.SetToolTip(_lstVariables,
+                "Instance fields from last Execute Code\n" +
+                "Updated automatically after execution\n" +
+                "Right-click to copy field name or value");
+
+            // ── Context menu for Variables ─────────────────────────────────────────────
+            var ctxVariables = new ContextMenuStrip();
+            ctxVariables.BackColor = Color.FromArgb(30, 30, 30);
+            ctxVariables.ForeColor = Color.White;
+            ctxVariables.Renderer = new ToolStripProfessionalRenderer(new DarkColorTable());
+
+            var mnuCopyValue = new ToolStripMenuItem("Copy Value");
+            mnuCopyValue.Click += (s2, e2) =>
+            {
+                if (_lstVariables.SelectedItems.Count == 0) return;
+                var item = _lstVariables.SelectedItems[0];
+                string value = item.SubItems[1].Text;  // Second column = value
+                if (!string.IsNullOrEmpty(value))
+                {
+                    Clipboard.SetText(value);
+                    SetStatus($"Copied: {value}");
+                }
+            };
+
+            var mnuCopyFieldName = new ToolStripMenuItem("Copy Field Name");
+            mnuCopyFieldName.Click += (s2, e2) =>
+            {
+                if (_lstVariables.SelectedItems.Count == 0) return;
+                var item = _lstVariables.SelectedItems[0];
+                string fieldName = item.Text;  // First column = field name
+                if (!string.IsNullOrEmpty(fieldName))
+                {
+                    Clipboard.SetText(fieldName);
+                    SetStatus($"Copied: {fieldName}");
+                }
+            };
+
+            var mnuEditValue = new ToolStripMenuItem("✏️ Edit Value");
+            mnuEditValue.Click += (s2, e2) =>
+            {
+                if (_lstVariables.SelectedItems.Count == 0) return;
+                EditSelectedVariable();
+            };
+
+            ctxVariables.Items.Add(mnuEditValue);
+            ctxVariables.Items.Add(new ToolStripSeparator());
+            ctxVariables.Items.Add(mnuCopyValue);
+            ctxVariables.Items.Add(mnuCopyFieldName);
+            _lstVariables.ContextMenuStrip = ctxVariables;
+
+            // Double-click a variable to edit its value at runtime
+            _lstVariables.DoubleClick += (s2, e2) =>
+            {
+                if (_lstVariables.SelectedItems.Count == 0) return;
+                EditSelectedVariable();
+            };
+
+            // ── Checkbox: Show internal fields ─────────────────────────────────────
+            _chkShowInternalFields = new CheckBox
+            {
+                Text      = "Show internal fields",
+                Dock      = DockStyle.Top,
+                Height    = 22,
+                BackColor = Color.FromArgb(22, 26, 38),
+                ForeColor = Color.FromArgb(130, 180, 230),
+                Checked   = false, // Default: hide internal fields
+                Padding   = new Padding(6, 2, 0, 0),
+            };
+            var chkTooltip = new ToolTip();
+            chkTooltip.SetToolTip(_chkShowInternalFields,
+                "Show internal fields (_stubSurface, compiler-generated fields, etc.)\n" +
+                "Uncheck to see only your variables (counter, angle, items, etc.)");
+            _chkShowInternalFields.CheckedChanged += (s, e) =>
+            {
+                // Refresh variables list when checkbox changes
+                if (_lastAnimPlayer != null || _animPlayer != null)
+                {
+                    UpdateVariablesDuringAnimation(_animPlayer?.CurrentTick ?? 0);
+                }
+            };
+
+            _tabVariables.Controls.Add(_lstVariables);
+            _tabVariables.Controls.Add(_chkShowInternalFields);
+            tabControl.TabPages.Add(_tabVariables);
+
+            // ── Tab 3: Watch Expressions ──────────────────────────────────────────────
+            _tabWatch = new TabPage("Watch");
+            _tabWatch.BackColor = Color.FromArgb(22, 26, 38);
+
+            _lstWatch = new ListView
+            {
+                Dock          = DockStyle.Fill,
+                BackColor     = Color.FromArgb(22, 26, 38),
+                ForeColor     = Color.FromArgb(160, 220, 255),
+                BorderStyle   = BorderStyle.None,
+                Font          = new Font("Consolas", 9f),
+                View          = View.Details,
+                FullRowSelect = true,
+                GridLines     = true,
+            };
+            _lstWatch.Columns.Add("Expression", 180);
+            _lstWatch.Columns.Add("Value", 180);
+            _lstWatch.Columns.Add("Type", 80);
+
+            // ── Input bar: TextBox + Add + Remove buttons ─────────────────────────────
+            var watchInputPanel = new Panel
+            {
+                Dock      = DockStyle.Top,
+                Height    = 26,
+                BackColor = Color.FromArgb(22, 26, 38),
+                Padding   = new Padding(2, 2, 2, 2),
+            };
+
+            _txtWatchExpr = new TextBox
+            {
+                Dock      = DockStyle.Fill,
+                BackColor = Color.FromArgb(35, 40, 55),
+                ForeColor = Color.FromArgb(220, 220, 220),
+                Font      = new Font("Consolas", 9f),
+                BorderStyle = BorderStyle.FixedSingle,
+            };
+            var watchExprTooltip = new ToolTip();
+            watchExprTooltip.SetToolTip(_txtWatchExpr,
+                "Type a C# expression to watch (e.g., counter % 10, angle > 180)\n" +
+                "Press Enter or click + to add\n" +
+                "Uses your script's field names as variables");
+            _txtWatchExpr.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.Enter)
+                {
+                    e.SuppressKeyPress = true;
+                    AddWatchExpression(_txtWatchExpr.Text);
+                    _txtWatchExpr.Clear();
+                }
+            };
+
+            var btnAddWatch = new Button
+            {
+                Text      = "+",
+                Dock      = DockStyle.Right,
+                Width     = 28,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(40, 120, 80),
+                ForeColor = Color.White,
+                Font      = new Font("Consolas", 10f, FontStyle.Bold),
+            };
+            btnAddWatch.FlatAppearance.BorderSize = 0;
+            btnAddWatch.Click += (s, e) =>
+            {
+                AddWatchExpression(_txtWatchExpr.Text);
+                _txtWatchExpr.Clear();
+            };
+
+            var btnRemoveWatch = new Button
+            {
+                Text      = "−",
+                Dock      = DockStyle.Right,
+                Width     = 28,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(140, 50, 50),
+                ForeColor = Color.White,
+                Font      = new Font("Consolas", 10f, FontStyle.Bold),
+            };
+            btnRemoveWatch.FlatAppearance.BorderSize = 0;
+            btnRemoveWatch.Click += (s, e) => RemoveSelectedWatch();
+
+            watchInputPanel.Controls.Add(_txtWatchExpr);
+            watchInputPanel.Controls.Add(btnRemoveWatch);
+            watchInputPanel.Controls.Add(btnAddWatch);
+
+            // ── Context menu for Watch ────────────────────────────────────────────────
+            var ctxWatch = new ContextMenuStrip();
+            ctxWatch.BackColor = Color.FromArgb(30, 30, 30);
+            ctxWatch.ForeColor = Color.White;
+            ctxWatch.Renderer = new ToolStripProfessionalRenderer(new DarkColorTable());
+
+            var mnuCopyWatchValue = new ToolStripMenuItem("Copy Value");
+            mnuCopyWatchValue.Click += (s2, e2) =>
+            {
+                if (_lstWatch.SelectedItems.Count == 0) return;
+                string val = _lstWatch.SelectedItems[0].SubItems[1].Text;
+                if (!string.IsNullOrEmpty(val))
+                {
+                    Clipboard.SetText(val);
+                    SetStatus($"Copied: {val}");
+                }
+            };
+
+            var mnuCopyWatchExpr = new ToolStripMenuItem("Copy Expression");
+            mnuCopyWatchExpr.Click += (s2, e2) =>
+            {
+                if (_lstWatch.SelectedItems.Count == 0) return;
+                string expr = _lstWatch.SelectedItems[0].Text;
+                if (!string.IsNullOrEmpty(expr))
+                {
+                    Clipboard.SetText(expr);
+                    SetStatus($"Copied: {expr}");
+                }
+            };
+
+            var mnuRemoveWatch = new ToolStripMenuItem("Remove Watch");
+            mnuRemoveWatch.Click += (s2, e2) => RemoveSelectedWatch();
+
+            ctxWatch.Items.Add(mnuCopyWatchValue);
+            ctxWatch.Items.Add(mnuCopyWatchExpr);
+            ctxWatch.Items.Add(new ToolStripSeparator());
+            ctxWatch.Items.Add(mnuRemoveWatch);
+            _lstWatch.ContextMenuStrip = ctxWatch;
+
+            // ── Break condition bar ───────────────────────────────────────────────────
+            var breakPanel = new Panel
+            {
+                Dock      = DockStyle.Top,
+                Height    = 26,
+                BackColor = Color.FromArgb(28, 22, 22),
+                Padding   = new Padding(2, 2, 2, 2),
+            };
+
+            var lblBreakPrefix = new Label
+            {
+                Text      = "Break:",
+                Dock      = DockStyle.Left,
+                Width     = 42,
+                ForeColor = Color.FromArgb(255, 140, 100),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Font      = new Font("Segoe UI", 8f, FontStyle.Bold),
+            };
+
+            _txtBreakCondition = new TextBox
+            {
+                Dock        = DockStyle.Fill,
+                BackColor   = Color.FromArgb(40, 30, 30),
+                ForeColor   = Color.FromArgb(255, 200, 180),
+                Font        = new Font("Consolas", 9f),
+                BorderStyle = BorderStyle.FixedSingle,
+            };
+            var breakTooltip = new ToolTip();
+            breakTooltip.SetToolTip(_txtBreakCondition,
+                "Pause animation when this C# expression becomes true\n" +
+                "e.g., counter > 50, _radarAngle > 360, items.Count == 0\n" +
+                "Press Enter or click Set to activate");
+            _txtBreakCondition.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.Enter)
+                {
+                    e.SuppressKeyPress = true;
+                    SetBreakCondition(_txtBreakCondition.Text);
+                }
+            };
+
+            var btnSetBreak = new Button
+            {
+                Text      = "Set",
+                Dock      = DockStyle.Right,
+                Width     = 36,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(140, 60, 30),
+                ForeColor = Color.White,
+                Font      = new Font("Segoe UI", 8f, FontStyle.Bold),
+            };
+            btnSetBreak.FlatAppearance.BorderSize = 0;
+            btnSetBreak.Click += (s, e) => SetBreakCondition(_txtBreakCondition.Text);
+
+            var btnClearBreak = new Button
+            {
+                Text      = "✕",
+                Dock      = DockStyle.Right,
+                Width     = 26,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(80, 30, 30),
+                ForeColor = Color.FromArgb(200, 200, 200),
+                Font      = new Font("Segoe UI", 9f),
+            };
+            btnClearBreak.FlatAppearance.BorderSize = 0;
+            btnClearBreak.Click += (s, e) => ClearBreakCondition();
+
+            _lblBreakStatus = new Label
+            {
+                Text      = "",
+                Dock      = DockStyle.Right,
+                Width     = 120,
+                ForeColor = Color.FromArgb(120, 120, 120),
+                TextAlign = ContentAlignment.MiddleRight,
+                Font      = new Font("Consolas", 8f),
+            };
+
+            breakPanel.Controls.Add(_txtBreakCondition);
+            breakPanel.Controls.Add(_lblBreakStatus);
+            breakPanel.Controls.Add(btnClearBreak);
+            breakPanel.Controls.Add(btnSetBreak);
+            breakPanel.Controls.Add(lblBreakPrefix);
+
+            _tabWatch.Controls.Add(_lstWatch);
+            _tabWatch.Controls.Add(breakPanel);
+            _tabWatch.Controls.Add(watchInputPanel);
+            tabControl.TabPages.Add(_tabWatch);
+
+            // ── Tab 4: Console (Echo output log) ──────────────────────────────────────
+            _tabConsole = new TabPage("Console");
+            _tabConsole.BackColor = Color.FromArgb(22, 26, 38);
+
+            _rtbConsole = new RichTextBox
+            {
+                Dock       = DockStyle.Fill,
+                BackColor  = Color.FromArgb(18, 20, 30),
+                ForeColor  = Color.FromArgb(180, 220, 255),
+                Font       = new Font("Consolas", 9f),
+                ReadOnly   = true,
+                BorderStyle = BorderStyle.None,
+                WordWrap   = false,
+            };
+
+            var consoleBtnPanel = new Panel
+            {
+                Dock   = DockStyle.Top,
+                Height = 26,
+                BackColor = Color.FromArgb(30, 34, 48),
+            };
+
+            var btnClearConsole = new Button
+            {
+                Text      = "🗑 Clear",
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(50, 55, 75),
+                ForeColor = Color.FromArgb(180, 200, 230),
+                Font      = new Font("Segoe UI", 8f),
+                Height    = 22,
+                Width     = 70,
+                Location  = new Point(4, 2),
+                Cursor    = Cursors.Hand,
+            };
+            btnClearConsole.FlatAppearance.BorderColor = Color.FromArgb(70, 80, 110);
+            btnClearConsole.Click += (s, e) => { _rtbConsole.Clear(); };
+
+            consoleBtnPanel.Controls.Add(btnClearConsole);
+            _tabConsole.Controls.Add(_rtbConsole);
+            _tabConsole.Controls.Add(consoleBtnPanel);
+            tabControl.TabPages.Add(_tabConsole);
+
+            // ── Tab 5: Diff (side-by-side patched code view) ──────────────────────────
+            _tabDiff = new TabPage("Diff");
+            _tabDiff.BackColor = Color.FromArgb(22, 26, 38);
+
+            var diffSplit = new SplitContainer
+            {
+                Dock             = DockStyle.Fill,
+                Orientation      = Orientation.Vertical,
+                BackColor        = Color.FromArgb(30, 34, 48),
+                SplitterDistance = 300,
+                SplitterWidth    = 4,
+            };
+
+            // Left panel: Before
+            var lblBefore = new Label
+            {
+                Text      = "Before",
+                Dock      = DockStyle.Top,
+                Height    = 18,
+                ForeColor = Color.FromArgb(140, 160, 200),
+                BackColor = Color.FromArgb(30, 34, 48),
+                Font      = new Font("Segoe UI", 8f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+            };
+            _rtbDiffBefore = new RichTextBox
+            {
+                Dock        = DockStyle.Fill,
+                BackColor   = Color.FromArgb(18, 20, 30),
+                ForeColor   = Color.FromArgb(170, 185, 210),
+                Font        = new Font("Consolas", 9f),
+                ReadOnly    = true,
+                BorderStyle = BorderStyle.None,
+                WordWrap    = false,
+            };
+            diffSplit.Panel1.Controls.Add(_rtbDiffBefore);
+            diffSplit.Panel1.Controls.Add(lblBefore);
+
+            // Right panel: After
+            var lblAfter = new Label
+            {
+                Text      = "After",
+                Dock      = DockStyle.Top,
+                Height    = 18,
+                ForeColor = Color.FromArgb(140, 160, 200),
+                BackColor = Color.FromArgb(30, 34, 48),
+                Font      = new Font("Segoe UI", 8f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+            };
+            _rtbDiffAfter = new RichTextBox
+            {
+                Dock        = DockStyle.Fill,
+                BackColor   = Color.FromArgb(18, 20, 30),
+                ForeColor   = Color.FromArgb(170, 185, 210),
+                Font        = new Font("Consolas", 9f),
+                ReadOnly    = true,
+                BorderStyle = BorderStyle.None,
+                WordWrap    = false,
+            };
+            diffSplit.Panel2.Controls.Add(_rtbDiffAfter);
+            diffSplit.Panel2.Controls.Add(lblAfter);
+
+            var diffBtnPanel = new Panel
+            {
+                Dock      = DockStyle.Top,
+                Height    = 26,
+                BackColor = Color.FromArgb(30, 34, 48),
+            };
+            var btnClearDiff = new Button
+            {
+                Text      = "🗑 Clear",
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(50, 55, 75),
+                ForeColor = Color.FromArgb(180, 200, 230),
+                Font      = new Font("Segoe UI", 8f),
+                Height    = 22,
+                Width     = 70,
+                Location  = new Point(4, 2),
+                Cursor    = Cursors.Hand,
+            };
+            btnClearDiff.FlatAppearance.BorderColor = Color.FromArgb(70, 80, 110);
+            btnClearDiff.Click += (s, e) => { _rtbDiffBefore.Clear(); _rtbDiffAfter.Clear(); _tabDiff.Text = "Diff"; };
+            diffBtnPanel.Controls.Add(btnClearDiff);
+
+            _tabDiff.Controls.Add(diffSplit);
+            _tabDiff.Controls.Add(diffBtnPanel);
+            tabControl.TabPages.Add(_tabDiff);
+
+            panel.Controls.Add(tabControl);
 
             return panel;
+        }
+
+        // ── Diff view helpers ─────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Computes a line-by-line diff between the original and patched code and
+        /// displays it in the Before/After RichTextBoxes on the Diff tab.
+        /// Changed lines are highlighted: removed = red tint, added = green tint,
+        /// unchanged = default. The tab title shows the count of changed lines.
+        /// </summary>
+        private void ShowPatchDiff(string original, string patched)
+        {
+            if (_rtbDiffBefore == null || _rtbDiffAfter == null) return;
+            if (original == null || patched == null) return;
+            if (original == patched) return; // No changes
+
+            var oldLines = original.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var newLines = patched.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+
+            // Simple LCS-based diff — compute edit script
+            var diff = ComputeLineDiff(oldLines, newLines);
+
+            _rtbDiffBefore.SuspendLayout();
+            _rtbDiffAfter.SuspendLayout();
+            _rtbDiffBefore.Clear();
+            _rtbDiffAfter.Clear();
+
+            var colorRemoved  = Color.FromArgb(60, 30, 30);   // dark red
+            var colorAdded    = Color.FromArgb(25, 50, 25);    // dark green
+            var colorDefault  = Color.FromArgb(18, 20, 30);    // normal bg
+            var fgRemoved     = Color.FromArgb(255, 140, 140); // bright red text
+            var fgAdded       = Color.FromArgb(140, 255, 140); // bright green text
+            var fgDefault     = Color.FromArgb(170, 185, 210); // normal text
+            var fgContext     = Color.FromArgb(100, 110, 140); // dimmed context
+
+            int changedCount = 0;
+
+            foreach (var entry in diff)
+            {
+                switch (entry.Type)
+                {
+                    case DiffLineType.Unchanged:
+                        AppendDiffLine(_rtbDiffBefore, "  " + entry.OldLine, colorDefault, fgContext);
+                        AppendDiffLine(_rtbDiffAfter,  "  " + entry.NewLine, colorDefault, fgContext);
+                        break;
+                    case DiffLineType.Removed:
+                        AppendDiffLine(_rtbDiffBefore, "- " + entry.OldLine, colorRemoved, fgRemoved);
+                        AppendDiffLine(_rtbDiffAfter,  "", colorDefault, fgContext); // blank placeholder
+                        changedCount++;
+                        break;
+                    case DiffLineType.Added:
+                        AppendDiffLine(_rtbDiffBefore, "", colorDefault, fgContext); // blank placeholder
+                        AppendDiffLine(_rtbDiffAfter,  "+ " + entry.NewLine, colorAdded, fgAdded);
+                        changedCount++;
+                        break;
+                    case DiffLineType.Modified:
+                        AppendDiffLine(_rtbDiffBefore, "~ " + entry.OldLine, colorRemoved, fgRemoved);
+                        AppendDiffLine(_rtbDiffAfter,  "~ " + entry.NewLine, colorAdded, fgAdded);
+                        changedCount++;
+                        break;
+                }
+            }
+
+            _rtbDiffBefore.SelectionStart = 0;
+            _rtbDiffAfter.SelectionStart = 0;
+            _rtbDiffBefore.ResumeLayout();
+            _rtbDiffAfter.ResumeLayout();
+
+            _tabDiff.Text = changedCount > 0 ? $"Diff ({changedCount})" : "Diff";
+        }
+
+        private enum DiffLineType { Unchanged, Removed, Added, Modified }
+
+        private struct DiffEntry
+        {
+            public DiffLineType Type;
+            public string OldLine;
+            public string NewLine;
+        }
+
+        /// <summary>
+        /// Simple line-level diff using longest common subsequence.
+        /// Produces a list of entries showing unchanged, removed, added, or modified lines.
+        /// For patched code the changes are typically scattered single-line edits
+        /// (color literals, position values), so this approach works well.
+        /// </summary>
+        private static List<DiffEntry> ComputeLineDiff(string[] oldLines, string[] newLines)
+        {
+            int n = oldLines.Length;
+            int m = newLines.Length;
+
+            // LCS table
+            var lcs = new int[n + 1, m + 1];
+            for (int i = 1; i <= n; i++)
+                for (int j = 1; j <= m; j++)
+                    lcs[i, j] = oldLines[i - 1] == newLines[j - 1]
+                        ? lcs[i - 1, j - 1] + 1
+                        : Math.Max(lcs[i - 1, j], lcs[i, j - 1]);
+
+            // Backtrack to produce diff entries
+            var result = new List<DiffEntry>();
+            int oi = n, ni = m;
+            while (oi > 0 || ni > 0)
+            {
+                if (oi > 0 && ni > 0 && oldLines[oi - 1] == newLines[ni - 1])
+                {
+                    result.Add(new DiffEntry { Type = DiffLineType.Unchanged, OldLine = oldLines[oi - 1], NewLine = newLines[ni - 1] });
+                    oi--; ni--;
+                }
+                else if (oi > 0 && ni > 0 &&
+                         lcs[oi - 1, ni - 1] >= lcs[oi - 1, ni] &&
+                         lcs[oi - 1, ni - 1] >= lcs[oi, ni - 1])
+                {
+                    // Both sides changed at same position — show as modified
+                    result.Add(new DiffEntry { Type = DiffLineType.Modified, OldLine = oldLines[oi - 1], NewLine = newLines[ni - 1] });
+                    oi--; ni--;
+                }
+                else if (ni > 0 && (oi == 0 || lcs[oi, ni - 1] >= lcs[oi - 1, ni]))
+                {
+                    result.Add(new DiffEntry { Type = DiffLineType.Added, NewLine = newLines[ni - 1] });
+                    ni--;
+                }
+                else
+                {
+                    result.Add(new DiffEntry { Type = DiffLineType.Removed, OldLine = oldLines[oi - 1] });
+                    oi--;
+                }
+            }
+
+            result.Reverse();
+            return result;
+        }
+
+        private static void AppendDiffLine(RichTextBox rtb, string text, Color bgColor, Color fgColor)
+        {
+            int start = rtb.TextLength;
+            rtb.AppendText(text + "\n");
+            rtb.Select(start, rtb.TextLength - start);
+            rtb.SelectionBackColor = bgColor;
+            rtb.SelectionColor = fgColor;
+            rtb.SelectionLength = 0;
+        }
+
+        // ── Console output helpers ────────────────────────────────────────────────
+
+        /// <summary>
+        /// Appends output lines (Echo calls) to the Console tab.
+        /// Lines are color-coded: Echo in cyan, errors in red.
+        /// </summary>
+        private void AppendConsoleOutput(List<string> lines, int tick = -1)
+        {
+            if (_rtbConsole == null || lines == null || lines.Count == 0) return;
+
+            _rtbConsole.SuspendLayout();
+            foreach (string line in lines)
+            {
+                string prefix = tick >= 0 ? $"[T{tick}] " : "";
+                _rtbConsole.SelectionStart = _rtbConsole.TextLength;
+                _rtbConsole.SelectionLength = 0;
+                _rtbConsole.SelectionColor = Color.FromArgb(100, 200, 255); // cyan
+                _rtbConsole.AppendText(prefix + line + "\n");
+            }
+            _rtbConsole.ResumeLayout();
+
+            // Auto-scroll to bottom
+            _rtbConsole.SelectionStart = _rtbConsole.TextLength;
+            _rtbConsole.ScrollToCaret();
+        }
+
+        /// <summary>
+        /// Appends an error line to the Console tab in red.
+        /// </summary>
+        private void AppendConsoleError(string message, int tick = -1)
+        {
+            if (_rtbConsole == null || string.IsNullOrEmpty(message)) return;
+
+            string prefix = tick >= 0 ? $"[T{tick}] " : "";
+            _rtbConsole.SelectionStart = _rtbConsole.TextLength;
+            _rtbConsole.SelectionLength = 0;
+            _rtbConsole.SelectionColor = Color.FromArgb(255, 100, 100); // red
+            _rtbConsole.AppendText(prefix + "❌ " + message + "\n");
+
+            // Auto-scroll to bottom
+            _rtbConsole.SelectionStart = _rtbConsole.TextLength;
+            _rtbConsole.ScrollToCaret();
+        }
+
+        // ── Code heatmap helpers ──────────────────────────────────────────────────
+
+        /// <summary>
+        /// Applies warm-color background highlighting to the code editor based on
+        /// per-method execution timing.  Maps method names to their source line ranges,
+        /// then paints each line's background from green (fast) → yellow → orange → red (slow).
+        /// </summary>
+        private void ApplyCodeHeatmap(Dictionary<string, double> timings)
+        {
+            if (_codeBox == null || timings == null || timings.Count == 0 || !_heatmapEnabled)
+            {
+                ClearCodeHeatmap();
+                return;
+            }
+
+            // Avoid redundant re-paints when timings haven't changed meaningfully
+            if (_lastHeatmapTimings != null && _lastHeatmapTimings.Count == timings.Count)
+            {
+                bool same = true;
+                foreach (var kv in timings)
+                {
+                    if (!_lastHeatmapTimings.TryGetValue(kv.Key, out double prev) ||
+                        Math.Abs(prev - kv.Value) > 0.01)
+                    { same = false; break; }
+                }
+                if (same) return;
+            }
+            _lastHeatmapTimings = new Dictionary<string, double>(timings);
+
+            string code = _codeBox.Text;
+            if (string.IsNullOrEmpty(code)) return;
+
+            // Build method name → (charStart, charEnd) map from source
+            var methodRanges = new Dictionary<string, (int start, int end)>(StringComparer.Ordinal);
+            var rxMethod = new System.Text.RegularExpressions.Regex(
+                @"(?:private|public|internal|protected)[ \t]+(?:static[ \t]+)?(?:void|[\w<>\[\], \t]+)[ \t]+(\w+)\s*\([^)]*\)\s*\{");
+
+            foreach (System.Text.RegularExpressions.Match m in rxMethod.Matches(code))
+            {
+                string name = m.Groups[1].Value;
+                if (!timings.ContainsKey(name)) continue;
+
+                int bodyStart = m.Index + m.Length;
+                int depth = 1;
+                int bodyEnd = bodyStart;
+                for (int i = bodyStart; i < code.Length && depth > 0; i++)
+                {
+                    if (code[i] == '{') depth++;
+                    else if (code[i] == '}') { depth--; if (depth == 0) bodyEnd = i + 1; }
+                }
+                methodRanges[name] = (m.Index, bodyEnd);
+            }
+
+            if (methodRanges.Count == 0)
+            {
+                ClearCodeHeatmap();
+                return;
+            }
+
+            // Save scroll and cursor position
+            int savedSel = _codeBox.SelectionStart;
+            int savedLen = _codeBox.SelectionLength;
+            var scrollPos = GetScrollPos(_codeBox);
+
+            _codeBox.SuspendLayout();
+
+            // First, clear all backgrounds to default
+            _codeBox.SelectAll();
+            _codeBox.SelectionBackColor = _codeBox.BackColor;
+
+            // Apply heatmap colors per method region (absolute thresholds)
+            foreach (var kv in methodRanges)
+            {
+                if (!timings.TryGetValue(kv.Key, out double ms)) continue;
+
+                Color bg = HeatmapColor(ms);
+
+                int start = kv.Value.start;
+                int end = Math.Min(kv.Value.end, code.Length);
+                if (end > start)
+                {
+                    _codeBox.Select(start, end - start);
+                    _codeBox.SelectionBackColor = bg;
+                }
+            }
+
+            // Restore scroll and cursor
+            _codeBox.Select(savedSel, savedLen);
+            SetScrollPos(_codeBox, scrollPos);
+            _codeBox.ResumeLayout();
+        }
+
+        /// <summary>Clears heatmap highlighting from the code editor.</summary>
+        private void ClearCodeHeatmap()
+        {
+            if (_codeBox == null || _lastHeatmapTimings == null) return;
+            _lastHeatmapTimings = null;
+
+            int savedSel = _codeBox.SelectionStart;
+            int savedLen = _codeBox.SelectionLength;
+            var scrollPos = GetScrollPos(_codeBox);
+
+            _codeBox.SuspendLayout();
+            _codeBox.SelectAll();
+            _codeBox.SelectionBackColor = _codeBox.BackColor;
+            _codeBox.Select(savedSel, savedLen);
+            SetScrollPos(_codeBox, scrollPos);
+            _codeBox.ResumeLayout();
+        }
+
+        /// <summary>
+        /// Maps an absolute execution time (ms) to a heatmap color.
+        /// 0–0.5 ms = dark green, 0.5–2 ms = yellow-green, 2–8 ms = orange, >8 ms = red.
+        /// Colors are kept dark/muted so white text remains readable.
+        /// </summary>
+        private static Color HeatmapColor(double ms)
+        {
+            // Map absolute ms to a 0–1 heat value via fixed thresholds
+            double t;
+            if (ms < 0.5)
+                t = 0.25 * (ms / 0.5);                               // 0.0–0.25  (dark green)
+            else if (ms < 2.0)
+                t = 0.25 + 0.25 * ((ms - 0.5) / 1.5);               // 0.25–0.5  (yellow-green)
+            else if (ms < 8.0)
+                t = 0.5 + 0.25 * ((ms - 2.0) / 6.0);                // 0.5–0.75  (orange)
+            else
+                t = 0.75 + 0.25 * Math.Min(1.0, (ms - 8.0) / 12.0); // 0.75–1.0 (dark red)
+
+            t = Math.Max(0, Math.Min(1, t));
+            int r, g, b;
+            if (t < 0.5)
+            {
+                // Green → Yellow
+                double f = t * 2.0;
+                r = (int)(30 + 50 * f);   // 30 → 80
+                g = (int)(60 + 20 * f);   // 60 → 80
+                b = 30;
+            }
+            else
+            {
+                // Yellow → Red
+                double f = (t - 0.5) * 2.0;
+                r = (int)(80 + 50 * f);   // 80 → 130
+                g = (int)(80 - 50 * f);   // 80 → 30
+                b = 30;
+            }
+            return Color.FromArgb(r, g, b);
+        }
+
+        // RichTextBox scroll position helpers (WinAPI)
+        private const int WM_USER = 0x0400;
+        private const int EM_GETSCROLLPOS = WM_USER + 221;
+        private const int EM_SETSCROLLPOS = WM_USER + 222;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref Point lParam);
+
+        private static Point GetScrollPos(RichTextBox rtb)
+        {
+            var pt = new Point();
+            SendMessage(rtb.Handle, EM_GETSCROLLPOS, IntPtr.Zero, ref pt);
+            return pt;
+        }
+
+        private static void SetScrollPos(RichTextBox rtb, Point pos)
+        {
+            SendMessage(rtb.Handle, EM_SETSCROLLPOS, IntPtr.Zero, ref pos);
         }
 
         // ── Sprite tree population ────────────────────────────────────────────────
@@ -1694,38 +3928,22 @@ namespace SESpriteLCDLayoutTool
                             _lblRuntimeData.Visible = false;
                     }
 
-                        // Sync layer list selection
-                if (sp != null && _layout != null)
-                {
-                    var highlighted = _canvas.HighlightedSprites;
-                    if (highlighted != null)
-                    {
-                        // Isolation mode: find the filtered-list index of the selected sprite
-                        int listIdx = 0;
-                        bool found = false;
-                        foreach (var sprite in _layout.Sprites)
+                        // Sync layer list selection (uses _layerListSprites which reflects sort order + isolation filtering)
+                        if (sp != null && _layout != null && _layerListSprites != null)
                         {
-                            if (!highlighted.Contains(sprite)) continue;
-                            if (sprite == sp) { if (listIdx < _lstLayers.Items.Count) _lstLayers.SelectedIndex = listIdx; found = true; break; }
-                            listIdx++;
+                            int idx = _layerListSprites.IndexOf(sp);
+                            _lstLayers.SelectedIndex = (idx >= 0 && idx < _lstLayers.Items.Count) ? idx : -1;
                         }
-                        if (!found) _lstLayers.SelectedIndex = -1;
-                    }
-                    else
-                    {
-                        int idx = _layout.Sprites.IndexOf(sp);
-                        _lstLayers.SelectedIndex = (idx >= 0 && idx < _lstLayers.Items.Count) ? idx : -1;
-                    }
-                }
-                else
-                {
-                    _lstLayers.SelectedIndex = -1;
-                }
+                        else
+                        {
+                            _lstLayers.SelectedIndex = -1;
+                        }
             }
             finally { _updatingProps = false; }
 
             RefreshExpressionColors();
             RefreshCode();  // Protected by _codeBoxDirty check inside RefreshCode()
+            HighlightLinkedVariables(_canvas.SelectedSprite);
             UpdateStatus();
         }
 
@@ -2036,30 +4254,13 @@ namespace SESpriteLCDLayoutTool
             }
         }
 
-        /// <summary>
-        /// Maps a layer list index to the actual SpriteEntry, accounting for
-        /// isolation mode where the list only shows highlighted sprites.
-        /// </summary>
         private SpriteEntry SpriteFromLayerIndex(int listIdx)
         {
             if (_layout == null || listIdx < 0) return null;
-            var highlighted = _canvas.HighlightedSprites
-                              ?? (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0
-                                  ? _isolatedCallSprites : null);
-            if (highlighted == null)
-            {
-                // Normal mode — list index == sprite index
-                return listIdx < _layout.Sprites.Count ? _layout.Sprites[listIdx] : null;
-            }
-            // Isolation mode — count only highlighted sprites
-            int cur = 0;
-            foreach (var sp in _layout.Sprites)
-            {
-                if (!highlighted.Contains(sp)) continue;
-                if (cur == listIdx) return sp;
-                cur++;
-            }
-            return null;
+            // Use _layerListSprites which already reflects sort order + isolation filtering
+            if (_layerListSprites != null)
+                return listIdx < _layerListSprites.Count ? _layerListSprites[listIdx] : null;
+            return listIdx < _layout.Sprites.Count ? _layout.Sprites[listIdx] : null;
         }
 
         /// <summary>
@@ -2099,262 +4300,48 @@ namespace SESpriteLCDLayoutTool
 
         private void OnLayerListDoubleClick(object sender, MouseEventArgs e)
         {
-            if (_layout == null || _codeBox.TextLength == 0) return;
+            System.Diagnostics.Debug.WriteLine("[OnLayerListDoubleClick] Event triggered");
+
+            if (_layout == null || _codeBox.TextLength == 0)
+            {
+                System.Diagnostics.Debug.WriteLine("[OnLayerListDoubleClick] No layout or no code - aborting");
+                return;
+            }
+
+            // Get the sprite from the clicked list item
             int listIdx = _lstLayers.IndexFromPoint(e.Location);
+            System.Diagnostics.Debug.WriteLine($"[OnLayerListDoubleClick] List index: {listIdx}");
+
             var sprite = SpriteFromLayerIndex(listIdx);
-            if (sprite == null) return;
-
-            int spriteIdx = _layout.Sprites.IndexOf(sprite);
-            // RichTextBox.Text returns \r\n but Select() counts each line break
-            // as a single character.  Strip \r so positions match Select coords.
-            string code = _codeBox.Text.Replace("\r", "");
-            int targetPos = -1;
-
-            // Count non-ref, source-tracked sprites before this one.
-            // Use SOURCE ORDER (by SourceStart) rather than layout index order so
-            // switch-case patterns where the layout reorders sprites (e.g. ItemBar
-            // sprites rendered before Header) still jump to the correct code.
-            int nonRefOrdinal = 0;
-            int sourceOrdinal = -1;
-            if (!sprite.IsReferenceLayout && sprite.SourceStart >= 0)
+            if (sprite == null)
             {
-                sourceOrdinal = 0;
-                foreach (var sp in _layout.Sprites)
-                {
-                    if (sp == sprite || sp.IsReferenceLayout || sp.SourceStart < 0) continue;
-                    if (sp.SourceStart < sprite.SourceStart)
-                        sourceOrdinal++;
-                }
-            }
-            // Layout-index ordinal as fallback for non-source-tracked sprites
-            for (int i = 0; i < spriteIdx; i++)
-                if (!_layout.Sprites[i].IsReferenceLayout && _layout.Sprites[i].SourceStart >= 0)
-                    nonRefOrdinal++;
-
-            // Strategy 1: GenerateRoundTrip comment marker  // [nonRefOrd+1] DisplayName
-            if (!sprite.IsReferenceLayout)
-            {
-                string marker = $"// [{nonRefOrdinal + 1}] {sprite.DisplayName}";
-                targetPos = code.IndexOf(marker, StringComparison.Ordinal);
+                System.Diagnostics.Debug.WriteLine("[OnLayerListDoubleClick] No sprite at clicked position");
+                return;
             }
 
-            // Strategy 2: Generate comment marker  // [spriteIdx+1] DisplayName
-            if (targetPos < 0)
+            System.Diagnostics.Debug.WriteLine($"[OnLayerListDoubleClick] Navigating to sprite: {sprite.DisplayName}");
+
+            // Use the NEW navigation system - parses current code with Roslyn EVERY TIME
+            // No stale tracking, no approximations, no fallbacks - just EXACT navigation
+            bool success = CodeNavigationService.NavigateToSprite(sprite, _codeBox);
+
+            if (!success)
             {
-                string marker = $"// [{spriteIdx + 1}] {sprite.DisplayName}";
-                targetPos = code.IndexOf(marker, StringComparison.Ordinal);
-            }
-
-            // Strategy 3: Direct SourceStart lookup — find the sprite pattern nearest
-            // to the sprite's known code position.  SourceStart was computed from
-            // OriginalSourceCode, so convert via line number to tolerate drift when
-            // PatchOriginalSource changes value lengths in the displayed code.
-            if (targetPos < 0 && !sprite.IsReferenceLayout && sprite.SourceStart >= 0
-                && _layout?.OriginalSourceCode != null)
-            {
-                string originalSrc = _layout.OriginalSourceCode;
-                int ssPos = Math.Min(sprite.SourceStart, originalSrc.Length - 1);
-                if (ssPos >= 0)
-                {
-                    // Count line number in original source at SourceStart.
-                    int lineNum = 0;
-                    for (int i = 0; i < ssPos; i++)
-                        if (originalSrc[i] == '\n') lineNum++;
-
-                    // Find the start and end of that line in the \n-only displayed code
-                    int lineStart2 = 0;
-                    for (int n = 0; n < lineNum && lineStart2 < code.Length; n++)
-                    {
-                        int nl = code.IndexOf('\n', lineStart2);
-                        if (nl < 0) { lineStart2 = code.Length; break; }
-                        lineStart2 = nl + 1;
-                    }
-                    int lineEnd2 = code.IndexOf('\n', lineStart2);
-                    if (lineEnd2 < 0) lineEnd2 = code.Length;
-
-                    // Search ONLY on this line for a sprite creation pattern.
-                    // This eliminates any possibility of selecting an adjacent line's
-                    // sprite when patching changes line lengths.
-                    int a = code.IndexOf("new MySprite", lineStart2, lineEnd2 - lineStart2, StringComparison.Ordinal);
-                    int b = code.IndexOf("MySprite.Create", lineStart2, lineEnd2 - lineStart2, StringComparison.Ordinal);
-                    int found = (a >= 0 && b >= 0) ? Math.Min(a, b) : (a >= 0 ? a : b);
-                    if (found >= 0)
-                        targetPos = found;
-                }
-            }
-
-            // Strategy 4: Search by sprite text/data content.
-            // For sprites that couldn't be fully parsed (SourceStart = -1), e.g., due to
-            // expression arguments like "0.75f * scale", search for the sprite's unique
-            // text or data value in the code.  This finds CreateText("!", ...) by its "!"
-            // text content or texture sprites by their sprite name.
-            if (targetPos < 0 && !sprite.IsReferenceLayout)
-            {
-                string searchContent = sprite.Type == SpriteEntryType.Text ? sprite.Text : sprite.SpriteName;
-                if (!string.IsNullOrEmpty(searchContent) && searchContent.Length >= 1)
-                {
-                    // Build specific patterns based on sprite type
-                    // For TEXT: look for CreateText("content" or Data = "content"
-                    // For TEXTURE: look for CreateSprite("content" or Data = "content" or "content" in object init
-                    string textPattern = sprite.Type == SpriteEntryType.Text
-                        ? $"CreateText(\"{searchContent}\""
-                        : $"\"{searchContent}\"";
-
-                    int pos = code.IndexOf(textPattern, StringComparison.Ordinal);
-
-                    // Fallback: search for quoted content with = "content" pattern
-                    if (pos < 0)
-                    {
-                        string pattern2 = $"= \"{searchContent}\"";
-                        pos = code.IndexOf(pattern2, StringComparison.Ordinal);
-                    }
-
-                    // Final fallback: just the quoted string
-                    if (pos < 0)
-                    {
-                        string pattern3 = $"\"{searchContent}\"";
-                        pos = code.IndexOf(pattern3, StringComparison.Ordinal);
-                    }
-
-                    // Find the sprite creation context around this match
-                    if (pos >= 0)
-                    {
-                        // Walk back to find "new MySprite" or "MySprite.Create" before this position
-                        int searchStart = Math.Max(0, pos - 200);
-                        int bestMatch = -1;
-                        int sPos = searchStart;
-                        while (sPos < pos)
-                        {
-                            int a = code.IndexOf("new MySprite", sPos, pos - sPos, StringComparison.Ordinal);
-                            int b = code.IndexOf("MySprite.Create", sPos, pos - sPos, StringComparison.Ordinal);
-                            int f = (a >= 0 && b >= 0) ? Math.Min(a, b) : (a >= 0 ? a : b);
-                            if (f < 0) break;
-                            bestMatch = f; // Keep the last (closest to the text) match
-                            sPos = f + 1;
-                        }
-                        if (bestMatch >= 0) targetPos = bestMatch;
-                    }
-                }
-            }
-
-            // Strategy 5: Find sprite by content, then jump to the Nth matching sprite creation
-            // NOTE: After sorting by SourceStart, layout order ≠ code order for unparsed sprites.
-            // We first find the sprite's content in code, then count how many sprite creations
-            // appear BEFORE that position to determine the correct ordinal.
-            if (targetPos < 0 && !sprite.IsReferenceLayout)
-            {
-                string searchContent = sprite.Type == SpriteEntryType.Text ? sprite.Text : sprite.SpriteName;
-                if (!string.IsNullOrEmpty(searchContent) && searchContent.Length >= 1)
-                {
-                    // Find ALL occurrences of this content in sprite creation patterns
-                    var contentPositions = new List<int>();
-                    string escaped = searchContent.Replace("\\", "\\\\").Replace("\"", "\\\"");
-                    string dataLiteral = "\"" + escaped + "\"";
-
-                    int searchPos = 0;
-                    while (searchPos < code.Length)
-                    {
-                        int dPos = code.IndexOf(dataLiteral, searchPos, StringComparison.Ordinal);
-                        if (dPos < 0) break;
-
-                        // Check it's inside a sprite creation by looking backward for "new MySprite" or "MySprite.Create"
-                        int lookStart = Math.Max(0, dPos - 300);
-                        int nms = code.LastIndexOf("new MySprite", dPos, dPos - lookStart, StringComparison.Ordinal);
-                        int msc = code.LastIndexOf("MySprite.Create", dPos, dPos - lookStart, StringComparison.Ordinal);
-                        int spriteStart = Math.Max(nms, msc);
-
-                        if (spriteStart >= 0)
-                            contentPositions.Add(spriteStart);
-
-                        searchPos = dPos + dataLiteral.Length;
-                    }
-
-                    if (contentPositions.Count > 0)
-                    {
-                        // Count which occurrence of this content type this sprite is in LAYOUT order
-                        // (sprites with same content are still in relative layout order)
-                        int targetOcc = 0;
-                        foreach (var sp in _layout.Sprites)
-                        {
-                            if (sp == sprite) break;
-                            string d = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
-                            if (d == searchContent) targetOcc++;
-                        }
-
-                        if (targetOcc < contentPositions.Count)
-                        {
-                            // Sort by code position and pick the targetOcc-th one
-                            contentPositions.Sort();
-                            targetPos = contentPositions[targetOcc];
-                        }
-                    }
-                }
-            }
-
-            if (targetPos < 0) return;
-
-            // Walk back to line start
-            int lineStart = targetPos;
-            while (lineStart > 0 && code[lineStart - 1] != '\n') lineStart--;
-
-            // Find sprite block end more precisely:
-            // For object initializer: find first "})" or "};" after targetPos
-            // For constructor: find first ");" after targetPos
-            // Stop at the earliest match to avoid selecting enclosing blocks
-            int blockEnd = -1;
-
-            // Look for object initializer end: "})" or "};"
-            int initEnd1 = code.IndexOf("})", targetPos, StringComparison.Ordinal);
-            int initEnd2 = code.IndexOf("};", targetPos, StringComparison.Ordinal);
-
-            // Look for constructor call end: ");"
-            int ctorEnd = code.IndexOf(");", targetPos, StringComparison.Ordinal);
-
-            // Take the EARLIEST valid match (closest to targetPos)
-            if (initEnd1 >= 0) blockEnd = initEnd1 + 2; // Include "})"
-            if (initEnd2 >= 0 && (blockEnd < 0 || initEnd2 < initEnd1))
-                blockEnd = initEnd2 + 2; // Include "};"
-            if (ctorEnd >= 0 && (blockEnd < 0 || ctorEnd < (initEnd1 >= 0 ? initEnd1 : int.MaxValue)))
-            {
-                // Only use constructor end if it comes before initializer end
-                // and is within reasonable distance (avoid matching method call further down)
-                if (blockEnd < 0 || ctorEnd + 2 < blockEnd)
-                    blockEnd = ctorEnd + 2; // Include ");"
-            }
-
-            if (blockEnd < 0)
-            {
-                // Fallback: single line
-                blockEnd = code.IndexOf('\n', targetPos);
-                if (blockEnd < 0) blockEnd = code.Length;
-                else blockEnd++;
+                System.Diagnostics.Debug.WriteLine($"[OnLayerListDoubleClick] ✗ Navigation failed for sprite '{sprite.DisplayName}'");
+                SetStatus($"Could not find source code for '{sprite.DisplayName}'");
             }
             else
             {
-                // Include trailing newline if present
-                if (blockEnd < code.Length && code[blockEnd] == '\n') blockEnd++;
+                System.Diagnostics.Debug.WriteLine($"[OnLayerListDoubleClick] ✓ Navigation succeeded");
+
+                // Defer focus to codeBox so the ListBox doesn't reclaim it
+                // after the double-click handler returns.
+                BeginInvoke(new Action(() =>
+                {
+                    _codeBox.Focus();
+                    _codeBox.ScrollToCaret();
+                }));
             }
-
-            // Convert positions from the \r-stripped text to line numbers,
-            // then use GetFirstCharIndexFromLine so the selection works regardless
-            // of how RichTextBox maps line endings internally.
-            int startLineNum = 0;
-            for (int i = 0; i < lineStart; i++)
-                if (code[i] == '\n') startLineNum++;
-
-            int endLineNum = startLineNum;
-            for (int i = lineStart; i < blockEnd && i < code.Length; i++)
-                if (code[i] == '\n') endLineNum++;
-
-            _codeBox.Focus();
-            int selStart = _codeBox.GetFirstCharIndexFromLine(startLineNum);
-            if (selStart < 0) selStart = 0;
-            int selEnd = (endLineNum + 1 < _codeBox.Lines.Length)
-                ? _codeBox.GetFirstCharIndexFromLine(endLineNum + 1)
-                : _codeBox.TextLength;
-            if (selEnd < 0) selEnd = _codeBox.TextLength;
-            _codeBox.Select(selStart, selEnd - selStart);
-            _codeBox.ScrollToCaret();
         }
 
         /// <summary>
@@ -2439,9 +4426,26 @@ namespace SESpriteLCDLayoutTool
                     highlighted = _isolatedCallSprites;
                 }
 
+                // Sort by SourceStart so layer list matches code order.
+                // CRITICAL: Use LINQ OrderBy (stable sort) instead of List.Sort (unstable).
+                // When many sprites have SourceStart == -1 (dynamic/loop-generated),
+                // unstable sort randomizes their order. Stable sort preserves the
+                // original execution order as a sensible fallback.
+                var sortedSprites = _layout.Sprites
+                    .Select((s, i) => new { Sprite = s, OrigIdx = i })
+                    .OrderBy(x => x.Sprite.SourceStart < 0 ? int.MaxValue : x.Sprite.SourceStart)
+                    .ThenBy(x => x.OrigIdx)
+                    .Select(x => x.Sprite)
+                    .ToList();
+
+                int trackedCount = 0;
+                foreach (var s in sortedSprites)
+                    if (s.SourceStart >= 0) trackedCount++;
+                System.Diagnostics.Debug.WriteLine($"[RefreshLayerList] {trackedCount}/{sortedSprites.Count} sprites have SourceStart, total in layout: {_layout.Sprites.Count}");
+
                 // Build a mapping from list index to sprite for re-selection
                 var listSprites = new List<SpriteEntry>();
-                foreach (var s in _layout.Sprites)
+                foreach (var s in sortedSprites)
                 {
                     // During isolation mode, hide dimmed (non-highlighted) sprites from the list
                     if (highlighted != null && !highlighted.Contains(s))
@@ -2461,6 +4465,8 @@ namespace SESpriteLCDLayoutTool
                     _lstLayers.Items.Add(prefix + s.DisplayName + suffix);
                     listSprites.Add(s);
                 }
+
+                _layerListSprites = listSprites;
 
                 // Restore multi-selection
                 if (prevSelected.Count > 0)
@@ -2586,12 +4592,15 @@ namespace SESpriteLCDLayoutTool
             if (_codeBoxDirty && !force)
                 return;
 
-            // FAST PATH: For Pulsar/Mod layouts, only proceed if there are truly new sprites.
-            // This avoids expensive operations during animation playback.
+            // FAST PATH: For Pulsar/Mod layouts, skip code regeneration for non-editing
+            // calls (animation playback, selection changes, etc.) but allow through when:
+            //  - force=true  (Generate Code button)
+            //  - writeBack=true AND source-tracked sprites exist (property edits)
+            //  - new user-added sprites need inserting
             if (_layout.IsPulsarOrModLayout && !force)
             {
-                // Quick check: do we have any user-added sprites that need inserting?
                 bool hasNewSprites = false;
+                bool hasSourceTracking = false;
                 foreach (var sp in _layout.Sprites)
                 {
                     if (sp.SourceStart < 0 && !sp.IsFromExecution)
@@ -2599,11 +4608,14 @@ namespace SESpriteLCDLayoutTool
                         hasNewSprites = true;
                         break;
                     }
+                    if (sp.SourceStart >= 0 && sp.ImportBaseline != null)
+                        hasSourceTracking = true;
                 }
 
-                if (!hasNewSprites)
+                // Allow through for property edits (writeBack) when source tracking
+                // is active, or when new sprites need inserting.
+                if (!hasNewSprites && !(hasSourceTracking && writeBack))
                 {
-                    // No new sprites - nothing to do, keep original code
                     return;
                 }
             }
@@ -2628,31 +4640,61 @@ namespace SESpriteLCDLayoutTool
             // Try round-trip: splice updated sprites back into the original pasted code
             if (_layout.OriginalSourceCode != null)
             {
+                // Capture original for diff view before any patching
+                string prePatched = _layout.OriginalSourceCode;
+
                 // Per-sprite patching (dynamic code — loops, switch/case, expressions)
+                // PatchOriginalSource handles text, color, position, size updates via ImportBaseline diffs
                 string patched = CodeGenerator.PatchOriginalSource(_layout);
                 if (patched != null)
                 {
+                    System.Diagnostics.Debug.WriteLine($"[RefreshCode] PatchOriginalSource succeeded, writeBack={writeBack}");
+
                     // Only use Roslyn if there are actually NEW sprites to insert
                     // (not from execution, and not already tracked)
                     bool hasNewSprites = _layout.Sprites.Any(sp => sp.SourceStart < 0 && !sp.IsFromExecution);
                     if (hasNewSprites)
                     {
+                        System.Diagnostics.Debug.WriteLine($"[RefreshCode] Found {_layout.Sprites.Count(sp => sp.SourceStart < 0 && !sp.IsFromExecution)} new sprites to insert");
                         // Use Roslyn for proper syntax-aware insertion
                         string listVar = RoslynCodeMerger.DetectListVariable(patched);
                         var roslynResult = RoslynCodeMerger.InsertSprites(patched, _layout.Sprites, listVar);
                         if (roslynResult.Success && roslynResult.SpritesInserted > 0)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[RefreshCode] Roslyn inserted {roslynResult.SpritesInserted} sprites");
                             patched = roslynResult.Code;
+                        }
                         else
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[RefreshCode] Roslyn insertion failed: {roslynResult.Error}, using fallback");
                             patched = CodeGenerator.InsertNewSpritesIntoSource(_layout, patched); // Fallback
+                        }
                     }
+
+                    // Show diff if the code actually changed
+                    if (patched != prePatched)
+                        ShowPatchDiff(prePatched, patched);
 
                     // Update OriginalSourceCode so future patches work against the new baseline
                     _layout.OriginalSourceCode = patched;
 
+                    // Re-establish source tracking: SourceStart/SourceEnd may have shifted
+                    // if the patch changed code length, and ImportBaseline must reflect the
+                    // current values so the NEXT edit diffs correctly.
+                    RefreshSourceTracking();
+
                     SetCodeText(patched);
                     RefreshDetectedCalls();
-                    if (writeBack) WriteBackToWatchedFile(patched);
+                    if (writeBack)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[RefreshCode] Writing back to watched file");
+                        WriteBackToWatchedFile(patched);
+                    }
                     return;
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine($"[RefreshCode] PatchOriginalSource returned null");
                 }
 
                 // Region-based replacement (static layouts with literal positions)
@@ -2670,6 +4712,10 @@ namespace SESpriteLCDLayoutTool
                         else
                             roundTrip = CodeGenerator.InsertNewSpritesIntoSource(_layout, roundTrip); // Fallback
                     }
+
+                    // Show diff if the code actually changed
+                    if (roundTrip != prePatched)
+                        ShowPatchDiff(prePatched, roundTrip);
 
                     _layout.OriginalSourceCode = roundTrip;
 
@@ -2731,6 +4777,56 @@ namespace SESpriteLCDLayoutTool
 
             SetCodeText(CodeGenerator.Generate(_layout, SelectedCodeStyle));
             RefreshDetectedCalls();
+        }
+
+        /// <summary>
+        /// Re-establishes SourceStart/SourceEnd/ImportBaseline on layout sprites
+        /// after PatchOriginalSource changes the code.  This ensures subsequent
+        /// property edits diff against the correct baseline and correct offsets.
+        /// </summary>
+        private void RefreshSourceTracking()
+        {
+            if (_layout?.OriginalSourceCode == null) return;
+
+            var parsedSprites = CodeParser.Parse(_layout.OriginalSourceCode);
+            if (parsedSprites.Count == 0) return;
+
+            // Sort parsed sprites by SourceStart so matching is in source order
+            parsedSprites.Sort((a, b) =>
+            {
+                if (a.SourceStart < 0 && b.SourceStart < 0) return 0;
+                if (a.SourceStart < 0) return 1;
+                if (b.SourceStart < 0) return -1;
+                return a.SourceStart.CompareTo(b.SourceStart);
+            });
+
+            // Build pool keyed by (Type, Data) in source order
+            var pool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var ps in parsedSprites)
+            {
+                string key = ps.Type == SpriteEntryType.Text
+                    ? "TEXT|" + (ps.Text ?? "")
+                    : "TEXTURE|" + (ps.SpriteName ?? "");
+                if (!pool.ContainsKey(key))
+                    pool[key] = new Queue<SpriteEntry>();
+                pool[key].Enqueue(ps);
+            }
+
+            // Match layout sprites to parsed sprites and transfer updated offsets
+            foreach (var sp in _layout.Sprites)
+            {
+                string key = sp.Type == SpriteEntryType.Text
+                    ? "TEXT|" + (sp.Text ?? "")
+                    : "TEXTURE|" + (sp.SpriteName ?? "");
+
+                if (pool.TryGetValue(key, out var queue) && queue.Count > 0)
+                {
+                    var parsed = queue.Dequeue();
+                    sp.SourceStart = parsed.SourceStart;
+                    sp.SourceEnd = parsed.SourceEnd;
+                    sp.ImportBaseline = sp.CloneValues();
+                }
+            }
         }
 
         /// <summary>
@@ -4013,7 +6109,26 @@ namespace SESpriteLCDLayoutTool
                 if (caseResult.Success && caseResult.Sprites.Count > 0)
                 {
                     caseSprites = caseResult.Sprites;
-                    TagSnapshotSprites(caseSprites);
+
+                    // Tag sprites immediately with source method name during execution
+                    // (we know which case block created them)
+                    // Extract method name from CallExpression: "RenderHeader(...)" → "RenderHeader"
+                    string methodName = methodInfo.CallExpression;
+                    int caseParenIdx = methodName?.IndexOf('(') ?? -1;
+                    if (caseParenIdx > 0)
+                        methodName = methodName.Substring(0, caseParenIdx).Trim();
+
+                    if (!string.IsNullOrEmpty(methodName))
+                    {
+                        foreach (var sprite in caseSprites)
+                        {
+                            if (string.IsNullOrEmpty(sprite.SourceMethodName))
+                            {
+                                sprite.SourceMethodName = methodName;
+                                System.Diagnostics.Debug.WriteLine($"[IsolateCall] Tagged sprite '{sprite.DisplayName}' with method '{methodName}'");
+                            }
+                        }
+                    }
                 }
                 else
                 {
@@ -4030,6 +6145,14 @@ namespace SESpriteLCDLayoutTool
                 _execResultLabel.Text      = $"✔ {caseSprites.Count} (case block)";
                 _execResultLabel.ForeColor = Color.FromArgb(80, 220, 100);
 
+                System.Diagnostics.Debug.WriteLine($"[IsolateCall-Matching] Starting sprite matching for case '{methodInfo.CaseName}'");
+                System.Diagnostics.Debug.WriteLine($"[IsolateCall-Matching] Executed sprites: {caseSprites.Count}");
+                System.Diagnostics.Debug.WriteLine($"[IsolateCall-Matching] Layout sprites: {_layout.Sprites.Count}");
+                foreach (var sp in caseSprites)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[IsolateCall-Matching]   Exec sprite: {sp.DisplayName} | Type: {sp.Type} | Method: {sp.SourceMethodName}");
+                }
+
                 PushUndo();
 
                 // Build highlight set by matching executed sprites to existing layout sprites.
@@ -4042,6 +6165,7 @@ namespace SESpriteLCDLayoutTool
                 string casePrefix = methodInfo.CaseName + ":";
 
                 // Pass 1: match layout sprites that belong to this case block
+                System.Diagnostics.Debug.WriteLine($"[IsolateCall-Matching] Pass 1: Matching sprites with ImportLabel prefix '{casePrefix}'");
                 foreach (var layoutSp in _layout.Sprites)
                 {
                     if (layoutSp.ImportLabel == null ||
@@ -4058,6 +6182,16 @@ namespace SESpriteLCDLayoutTool
                         if (typeMatch)
                         {
                             _isolatedCallSprites.Add(layoutSp);
+                            System.Diagnostics.Debug.WriteLine($"[IsolateCall-Matching]   Pass 1 MATCH: Layout '{layoutSp.DisplayName}' <- Exec '{execSp.DisplayName}'");
+
+                            // Transfer SourceMethodName from executed sprite to layout sprite
+                            // so navigation continues to work after Execute to Isolate
+                            if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                                string.IsNullOrEmpty(layoutSp.SourceMethodName))
+                            {
+                                layoutSp.SourceMethodName = execSp.SourceMethodName;
+                            }
+
                             usedExec.Add(ei);
                             break;
                         }
@@ -4079,6 +6213,14 @@ namespace SESpriteLCDLayoutTool
                         if (typeMatch)
                         {
                             _isolatedCallSprites.Add(layoutSp);
+
+                            // Transfer SourceMethodName from executed sprite to layout sprite
+                            if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                                string.IsNullOrEmpty(layoutSp.SourceMethodName))
+                            {
+                                layoutSp.SourceMethodName = execSp.SourceMethodName;
+                            }
+
                             usedExec.Add(ei);
                             break;
                         }
@@ -4086,12 +6228,14 @@ namespace SESpriteLCDLayoutTool
                 }
 
                 // Add any unmatched executed sprites (orphans) to the layout
+                System.Diagnostics.Debug.WriteLine($"[IsolateCall-Matching] Processing {caseSprites.Count - usedExec.Count} orphan sprites (highlightOnly={highlightOnly})");
                 if (!highlightOnly)
                 {
                     for (int ei = 0; ei < caseSprites.Count; ei++)
                     {
                         if (usedExec.Contains(ei)) continue;
                         var orphan = caseSprites[ei];
+                        System.Diagnostics.Debug.WriteLine($"[IsolateCall-Matching]   ORPHAN (adding to layout): '{orphan.DisplayName}' Type={orphan.Type}");
                         orphan.SourceStart = -1;
                         orphan.SourceEnd   = -1;
                         _layout.Sprites.Add(orphan);
@@ -4108,6 +6252,9 @@ namespace SESpriteLCDLayoutTool
                         }
                     }
                 }
+
+                // Transfer positions from executed case sprites to matched layout sprites
+                TransferExecutionPositions(_isolatedCallSprites, caseSprites);
 
                 _canvas.HighlightedSprites = _isolatedCallSprites;
                 _canvas.Invalidate();
@@ -4153,6 +6300,87 @@ namespace SESpriteLCDLayoutTool
                 int eqIdx = targetMethodName.LastIndexOf('=');
                 if (eqIdx >= 0)
                     targetMethodName = targetMethodName.Substring(eqIdx + 1).Trim();
+            }
+
+            // Tag sprites immediately with source method name during execution
+            // (we know which method created them — no need to wait for Build Sprite Map)
+            if (!string.IsNullOrEmpty(targetMethodName))
+            {
+                foreach (var sprite in result.Sprites)
+                {
+                    if (string.IsNullOrEmpty(sprite.SourceMethodName))
+                    {
+                        sprite.SourceMethodName = targetMethodName;
+                        System.Diagnostics.Debug.WriteLine($"[IsolateCall] Tagged sprite '{sprite.DisplayName}' with method '{targetMethodName}'");
+                    }
+                }
+            }
+
+            // Cold-start: when layout sprites have no SourceMethodName tags
+            // (no prior animation run), run a full execution to tag them.
+            // If the layout is completely empty (typical for TorchPlugin on
+            // first use), populate it from the full execution results — this
+            // automates the manual "run 1 tick" step the user had to do.
+            if (!string.IsNullOrEmpty(targetMethodName) &&
+                !_layout.Sprites.Any(sp => !string.IsNullOrEmpty(sp.SourceMethodName)))
+            {
+                try
+                {
+                    var fullResult = CodeExecutor.ExecuteWithInit(code, null, _layout?.CapturedRows);
+                    if (fullResult.Success && fullResult.Sprites.Count > 0)
+                    {
+                        // Count non-reference sprites in the layout
+                        int nonRefCount = 0;
+                        foreach (var sp in _layout.Sprites)
+                            if (!sp.IsReferenceLayout) nonRefCount++;
+
+                        if (nonRefCount == 0)
+                        {
+                            // Layout is empty — populate from full execution
+                            foreach (var sp in fullResult.Sprites)
+                                _layout.Sprites.Add(sp);
+
+                            // Update snapshot so "Show All" can restore correctly
+                            _fullFrameSprites = new List<SpriteEntry>();
+                            foreach (var sp in _layout.Sprites)
+                                _fullFrameSprites.Add(sp);
+
+                            System.Diagnostics.Debug.WriteLine(
+                                $"[IsolateCall] Cold-populated layout with {fullResult.Sprites.Count} sprites from full execution");
+                        }
+                        else
+                        {
+                            // Layout has sprites but no method tags — tag them
+                            var usedFull = new HashSet<int>();
+                            foreach (var layoutSp in _layout.Sprites)
+                            {
+                                for (int fi = 0; fi < fullResult.Sprites.Count; fi++)
+                                {
+                                    if (usedFull.Contains(fi)) continue;
+                                    var fullSp = fullResult.Sprites[fi];
+                                    bool typeMatch = layoutSp.Type == fullSp.Type
+                                        && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == fullSp.Text)
+                                         || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == fullSp.SpriteName));
+                                    if (typeMatch)
+                                    {
+                                        if (!string.IsNullOrEmpty(fullSp.SourceMethodName))
+                                            layoutSp.SourceMethodName = fullSp.SourceMethodName;
+                                        if (fullSp.SourceMethodIndex >= 0)
+                                            layoutSp.SourceMethodIndex = fullSp.SourceMethodIndex;
+                                        usedFull.Add(fi);
+                                        break;
+                                    }
+                                }
+                            }
+                            System.Diagnostics.Debug.WriteLine(
+                                $"[IsolateCall] Cold-tagged {usedFull.Count}/{fullResult.Sprites.Count} layout sprites with method names");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[IsolateCall] Cold-tag full execution failed: {ex.Message}");
+                }
             }
 
             // For Pulsar/Mod/Torch scripts, runtime sprites from surface.DrawFrame()
@@ -4211,6 +6439,14 @@ namespace SESpriteLCDLayoutTool
                             if (typeMatch)
                             {
                                 _isolatedCallSprites.Add(layoutSp);
+
+                                // Transfer SourceMethodName from executed sprite to layout sprite
+                                if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                                    string.IsNullOrEmpty(layoutSp.SourceMethodName))
+                                {
+                                    layoutSp.SourceMethodName = execSp.SourceMethodName;
+                                }
+
                                 usedExec.Add(ei);
                                 break;
                             }
@@ -4241,6 +6477,11 @@ namespace SESpriteLCDLayoutTool
                         }
                     }
                 }
+
+                // Transfer positions from executed sprites to matched layout sprites.
+                // Without this, layout sprites retain their original positions from
+                // static code parsing — only correct after a full animation run.
+                TransferExecutionPositions(_isolatedCallSprites, result.Sprites);
 
                 _canvas.HighlightedSprites = _isolatedCallSprites;
                 _canvas.Invalidate();
@@ -4306,6 +6547,14 @@ namespace SESpriteLCDLayoutTool
                                 if (typeMatch)
                                 {
                                     _isolatedCallSprites.Add(layoutSp);
+
+                                    // Transfer SourceMethodName from executed sprite to layout sprite
+                                    if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                                        string.IsNullOrEmpty(layoutSp.SourceMethodName))
+                                    {
+                                        layoutSp.SourceMethodName = execSp.SourceMethodName;
+                                    }
+
                                     usedExec2.Add(ei);
                                     break;
                                 }
@@ -4320,29 +6569,21 @@ namespace SESpriteLCDLayoutTool
                 foreach (var sp in _layout.Sprites)
                     if (!sp.IsReferenceLayout) nonRef.Add(sp);
 
-                var mergeResult = SnapshotMerger.Merge(nonRef, result.Sprites, applyColors: true);
+                // Identify target sprites FIRST, then transfer positions only
+                // to matched sprites.  Do NOT merge partial execution results
+                // into all layout sprites — that corrupts non-target positions
+                // when isolating a single method's output cold (no prior animation).
 
                 // First priority: SpriteMapping (built via "Build Sprite Map")
                 bool usedMapping = false;
                 if (_layout?.SpriteMapping != null && _layout.SpriteMapping.HasData && !string.IsNullOrEmpty(targetMethodName))
                 {
-                    // Check the newly executed sprites (result.Sprites), not old layout sprites
-                    foreach (var execSp in result.Sprites)
+                    foreach (var layoutSp in nonRef)
                     {
-                        if (_layout.SpriteMapping.SpritesBelongsToMethod(execSp, targetMethodName))
+                        if (_layout.SpriteMapping.SpritesBelongsToMethod(layoutSp, targetMethodName))
                         {
-                            // Find the corresponding merged sprite in the layout to highlight
-                            var matchedLayoutSp = nonRef.FirstOrDefault(layoutSp =>
-                                layoutSp.Type == execSp.Type &&
-                                ((layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName) ||
-                                 (layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)) &&
-                                Math.Abs(layoutSp.X - execSp.X) < 5 && Math.Abs(layoutSp.Y - execSp.Y) < 5);
-
-                            if (matchedLayoutSp != null)
-                            {
-                                _isolatedCallSprites.Add(matchedLayoutSp);
-                                usedMapping = true;
-                            }
+                            _isolatedCallSprites.Add(layoutSp);
+                            usedMapping = true;
                         }
                     }
                 }
@@ -4376,22 +6617,37 @@ namespace SESpriteLCDLayoutTool
                                 if (typeMatch)
                                 {
                                     _isolatedCallSprites.Add(sp);
+
+                                    // Transfer source tracking from executed sprite to layout sprite
+                                    if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                                        string.IsNullOrEmpty(sp.SourceMethodName))
+                                    {
+                                        sp.SourceMethodName = execSp.SourceMethodName;
+                                        sp.SourceMethodIndex = execSp.SourceMethodIndex;
+                                    }
+
                                     usedExec.Add(ei);
                                     break;
                                 }
                             }
                         }
+
+                        // Add orphan executed sprites not matched to existing layout
+                        for (int ei = 0; ei < result.Sprites.Count; ei++)
+                        {
+                            if (usedExec.Contains(ei)) continue;
+                            var orphan = result.Sprites[ei];
+                            orphan.SourceStart = -1;
+                            orphan.SourceEnd   = -1;
+                            _layout.Sprites.Add(orphan);
+                            _isolatedCallSprites.Add(orphan);
+                        }
                     }
                 }
 
-                // Also add any orphan (unmatched) sprites from the execution
-                foreach (var orphan in mergeResult.UnmatchedSnapshots)
-                {
-                    orphan.SourceStart = -1;
-                    orphan.SourceEnd   = -1;
-                    _layout.Sprites.Add(orphan);
-                    _isolatedCallSprites.Add(orphan);
-                }
+                // Transfer runtime positions only to the matched isolated sprites,
+                // leaving all other layout sprites at their original positions.
+                TransferExecutionPositions(_isolatedCallSprites, result.Sprites);
             }
 
             // If no matches found, highlight all executed sprites directly
@@ -4472,8 +6728,44 @@ namespace SESpriteLCDLayoutTool
                     }
                     else if (methodList.Count > 1)
                     {
-                        // Multiple methods produce this sprite - use first for now
-                        sprite.SourceMethodName = methodList[0];
+                        // Multiple methods produce this sprite - choose the MOST SPECIFIC one
+                        // Prefer specific render methods (RenderOscilloscope) over orchestrators (BuildSprites, Render)
+                        // Strategy: Prefer methods that start with "Render" and are NOT just "Render" itself
+                        string chosen = null;
+
+                        // Priority 1: Specific render methods (RenderOscilloscope, RenderTitle, etc.)
+                        foreach (var method in methodList)
+                        {
+                            if (method.StartsWith("Render", StringComparison.Ordinal) && 
+                                method.Length > 6 && 
+                                method != "Render")
+                            {
+                                chosen = method;
+                                break;
+                            }
+                        }
+
+                        // Priority 2: Helper methods (DrawGauge, etc.)
+                        if (chosen == null)
+                        {
+                            foreach (var method in methodList)
+                            {
+                                if (method != "BuildSprites" && method != "Render")
+                                {
+                                    chosen = method;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Priority 3: Fallback to first (BuildSprites or Render)
+                        if (chosen == null && methodList.Count > 0)
+                        {
+                            chosen = methodList[0];
+                        }
+
+                        sprite.SourceMethodName = chosen;
+                        System.Diagnostics.Debug.WriteLine($"[BuildSpriteMap] Sprite '{sprite.DisplayName}' belongs to {methodList.Count} methods: [{string.Join(", ", methodList)}] → chose '{chosen}'");
                     }
                 }
             }
@@ -6490,6 +8782,7 @@ namespace SESpriteLCDLayoutTool
             EnsureAnimPlayer();
             PushUndo();
             CaptureAnimPositionSnapshot();
+            _rtbConsole?.Clear();
 
             string error = _animPlayer.Prepare(code, execCall, execRows);
             if (error != null)
@@ -6513,6 +8806,7 @@ namespace SESpriteLCDLayoutTool
             // Resume if paused
             if (_animPlayer != null && _animPlayer.IsPaused)
             {
+                ResetScrubbing();
                 _animPlayer.Play();
                 UpdateAnimButtonStates();
                 SetStatus("Animation resumed.");
@@ -6557,6 +8851,7 @@ namespace SESpriteLCDLayoutTool
             EnsureAnimPlayer();
             PushUndo();
             CaptureAnimPositionSnapshot();
+            _rtbConsole?.Clear();
 
             // Pass null so CompileForAnimation auto-detects ALL rendering
             // methods and calls them every frame — showing the full scene.
@@ -6656,12 +8951,11 @@ namespace SESpriteLCDLayoutTool
 
             // Isolation mode: when a specific method is isolated (via Execute & Isolate),
             // filter animation frames to show ONLY sprites that belong to that method.
-            // Uses position-independent matching (type + name only) because animation
-            // sprites have different positions than the sprite map build phase.
+            // Primary: SourceMethodName set by instrumentation pipeline at runtime.
+            // Fallback: SpriteMapping position-independent matching (if available).
             List<SpriteEntry> frameSprites = sprites;
             float yOffset = 0f;
-            if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0 &&
-                _layout?.SpriteMapping != null && _layout.SpriteMapping.HasData)
+            if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
             {
                 string targetMethodName = CodeExecutor.ExtractMethodName(_execCallBox.Text.Trim());
                 if (!string.IsNullOrEmpty(targetMethodName))
@@ -6669,24 +8963,28 @@ namespace SESpriteLCDLayoutTool
                     var filtered = new List<SpriteEntry>();
                     foreach (var sp in sprites)
                     {
-                        // Match by type + name only (ignores position) because animation sprites
-                        // have different positions than sprite map build phase
-                        if (_layout.SpriteMapping.SpritesBelongsToMethodByName(sp, targetMethodName))
+                        // Primary: SourceMethodName set by instrumentation (SetCurrentMethod + RecordSpriteMethod)
+                        if (!string.IsNullOrEmpty(sp.SourceMethodName) &&
+                            string.Equals(sp.SourceMethodName, targetMethodName, StringComparison.Ordinal))
+                        {
+                            filtered.Add(sp);
+                        }
+                        // Fallback: SpriteMapping position-independent matching
+                        else if (_layout?.SpriteMapping != null && _layout.SpriteMapping.HasData &&
+                                 _layout.SpriteMapping.SpritesBelongsToMethodByName(sp, targetMethodName))
                         {
                             filtered.Add(sp);
                         }
                     }
-                    frameSprites = filtered;
+                    if (filtered.Count > 0)
+                        frameSprites = filtered;
 
-                    // Apply Y offset from sprite mapping to position isolated sprites correctly
-                    if (_layout.SpriteMapping.MethodYOffsets.TryGetValue(targetMethodName, out float methodOffset))
+                    // Apply Y offset from sprite mapping if available
+                    if (_layout?.SpriteMapping != null &&
+                        _layout.SpriteMapping.MethodYOffsets.TryGetValue(targetMethodName, out float methodOffset))
                     {
                         yOffset = methodOffset;
                         System.Diagnostics.Debug.WriteLine($"[OnAnimFrame] Isolated animation '{targetMethodName}': yOffset={yOffset:F1}, sprites={frameSprites.Count}");
-                    }
-                    else
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[OnAnimFrame] WARNING: No Y offset found for '{targetMethodName}'. Available offsets: {string.Join(", ", _layout.SpriteMapping.MethodYOffsets.Keys)}");
                     }
                 }
             }
@@ -6731,12 +9029,49 @@ namespace SESpriteLCDLayoutTool
                            : "LCD";
             double ms = _animPlayer?.LastFrameMs ?? 0;
             string focusTag = _animFocusCall != null ? " 🔍" : "";
-            _lblAnimTick.Text = $"{typeTag}  Tick: {tick}  ({ms:F1} ms){focusTag}";
+            string heatTag = "";
+            if (_animPlayer?.LastMethodTimings != null && _animPlayer.LastMethodTimings.Count > 0)
+            {
+                string slowest = null; double slowMs = 0;
+                foreach (var kv in _animPlayer.LastMethodTimings)
+                    if (kv.Value > slowMs) { slowMs = kv.Value; slowest = kv.Key; }
+                if (slowest != null)
+                    heatTag = $"  🔥{slowest}:{slowMs:F2}ms";
+            }
+            _lblAnimTick.Text = $"{typeTag}  Tick: {tick}  ({ms:F1} ms){focusTag}{heatTag}";
+
+            // Update Variables tab with current field values during animation
+            if (!_isScrubbing)
+                UpdateVariablesDuringAnimation(tick);
+
+            // Keep timeline scrubber in sync
+            UpdateTimelineScrubber(tick);
+
+            // Append Echo output to Console tab
+            if (_animPlayer?.LastOutputLines != null && _animPlayer.LastOutputLines.Count > 0)
+                AppendConsoleOutput(_animPlayer.LastOutputLines, tick);
+
+            // Apply code heatmap from per-method timing data
+            if (_animPlayer?.LastMethodTimings != null && _animPlayer.LastMethodTimings.Count > 0)
+                ApplyCodeHeatmap(_animPlayer.LastMethodTimings);
+
+            // Check conditional breakpoint — pause animation if condition is true
+            if (_breakCondition != null && _animPlayer != null && !_animPlayer.IsPaused)
+            {
+                if (CheckBreakCondition(_animPlayer))
+                {
+                    _animPlayer.Pause();
+                    UpdateAnimButtonStates();
+                    _lblAnimTick.Text += "  ⏸ BREAK";
+                    SetStatus($"⏸ Break condition hit at tick {tick}: {_breakCondition.Expression}");
+                }
+            }
         }
 
         private void OnAnimError(string error)
         {
             SetStatus("Animation error: " + error);
+            AppendConsoleError(error, _animPlayer?.CurrentTick ?? -1);
             UpdateAnimButtonStates();
             MessageBox.Show(error, "Animation Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -6755,6 +9090,43 @@ namespace SESpriteLCDLayoutTool
             string prefix = sp.Type == SpriteEntryType.Text ? "T:" : "X:";
             string name = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
             return $"{prefix}{name}";
+        }
+
+        /// <summary>
+        /// Transfers position/size/color/rotation from executed sprites to matched layout sprites.
+        /// Matches by Type + Data (SpriteName or Text). Ensures Execute &amp; Isolate shows
+        /// sprites at correct runtime positions even when animation hasn't been run first.
+        /// </summary>
+        private static void TransferExecutionPositions(HashSet<SpriteEntry> layoutSprites, List<SpriteEntry> execSprites)
+        {
+            if (layoutSprites == null || layoutSprites.Count == 0 || execSprites == null || execSprites.Count == 0)
+                return;
+
+            var usedExec = new HashSet<int>();
+            foreach (var layoutSp in layoutSprites)
+            {
+                for (int ei = 0; ei < execSprites.Count; ei++)
+                {
+                    if (usedExec.Contains(ei)) continue;
+                    var execSp = execSprites[ei];
+                    bool typeMatch = layoutSp.Type == execSp.Type
+                        && ((layoutSp.Type == SpriteEntryType.Text && layoutSp.Text == execSp.Text)
+                         || (layoutSp.Type == SpriteEntryType.Texture && layoutSp.SpriteName == execSp.SpriteName));
+                    if (typeMatch)
+                    {
+                        layoutSp.X = execSp.X;
+                        layoutSp.Y = execSp.Y;
+                        layoutSp.Width = execSp.Width;
+                        layoutSp.Height = execSp.Height;
+                        layoutSp.Color = execSp.Color;
+                        layoutSp.Rotation = execSp.Rotation;
+                        if (layoutSp.Type == SpriteEntryType.Text)
+                            layoutSp.Scale = execSp.Scale;
+                        usedExec.Add(ei);
+                        break;
+                    }
+                }
+            }
         }
 
         private void OnAnimStopped()
@@ -6780,6 +9152,21 @@ namespace SESpriteLCDLayoutTool
             UpdateAnimButtonStates();
             SetStatus("Animation stopped.");
 
+            // Clear code heatmap when animation stops
+            ClearCodeHeatmap();
+
+            // Keep timeline scrubber visible for post-mortem analysis
+            // (history is preserved in the player)
+            _isScrubbing = false;
+            if (_timelineBar != null)
+            {
+                AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+                var history = player?.TickHistory;
+                _timelineBar.Visible = history != null && history.Count > 0;
+                if (_timelineBar.Visible)
+                    SetStatus("Animation stopped.  Use timeline slider to scrub history.");
+            }
+
             // Force garbage collection to immediately reclaim the thousands of
             // temporary SpriteEntry objects created during animation frames.
             // Without this, GC pressure accumulates and causes lingering UI lag.
@@ -6793,6 +9180,9 @@ namespace SESpriteLCDLayoutTool
             _animPlayer.FrameRendered  += OnAnimFrame;
             _animPlayer.ErrorOccurred  += OnAnimError;
             _animPlayer.PlaybackStopped += OnAnimStopped;
+
+            // Share with variable inspector for live updates (don't dispose - same instance!)
+            _lastAnimPlayer = _animPlayer;
         }
 
         /// <summary>

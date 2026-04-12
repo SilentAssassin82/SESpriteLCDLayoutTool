@@ -45,6 +45,9 @@ namespace SESpriteLCDLayoutTool.Services
             public string Error { get; set; }
             public bool Success { get { return Error == null; } }
             public ScriptType ScriptType { get; set; }
+            public List<string> OutputLines { get; set; }
+            /// <summary>Per-method timing data from the last execution. Key = method name, Value = elapsed ms.</summary>
+            public Dictionary<string, double> MethodTimings { get; set; }
         }
 
         // ── Public API ────────────────────────────────────────────────────────
@@ -859,6 +862,11 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 bool hadClassWrapper;
                 string source = BuildSource(userCode, callExpression, tick, scriptType, out hadClassWrapper, capturedRows);
+
+                // Diagnostic: save generated source for inspection
+                try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "SELcd_LastGeneratedSource.cs"), source); }
+                catch { /* ignore */ }
+
                 Assembly asm = Compile(source);
                 var result = RunAndConvert(asm);
                 result.ScriptType = scriptType;
@@ -922,6 +930,8 @@ namespace SESpriteLCDLayoutTool.Services
             internal MethodInfo GetFreqMethod;
             internal MethodInfo SetElapsedMethod;
             internal MethodInfo SetElapsedPlayTimeMethod;
+            internal MethodInfo GetEchoLogMethod;
+            internal MethodInfo GetMethodTimingsMethod;
             public ScriptType ScriptType { get; internal set; }
 
             public void Dispose()
@@ -1013,12 +1023,17 @@ namespace SESpriteLCDLayoutTool.Services
                     break;
                 case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
+                case ScriptType.TorchPlugin:
                     source = BuildModSurfaceAnimationSource(userCode, callExpression, stateUpdateCalls, capturedRows);
                     break;
                 default: // LcdHelper
                     source = BuildLcdHelperAnimationSource(userCode, callExpression, stateUpdateCalls);
                     break;
             }
+
+            // Diagnostic: save generated source for inspection
+            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "SELcd_LastGeneratedSource.cs"), source); }
+            catch { /* ignore */ }
 
             Assembly asm = Compile(source);
 
@@ -1036,6 +1051,8 @@ namespace SESpriteLCDLayoutTool.Services
                 GetFreqMethod = runnerType.GetMethod("GetUpdateFrequency"),      // null for non-PB
                 SetElapsedMethod = runnerType.GetMethod("SetTimeSinceLastRun"),   // null for non-PB
                 SetElapsedPlayTimeMethod = runnerType.GetMethod("SetElapsedPlayTime"),
+                GetEchoLogMethod = runnerType.GetMethod("GetEchoLog"),
+                GetMethodTimingsMethod = runnerType.GetMethod("GetMethodTimings"),
                 ScriptType = scriptType,
             };
             return ctx;
@@ -1100,10 +1117,47 @@ namespace SESpriteLCDLayoutTool.Services
             if (rawData == null)
                 return Fail("No sprite data returned.");
 
+            // Read echo log from runner
+            List<string> outputLines = null;
+            try
+            {
+                if (ctx.GetEchoLogMethod != null)
+                {
+                    var log = (string[])ctx.GetEchoLogMethod.Invoke(ctx.Runner, null);
+                    if (log != null && log.Length > 0)
+                        outputLines = new List<string>(log);
+                }
+            }
+            catch { }
+
+            // Read per-method timing data from runner
+            Dictionary<string, double> methodTimings = null;
+            try
+            {
+                if (ctx.GetMethodTimingsMethod != null)
+                {
+                    var raw = (string[])ctx.GetMethodTimingsMethod.Invoke(ctx.Runner, null);
+                    if (raw != null && raw.Length > 0)
+                    {
+                        methodTimings = new Dictionary<string, double>(raw.Length);
+                        foreach (string entry in raw)
+                        {
+                            int sep = entry.IndexOf('|');
+                            if (sep > 0 && double.TryParse(entry.Substring(sep + 1),
+                                NumberStyles.Float, CultureInfo.InvariantCulture, out double ms))
+                                methodTimings[entry.Substring(0, sep)] = ms;
+                        }
+                    }
+                }
+            }
+            catch { }
+
             return new ExecutionResult
             {
                 Sprites = ConvertFromMatrix(rawData),
                 ScriptType = ctx.ScriptType,
+                OutputLines = outputLines,
+                MethodTimings = methodTimings,
             };
         }
 
@@ -1129,6 +1183,7 @@ namespace SESpriteLCDLayoutTool.Services
                     return BuildPbSource(userCode, callExpression, out hadClassWrapper);
                 case ScriptType.PulsarPlugin:
                 case ScriptType.ModSurface:
+                case ScriptType.TorchPlugin:
                     return BuildModSurfaceSource(userCode, callExpression, out hadClassWrapper, capturedRows);
                 default:
                     return BuildLcdHelperSource(userCode, callExpression, tick, out hadClassWrapper);
@@ -1221,6 +1276,10 @@ namespace SESpriteLCDLayoutTool.Services
             if (hadClassWrapper && !string.IsNullOrEmpty(className))
                 stripped = StripConstructors(stripped, className);
 
+            // Instrument render methods for accurate sprite tracking
+            stripped = InstrumentRenderMethods(stripped);
+            stripped = InjectMethodTimings(stripped);
+
             string callLine = callExpression.TrimEnd();
             if (!callLine.EndsWith(";")) callLine += ";";
 
@@ -1252,10 +1311,16 @@ namespace SESpriteLCDLayoutTool.Services
 
             sb.AppendLine(stripped);
             sb.AppendLine();
-            sb.AppendLine("        public void Echo(string text) { }");
+            sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
+            sb.AppendLine("        public void Echo(string text) { _echoLog.Add(text); }");
+            sb.AppendLine("        public string[] GetEchoLog() { return _echoLog.ToArray(); }");
+            sb.AppendLine("        private static readonly System.Collections.Generic.Dictionary<string, double> _methodTimings = new System.Collections.Generic.Dictionary<string, double>();");
+            sb.AppendLine("        public string[] GetMethodTimings() { var r = new System.Collections.Generic.List<string>(); foreach (var kv in _methodTimings) r.Add(kv.Key + \"|\" + kv.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)); return r.ToArray(); }");
             sb.AppendLine("        public void SaveCustomData(string d) { }");
             sb.AppendLine();
             sb.AppendLine("        public string[][] RunAllData() {");
+            sb.AppendLine("            _echoLog.Clear();");
+            sb.AppendLine("            _methodTimings.Clear();");
             sb.AppendLine("            SpriteCollector.Reset();");
             sb.AppendLine("            var sprites = new SELcdExec.TrackedSpriteList();");
             // Extract method name for tracking
@@ -1264,10 +1329,12 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 sb.AppendLine($"            SpriteCollector.SetCurrentMethod(\"{methodName}\");");
                 sb.AppendLine("            sprites.BeginTrack();");
+                sb.AppendLine($"            var _swT0 = System.Diagnostics.Stopwatch.StartNew();");
             }
-            sb.AppendLine("            " + callLine);
+            EmitCallLine(sb, callLine, "            ");
             if (!string.IsNullOrEmpty(methodName))
             {
+                sb.AppendLine($"            _swT0.Stop(); _methodTimings[\"{methodName}\"] = _swT0.Elapsed.TotalMilliseconds;");
                 sb.AppendLine("            sprites.EndTrack();");
             }
             AppendSpriteSerialisation(sb, "sprites");
@@ -1297,6 +1364,10 @@ namespace SESpriteLCDLayoutTool.Services
 
             string ctorBody = ExtractConstructorBody(stripped, ctorName);
             stripped = StripConstructors(stripped, ctorName);
+
+            // Instrument render methods for accurate sprite tracking
+            stripped = InstrumentRenderMethods(stripped);
+            stripped = InjectMethodTimings(stripped);
 
             string callLine = callExpression.TrimEnd();
             if (!callLine.EndsWith(";")) callLine += ";";
@@ -1328,9 +1399,17 @@ namespace SESpriteLCDLayoutTool.Services
             // User methods
             sb.AppendLine(stripped);
             sb.AppendLine();
+            sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
+            sb.AppendLine("        public new void Echo(string text) { _echoLog.Add(text); }");
+            sb.AppendLine("        public string[] GetEchoLog() { return _echoLog.ToArray(); }");
+            sb.AppendLine("        private static readonly System.Collections.Generic.Dictionary<string, double> _methodTimings = new System.Collections.Generic.Dictionary<string, double>();");
+            sb.AppendLine("        public string[] GetMethodTimings() { var r = new System.Collections.Generic.List<string>(); foreach (var kv in _methodTimings) r.Add(kv.Key + \"|\" + kv.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)); return r.ToArray(); }");
+            sb.AppendLine();
 
             // Entry point
             sb.AppendLine("        public string[][] RunAllData() {");
+            sb.AppendLine("            _echoLog.Clear();");
+            sb.AppendLine("            _methodTimings.Clear();");
             sb.AppendLine("            _InitStubs();");
             sb.AppendLine("            SpriteCollector.Reset();");
             if (!string.IsNullOrWhiteSpace(ctorBody))
@@ -1340,7 +1419,9 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.AppendLine("                " + ctorBody);
                 sb.AppendLine("            }");
             }
-            sb.AppendLine("            " + callLine);
+            sb.AppendLine("            var _swMain = System.Diagnostics.Stopwatch.StartNew();");
+            EmitCallLine(sb, callLine, "            ");
+            sb.AppendLine("            _swMain.Stop(); _methodTimings[\"Main\"] = _swMain.Elapsed.TotalMilliseconds;");
             sb.AppendLine("            var sprites = SpriteCollector.Captured;");
             AppendSpriteSerialisation(sb, "sprites");
             sb.AppendLine("        }");
@@ -1366,6 +1447,10 @@ namespace SESpriteLCDLayoutTool.Services
             string ctorBody = ExtractConstructorBody(stripped, ctorName);
             stripped = StripConstructors(stripped, ctorName);
             stripped = StripReadonly(stripped);
+
+            // Instrument render methods for accurate sprite tracking
+            stripped = InstrumentRenderMethods(stripped);
+            stripped = InjectMethodTimings(stripped);
 
             // Detect Main() signature to determine call in RunFrame
             string mainCall;
@@ -1401,6 +1486,12 @@ namespace SESpriteLCDLayoutTool.Services
             // User methods (including Main)
             sb.AppendLine(stripped);
             sb.AppendLine();
+            sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
+            sb.AppendLine("        public new void Echo(string text) { _echoLog.Add(text); }");
+            sb.AppendLine("        public string[] GetEchoLog() { return _echoLog.ToArray(); }");
+            sb.AppendLine("        private static readonly System.Collections.Generic.Dictionary<string, double> _methodTimings = new System.Collections.Generic.Dictionary<string, double>();");
+            sb.AppendLine("        public string[] GetMethodTimings() { var r = new System.Collections.Generic.List<string>(); foreach (var kv in _methodTimings) r.Add(kv.Key + \"|\" + kv.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)); return r.ToArray(); }");
+            sb.AppendLine();
 
             // AnimInit — called once to set up stubs + run constructor
             sb.AppendLine("        public void AnimInit() {");
@@ -1418,8 +1509,13 @@ namespace SESpriteLCDLayoutTool.Services
 
             // RunFrame — called every tick; resets collector, calls Main, returns sprites
             sb.AppendLine("        public string[][] RunFrame(int updateType, int tick) {");
+            sb.AppendLine("            _echoLog.Clear();");
+            sb.AppendLine("            _methodTimings.Clear();");
             sb.AppendLine("            SpriteCollector.Reset();");
+            sb.AppendLine("            SpriteCollector.SetCurrentMethod(\"Main\");");
+            sb.AppendLine("            var _swMain = System.Diagnostics.Stopwatch.StartNew();");
             sb.AppendLine("            " + mainCall);
+            sb.AppendLine("            _swMain.Stop(); _methodTimings[\"Main\"] = _swMain.Elapsed.TotalMilliseconds;");
             sb.AppendLine("            var sprites = SpriteCollector.Captured;");
             AppendSpriteSerialisation(sb, "sprites");
             sb.AppendLine("        }");
@@ -1466,6 +1562,10 @@ namespace SESpriteLCDLayoutTool.Services
             }
             stripped = StripReadonly(stripped);
 
+            // Instrument render methods for accurate sprite tracking
+            stripped = InstrumentRenderMethods(stripped);
+            stripped = InjectMethodTimings(stripped);
+
             // callExpression may contain multiple calls separated by newlines
             var callLines = new List<string>();
             foreach (string raw in callExpression.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
@@ -1505,7 +1605,11 @@ namespace SESpriteLCDLayoutTool.Services
 
             sb.AppendLine(stripped);
             sb.AppendLine();
-            sb.AppendLine("        public void Echo(string text) { }");
+            sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
+            sb.AppendLine("        public void Echo(string text) { _echoLog.Add(text); }");
+            sb.AppendLine("        public string[] GetEchoLog() { return _echoLog.ToArray(); }");
+            sb.AppendLine("        private static readonly System.Collections.Generic.Dictionary<string, double> _methodTimings = new System.Collections.Generic.Dictionary<string, double>();");
+            sb.AppendLine("        public string[] GetMethodTimings() { var r = new System.Collections.Generic.List<string>(); foreach (var kv in _methodTimings) r.Add(kv.Key + \"|\" + kv.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)); return r.ToArray(); }");
             sb.AppendLine("        public void SaveCustomData(string d) { }");
             sb.AppendLine();
 
@@ -1524,6 +1628,8 @@ namespace SESpriteLCDLayoutTool.Services
             // RunFrame — updates _tick (bare scripts), calls state-update methods, then
             // calls ALL rendering methods, and returns sprites
             sb.AppendLine("        public string[][] RunFrame(int updateType, int tick) {");
+            sb.AppendLine("            _echoLog.Clear();");
+            sb.AppendLine("            _methodTimings.Clear();");
             sb.AppendLine("            SpriteCollector.Reset();");
             if (!hadClassWrapper)
                 sb.AppendLine("            _tick = tick;");
@@ -1538,7 +1644,8 @@ namespace SESpriteLCDLayoutTool.Services
                 }
             }
             sb.AppendLine("            var sprites = new SELcdExec.TrackedSpriteList();");
-            // Emit each call with method tracking
+            // Emit each call with method tracking and timing
+            int swId = 0;
             foreach (string cl in callLines)
             {
                 string cleanCall = cl.TrimEnd(';', ' ');
@@ -1547,12 +1654,15 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     sb.AppendLine($"            SpriteCollector.SetCurrentMethod(\"{methodName}\");");
                     sb.AppendLine("            sprites.BeginTrack();");
+                    sb.AppendLine($"            var _swT{swId} = System.Diagnostics.Stopwatch.StartNew();");
                 }
                 EmitCallLine(sb, cl, "            ");
                 if (!string.IsNullOrEmpty(methodName))
                 {
+                    sb.AppendLine($"            _swT{swId}.Stop(); _methodTimings[\"{methodName}\"] = _swT{swId}.Elapsed.TotalMilliseconds;");
                     sb.AppendLine("            sprites.EndTrack();");
                     sb.AppendLine("            SpriteCollector.SetCurrentMethod(null);");
+                    swId++;
                 }
             }
             AppendSpriteSerialisation(sb, "sprites");
@@ -1588,6 +1698,10 @@ namespace SESpriteLCDLayoutTool.Services
             }
             stripped = StripReadonly(stripped);
 
+            // Instrument render methods for accurate sprite tracking
+            stripped = InstrumentRenderMethods(stripped);
+            stripped = InjectMethodTimings(stripped);
+
             // Rewrite `surface` → `_stubSurface` in the call expression(s)
             // callExpression may contain multiple calls separated by newlines
             var callLines = new List<string>();
@@ -1622,7 +1736,11 @@ namespace SESpriteLCDLayoutTool.Services
 
             sb.AppendLine(stripped);
             sb.AppendLine();
-            sb.AppendLine("        public void Echo(string text) { }");
+            sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
+            sb.AppendLine("        public void Echo(string text) { _echoLog.Add(text); }");
+            sb.AppendLine("        public string[] GetEchoLog() { return _echoLog.ToArray(); }");
+            sb.AppendLine("        private static readonly System.Collections.Generic.Dictionary<string, double> _methodTimings = new System.Collections.Generic.Dictionary<string, double>();");
+            sb.AppendLine("        public string[] GetMethodTimings() { var r = new System.Collections.Generic.List<string>(); foreach (var kv in _methodTimings) r.Add(kv.Key + \"|\" + kv.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)); return r.ToArray(); }");
             sb.AppendLine("        public void SaveCustomData(string d) { }");
             sb.AppendLine();
 
@@ -1641,6 +1759,8 @@ namespace SESpriteLCDLayoutTool.Services
             // RunFrame — resets collector, calls state-update methods, then calls ALL
             // rendering methods, and returns captured sprites
             sb.AppendLine("        public string[][] RunFrame(int updateType, int tick) {");
+            sb.AppendLine("            _echoLog.Clear();");
+            sb.AppendLine("            _methodTimings.Clear();");
             sb.AppendLine("            SpriteCollector.Reset();");
             // Call state-update methods (Advance, Update, Tick, etc.) before rendering
             if (stateUpdateCalls != null)
@@ -1692,6 +1812,10 @@ namespace SESpriteLCDLayoutTool.Services
             if (hadClassWrapper && !string.IsNullOrEmpty(className))
                 stripped = StripConstructors(stripped, className);
 
+            // Instrument render methods for accurate sprite tracking
+            stripped = InstrumentRenderMethods(stripped);
+            stripped = InjectMethodTimings(stripped);
+
             // Rewrite the call expression: replace `surface` token with the local stub variable
             var callLines = new List<string>();
             foreach (string raw in callExpression.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
@@ -1721,10 +1845,16 @@ namespace SESpriteLCDLayoutTool.Services
 
             sb.AppendLine(stripped);
             sb.AppendLine();
-            sb.AppendLine("        public void Echo(string text) { }");
+            sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
+            sb.AppendLine("        public void Echo(string text) { _echoLog.Add(text); }");
+            sb.AppendLine("        public string[] GetEchoLog() { return _echoLog.ToArray(); }");
+            sb.AppendLine("        private static readonly System.Collections.Generic.Dictionary<string, double> _methodTimings = new System.Collections.Generic.Dictionary<string, double>();");
+            sb.AppendLine("        public string[] GetMethodTimings() { var r = new System.Collections.Generic.List<string>(); foreach (var kv in _methodTimings) r.Add(kv.Key + \"|\" + kv.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)); return r.ToArray(); }");
             sb.AppendLine("        public void SaveCustomData(string d) { }");
             sb.AppendLine();
             sb.AppendLine("        public string[][] RunAllData() {");
+            sb.AppendLine("            _echoLog.Clear();");
+            sb.AppendLine("            _methodTimings.Clear();");
             sb.AppendLine("            SpriteCollector.Reset();");
             sb.AppendLine("            var _stubSurface = new StubTextSurface(512f, 512f);");
             // Inject sample queue data when the method is a queue-processor (e.g. ApplyPendingUpdates)
@@ -1747,7 +1877,7 @@ namespace SESpriteLCDLayoutTool.Services
         private static string _cachedCscPath;
         private static bool _cscSearched;
 
-        private static Assembly Compile(string source)
+        internal static Assembly Compile(string source)
         {
             if (!_cscSearched)
             {
@@ -1905,7 +2035,44 @@ namespace SESpriteLCDLayoutTool.Services
             if (rawData == null)
                 return Fail("No sprite data returned.");
 
-            return new ExecutionResult { Sprites = ConvertFromMatrix(rawData) };
+            // Read echo log from runner
+            List<string> outputLines = null;
+            try
+            {
+                MethodInfo getEcho = runnerType.GetMethod("GetEchoLog");
+                if (getEcho != null)
+                {
+                    var log = (string[])getEcho.Invoke(runner, null);
+                    if (log != null && log.Length > 0)
+                        outputLines = new List<string>(log);
+                }
+            }
+            catch { }
+
+            // Read per-method timing data from runner
+            Dictionary<string, double> methodTimings = null;
+            try
+            {
+                MethodInfo getTimings = runnerType.GetMethod("GetMethodTimings");
+                if (getTimings != null)
+                {
+                    var raw = (string[])getTimings.Invoke(runner, null);
+                    if (raw != null && raw.Length > 0)
+                    {
+                        methodTimings = new Dictionary<string, double>(raw.Length);
+                        foreach (string entry in raw)
+                        {
+                            int sep = entry.IndexOf('|');
+                            if (sep > 0 && double.TryParse(entry.Substring(sep + 1),
+                                NumberStyles.Float, CultureInfo.InvariantCulture, out double ms))
+                                methodTimings[entry.Substring(0, sep)] = ms;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            return new ExecutionResult { Sprites = ConvertFromMatrix(rawData), OutputLines = outputLines, MethodTimings = methodTimings };
         }
 
         private static List<SpriteEntry> ConvertFromMatrix(string[][] matrix)
@@ -2112,6 +2279,7 @@ namespace SESpriteLCDLayoutTool.Services
             List<string> callLines, string indent)
         {
             int ctxId = 0;
+            int swId = 0;
             foreach (string cl in callLines)
             {
                 string cleanCall = cl.TrimEnd(';', ' ');
@@ -2140,7 +2308,10 @@ namespace SESpriteLCDLayoutTool.Services
                 var match = rxMethod.Match(userCode);
                 if (!match.Success)
                 {
+                    sb.AppendLine($"{indent}var _swT{swId} = System.Diagnostics.Stopwatch.StartNew();");
                     EmitCallLine(sb, cl, indent);
+                    sb.AppendLine($"{indent}_swT{swId}.Stop(); _methodTimings[\"{methodName}\"] = _swT{swId}.Elapsed.TotalMilliseconds;");
+                    swId++;
                     sb.AppendLine($"{indent}sprites.EndTrack();");
                     sb.AppendLine($"{indent}SpriteCollector.SetCurrentMethod(null);");
                     continue;
@@ -2151,7 +2322,10 @@ namespace SESpriteLCDLayoutTool.Services
                 int bodyEnd = ScanToMatchingBrace(userCode, bodyStart);
                 if (bodyEnd <= bodyStart)
                 {
+                    sb.AppendLine($"{indent}var _swT{swId} = System.Diagnostics.Stopwatch.StartNew();");
                     EmitCallLine(sb, cl, indent);
+                    sb.AppendLine($"{indent}_swT{swId}.Stop(); _methodTimings[\"{methodName}\"] = _swT{swId}.Elapsed.TotalMilliseconds;");
+                    swId++;
                     sb.AppendLine($"{indent}sprites.EndTrack();");
                     sb.AppendLine($"{indent}SpriteCollector.SetCurrentMethod(null);");
                     continue;
@@ -2162,7 +2336,10 @@ namespace SESpriteLCDLayoutTool.Services
                 var spriteMatch = rxSpriteAdd.Match(body);
                 if (!spriteMatch.Success)
                 {
+                    sb.AppendLine($"{indent}var _swT{swId} = System.Diagnostics.Stopwatch.StartNew();");
                     EmitCallLine(sb, cl, indent);
+                    sb.AppendLine($"{indent}_swT{swId}.Stop(); _methodTimings[\"{methodName}\"] = _swT{swId}.Elapsed.TotalMilliseconds;");
+                    swId++;
                     sb.AppendLine($"{indent}sprites.EndTrack();");
                     sb.AppendLine($"{indent}SpriteCollector.SetCurrentMethod(null);");
                     continue;
@@ -2188,7 +2365,10 @@ namespace SESpriteLCDLayoutTool.Services
                 }
                 if (ctxTypeName == null || paramIndex < 0)
                 {
+                    sb.AppendLine($"{indent}var _swT{swId} = System.Diagnostics.Stopwatch.StartNew();");
                     EmitCallLine(sb, cl, indent);
+                    sb.AppendLine($"{indent}_swT{swId}.Stop(); _methodTimings[\"{methodName}\"] = _swT{swId}.Elapsed.TotalMilliseconds;");
+                    swId++;
                     sb.AppendLine($"{indent}sprites.EndTrack();");
                     sb.AppendLine($"{indent}SpriteCollector.SetCurrentMethod(null);");
                     continue;
@@ -2216,7 +2396,10 @@ namespace SESpriteLCDLayoutTool.Services
                     args[paramIndex] = varName;
 
                 string prefix = eqPos >= 0 ? beforeParen.Substring(0, eqPos + 1).TrimEnd() + " " : "";
+                sb.AppendLine($"{indent}var _swT{swId} = System.Diagnostics.Stopwatch.StartNew();");
                 sb.AppendLine($"{indent}{prefix}{methodName}({string.Join(", ", args)});");
+                sb.AppendLine($"{indent}_swT{swId}.Stop(); _methodTimings[\"{methodName}\"] = _swT{swId}.Elapsed.TotalMilliseconds;");
+                swId++;
 
                 // Collect sprites from context
                 sb.AppendLine($"{indent}if ({varName}.Sprites != null && {varName}.Sprites.Count > 0) sprites.AddRange({varName}.Sprites);");
@@ -2269,6 +2452,241 @@ namespace SESpriteLCDLayoutTool.Services
         private static string StripReadonly(string code)
         {
             return Regex.Replace(code, @"\breadonly\s+", "");
+        }
+
+        /// <summary>
+        /// Instruments render method bodies with SetCurrentMethod calls for accurate sprite tracking.
+        /// This enables nested method calls to correctly track which method produced each sprite.
+        /// Injects "SpriteCollector.SetCurrentMethod(\"MethodName\");" as the first line of each
+        /// method that takes or returns List&lt;MySprite&gt; or similar sprite collection.
+        /// ALSO instruments each .Add() call to record the method immediately.
+        /// </summary>
+        private static string InstrumentRenderMethods(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return code;
+
+            // STEP 1: Inject SetCurrentMethod at method entry
+            // Pattern matches method declarations that:
+            // 1. Take sprite list parameters: void RenderSomething(List<MySprite> sprites, ...)
+            // 2. Return sprite lists: List<MySprite> BuildSprites(...)
+            // 3. Take IEnumerable<MySprite>: void DrawGauge(IEnumerable<MySprite> sprites, ...)
+            // 4. Take MySpriteDrawFrame: void RenderPanel(MySpriteDrawFrame frame, ...)
+            // 5. Take IMyTextSurface: void DrawFrame(IMyTextSurface surface, ...)
+            var rxMethod = new Regex(
+                @"(?:private|public|internal|protected|static|\s)+(?:(?<returns>List<MySprite>|IEnumerable<MySprite>)|void)\s+(?<name>\w+)\s*\((?<params>[^)]*)\)\s*\{",
+                RegexOptions.Singleline);
+
+            // Collect ALL sprite list parameter names across all render methods
+            // so InstrumentAddCalls knows which .Add() calls are sprite adds
+            var spriteListNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (Match m in rxMethod.Matches(code))
+            {
+                string parameters = m.Groups["params"].Value;
+                foreach (string param in parameters.Split(','))
+                {
+                    string p = param.Trim();
+                    if (p.Contains("List<MySprite>") || p.Contains("IEnumerable<MySprite>"))
+                    {
+                        string[] parts = p.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length >= 2)
+                            spriteListNames.Add(parts[parts.Length - 1]);
+                    }
+                }
+            }
+            System.Diagnostics.Debug.WriteLine($"[InstrumentRenderMethods] Sprite list param names: {string.Join(", ", spriteListNames)}");
+
+            var result = new StringBuilder(code.Length + 2000);
+            int pos = 0;
+            int instrumentedCount = 0;
+
+            foreach (Match match in rxMethod.Matches(code))
+            {
+                string methodName = match.Groups["name"].Value;
+                string returns = match.Groups["returns"].Value;
+                string parameters = match.Groups["params"].Value;
+
+                // Only instrument if method returns sprites OR takes sprites/frame/surface as parameter
+                bool hasSprites = !string.IsNullOrEmpty(returns) || 
+                                  parameters.Contains("List<MySprite>") || 
+                                  parameters.Contains("IEnumerable<MySprite>") ||
+                                  parameters.Contains("MySpriteDrawFrame") ||
+                                  parameters.Contains("IMyTextSurface") ||
+                                  parameters.Contains("IMyTextPanel");
+
+                if (!hasSprites)
+                {
+                    continue; // Skip non-sprite methods
+                }
+
+                System.Diagnostics.Debug.WriteLine($"[InstrumentRenderMethods] Instrumenting: {methodName}");
+                instrumentedCount++;
+
+                int insertPos = match.Index + match.Length; // Right after the opening brace
+
+                // Append everything up to and including the opening brace
+                result.Append(code, pos, insertPos - pos);
+
+                // Inject the SetCurrentMethod call
+                result.AppendLine();
+                result.Append("            SpriteCollector.SetCurrentMethod(\"");
+                result.Append(methodName);
+                result.AppendLine("\");");
+
+                pos = insertPos;
+            }
+
+            System.Diagnostics.Debug.WriteLine($"[InstrumentRenderMethods] Total instrumented: {instrumentedCount} methods");
+
+            // Append remainder of code
+            result.Append(code, pos, code.Length - pos);
+
+            // STEP 2: Instrument each .Add() call to record the method
+            // This is critical because List<T>.Add is NOT virtual, so our TrackedSpriteList.Add
+            // doesn't get called when the variable is declared as List<MySprite>.
+            // We transform: s.Add(new MySprite(...));
+            // Into:         s.Add(new MySprite(...)); SpriteCollector.RecordSpriteMethod();
+            string instrumentedCode = result.ToString();
+            instrumentedCode = InstrumentAddCalls(instrumentedCode, spriteListNames);
+
+            return instrumentedCode;
+        }
+
+        /// <summary>
+        /// Injects per-method Stopwatch timing into every user method so the code
+        /// heatmap can show execution time for ALL methods, not just top-level calls.
+        /// Wraps each method body in try/finally { _methodTimings["Name"] = elapsed }.
+        /// </summary>
+        private static string InjectMethodTimings(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return code;
+
+            // Match method declarations (access modifier + optional static + return type + name + params + {)
+            // Use [ \t] instead of \s in return-type class to prevent cross-newline greedy matching
+            var rxMethod = new Regex(
+                @"(?:private|public|internal|protected)[ \t]+(?:static[ \t]+)?(?:override[ \t]+)?(?:void|[\w<>\[\], \t]+)[ \t]+(\w+)\s*\([^)]*\)\s*\{");
+
+            // Collect all matches first, then process from end to start so char positions stay valid
+            var matches = new List<Match>();
+            foreach (Match m in rxMethod.Matches(code))
+                matches.Add(m);
+
+            if (matches.Count == 0) return code;
+
+            // Process from last match to first to preserve positions
+            var sb = new StringBuilder(code);
+            for (int i = matches.Count - 1; i >= 0; i--)
+            {
+                var m = matches[i];
+                string methodName = m.Groups[1].Value;
+
+                // Skip generated helper methods (these start with _ or are infrastructure)
+                if (methodName.StartsWith("_") || methodName == "GetEchoLog" ||
+                    methodName == "GetMethodTimings" || methodName == "RunAllData" ||
+                    methodName == "RunFrame")
+                    continue;
+
+                int braceOpen = m.Index + m.Length - 1; // position of the opening {
+                // Find matching closing brace
+                int depth = 1;
+                int braceClose = -1;
+                for (int c = braceOpen + 1; c < sb.Length && depth > 0; c++)
+                {
+                    if (sb[c] == '{') depth++;
+                    else if (sb[c] == '}') { depth--; if (depth == 0) braceClose = c; }
+                }
+                if (braceClose < 0) continue;
+
+                // Sanitize method name for variable use (replace any non-alphanumeric)
+                string safeVar = Regex.Replace(methodName, @"\W", "_");
+
+                // Insert closing: } finally { record timing + restore CurrentMethod } right BEFORE the closing brace
+                string finallyBlock = $"\n            }} finally {{ _sw_{safeVar}.Stop(); _methodTimings[\"{methodName}\"] = _sw_{safeVar}.Elapsed.TotalMilliseconds; SpriteCollector.SetCurrentMethod(_prev_{safeVar}); }}";
+                sb.Insert(braceClose, finallyBlock);
+
+                // Insert opening: save CurrentMethod + Stopwatch start + try { right AFTER the opening brace
+                string tryBlock = $"\n            var _prev_{safeVar} = SpriteCollector.CurrentMethod; var _sw_{safeVar} = System.Diagnostics.Stopwatch.StartNew(); try {{";
+                sb.Insert(braceOpen + 1, tryBlock);
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Instruments .Add() calls on known sprite list variables to track which method added each sprite.
+        /// Uses the sprite list parameter names collected from render method signatures.
+        /// Transforms: s.Add(anything);
+        /// Into:       s.Add(anything); SpriteCollector.RecordSpriteMethod();
+        /// This ensures the CapturedMethods/CapturedMethodIndices parallel lists stay in sync
+        /// with the actual sprite list regardless of how sprites are created (inline, variables, etc).
+        /// </summary>
+        private static string InstrumentAddCalls(string code, HashSet<string> spriteListNames)
+        {
+            if (spriteListNames == null || spriteListNames.Count == 0)
+            {
+                System.Diagnostics.Debug.WriteLine($"[InstrumentAddCalls] No sprite list names known, skipping");
+                return code;
+            }
+
+            // Build a regex that matches ANY .Add( call on any known sprite list variable
+            // e.g. if spriteListNames = {"s", "sprites"}, pattern = (?:s|sprites)\.Add\s*\(
+            var escapedNames = new List<string>();
+            foreach (var n in spriteListNames)
+                escapedNames.Add(Regex.Escape(n));
+            string namePattern = string.Join("|", escapedNames);
+            var rxAdd = new Regex(
+                @"\b(?:" + namePattern + @")\.Add\s*\(",
+                RegexOptions.Singleline);
+
+            var result = new StringBuilder(code.Length + 2000);
+            int pos = 0;
+            int instrumentedCount = 0;
+
+            foreach (Match match in rxAdd.Matches(code))
+            {
+                // Find the opening paren of Add(
+                int addOpenParen = code.IndexOf('(', match.Index);
+                if (addOpenParen < 0) continue;
+
+                int closeParen = FindMatchingParen(code, addOpenParen);
+                if (closeParen < 0) continue;
+
+                // Find the semicolon after the closing paren
+                int semiColon = code.IndexOf(';', closeParen);
+                if (semiColon < 0 || semiColon > closeParen + 10) continue; // Must be close
+
+                // Append everything up to and including the semicolon
+                result.Append(code, pos, semiColon + 1 - pos);
+
+                // Inject the RecordSpriteMethod call
+                result.Append(" SpriteCollector.RecordSpriteMethod();");
+
+                instrumentedCount++;
+                pos = semiColon + 1;
+            }
+
+            System.Diagnostics.Debug.WriteLine($"[InstrumentAddCalls] Instrumented {instrumentedCount} Add() calls for sprite lists: {string.Join(", ", spriteListNames)}");
+
+            // Append remainder of code
+            result.Append(code, pos, code.Length - pos);
+            return result.ToString();
+        }
+
+        /// <summary>
+        /// Finds the matching closing parenthesis for an opening paren.
+        /// </summary>
+        private static int FindMatchingParen(string code, int openParenPos)
+        {
+            int depth = 0;
+            for (int i = openParenPos; i < code.Length; i++)
+            {
+                if (code[i] == '(') depth++;
+                else if (code[i] == ')')
+                {
+                    depth--;
+                    if (depth == 0) return i;
+                }
+            }
+            return -1;
         }
 
         private static string StripConstructors(string body, string className)
@@ -2671,6 +3089,7 @@ namespace SELcdExec
         [System.ThreadStatic] public static List<int> CapturedMethodIndices;
         [System.ThreadStatic] public static string CurrentMethod;
         [System.ThreadStatic] private static Dictionary<string, int> _methodIndices;
+        [System.ThreadStatic] public static bool _skipNextRecord;
 
         public static void Reset()
         {
@@ -2683,6 +3102,7 @@ namespace SELcdExec
             CurrentMethod = null;
             if (_methodIndices == null) _methodIndices = new Dictionary<string, int>();
             else _methodIndices.Clear();
+            _skipNextRecord = false;
         }
 
         public static void SetCurrentMethod(string methodName)
@@ -2695,6 +3115,11 @@ namespace SELcdExec
 
         public static void RecordSpriteMethod()
         {
+            // Guard against double-recording: MySpriteDrawFrame.Add() already calls
+            // RecordSpriteMethod internally; if InstrumentAddCalls also injected a
+            // call (because the frame variable shares a name with a List<MySprite>
+            // parameter), skip the duplicate to keep CapturedMethods aligned.
+            if (_skipNextRecord) { _skipNextRecord = false; return; }
             if (CapturedMethods == null) CapturedMethods = new List<string>();
             if (CapturedMethodIndices == null) CapturedMethodIndices = new List<int>();
             CapturedMethods.Add(CurrentMethod);
@@ -2710,8 +3135,9 @@ namespace SELcdExec
     }
 
     /// <summary>
-    /// A List&lt;MySprite&gt; wrapper that tracks which method added each sprite.
-    /// Records sprite count before/after method calls using BeginTrack/EndTrack.
+    /// A List&lt;MySprite&gt; wrapper used by the animation/execution harness.
+    /// Method attribution is handled by InstrumentAddCalls which injects
+    /// SpriteCollector.RecordSpriteMethod() at each .Add() call site.
     /// </summary>
     public class TrackedSpriteList : List<MySprite>
     {
@@ -2723,14 +3149,10 @@ namespace SELcdExec
             _trackStart = this.Count;
         }
 
-        /// <summary>Call after invoking a render method to record method info for all sprites added since BeginTrack.</summary>
+        /// <summary>Call after invoking a render method — recording is handled by instrumentation.</summary>
         public void EndTrack()
         {
-            int addedCount = this.Count - _trackStart;
-            for (int i = 0; i < addedCount; i++)
-            {
-                SpriteCollector.RecordSpriteMethod();
-            }
+            // Recording is now done via InstrumentAddCalls
             _trackStart = this.Count;
         }
     }
@@ -2828,6 +3250,22 @@ namespace VRageMath
         public static float Lerp(float a, float b, float t) { return a + (b - a) * t; }
         public static float ToRadians(float degrees) { return degrees * Pi / 180f; }
         public static float ToDegrees(float radians) { return radians * 180f / Pi; }
+    }
+
+    /// <summary>VRageMath RectangleF stub — used by SE scripts for viewport calculations.</summary>
+    public struct RectangleF
+    {
+        public Vector2 Position;
+        public Vector2 Size;
+        public float X { get { return Position.X; } set { Position.X = value; } }
+        public float Y { get { return Position.Y; } set { Position.Y = value; } }
+        public float Width { get { return Size.X; } set { Size.X = value; } }
+        public float Height { get { return Size.Y; } set { Size.Y = value; } }
+        public Vector2 Center { get { return Position + Size / 2f; } }
+        public RectangleF(Vector2 position, Vector2 size) { Position = position; Size = size; }
+        public RectangleF(float x, float y, float w, float h) { Position = new Vector2(x, y); Size = new Vector2(w, h); }
+        public bool Contains(float x, float y) { return x >= Position.X && x <= Position.X + Size.X && y >= Position.Y && y <= Position.Y + Size.Y; }
+        public bool Contains(Vector2 point) { return Contains(point.X, point.Y); }
     }
 }
 
@@ -3227,6 +3665,7 @@ namespace Sandbox.ModAPI.Ingame
         {
             SELcdExec.SpriteCollector.Captured.Add(sprite);
             SELcdExec.SpriteCollector.RecordSpriteMethod();
+            SELcdExec.SpriteCollector._skipNextRecord = true;
         }
         public void AddRange(IEnumerable<MySprite> sprites)
         {
@@ -3261,7 +3700,7 @@ namespace Sandbox.ModAPI.Ingame
         public IMyProgrammableBlock Me { get; set; }
         public IMyGridTerminalSystem GridTerminalSystem { get; set; }
         public string Storage { get; set; }
-        public void Echo(string text) { }
+        public void Echo(string text) { }  // Base class stub — overridden in LcdRunner
         protected virtual void Save() { }
     }
 

@@ -32,6 +32,12 @@ namespace SESpriteLCDLayoutTool.Services
         /// <summary>Execution time of the last frame in milliseconds.</summary>
         public double LastFrameMs { get; private set; }
 
+        /// <summary>Echo/output lines captured from the most recent frame execution.</summary>
+        public List<string> LastOutputLines { get; private set; }
+
+        /// <summary>Per-method timing data from the most recent frame. Key = method name, Value = elapsed ms.</summary>
+        public Dictionary<string, double> LastMethodTimings { get; private set; }
+
         /// <summary>
         /// Fixed fallback interval in ms when the script does not set
         /// <c>Runtime.UpdateFrequency</c>.  Default is 166 ms (≈ Update10).
@@ -45,6 +51,15 @@ namespace SESpriteLCDLayoutTool.Services
         private DateTime _lastFrameTime;
         private int _currentUpdateType = 32; // UpdateType.Update10
         private bool _frameInProgress;
+
+        // ── Tick history for timeline scrubber ─────────────────────────────────
+        private TickHistoryBuffer _tickHistory = new TickHistoryBuffer(500);
+
+        /// <summary>
+        /// Ring buffer of per-tick field snapshots.  The timeline scrubber
+        /// reads this to show historical variable values.
+        /// </summary>
+        public TickHistoryBuffer TickHistory => _tickHistory;
 
         // ── Constructor ────────────────────────────────────────────────────────
         /// <param name="syncControl">
@@ -76,6 +91,7 @@ namespace SESpriteLCDLayoutTool.Services
         public string Prepare(string userCode, string callExpression = null, List<SnapshotRowData> capturedRows = null)
         {
             Stop();
+            _tickHistory.Clear();
 
             try
             {
@@ -132,6 +148,8 @@ namespace SESpriteLCDLayoutTool.Services
             CurrentTick = 0;
             _ctx?.Dispose();
             _ctx = null;
+            // Note: do NOT clear _tickHistory here — it's needed for
+            // post-mortem scrubbing after animation stops.
             if (wasPlaying) PlaybackStopped?.Invoke();
         }
 
@@ -145,7 +163,9 @@ namespace SESpriteLCDLayoutTool.Services
             _timer.Stop();
 
             var now = DateTime.UtcNow;
-            double elapsed = (now - _lastFrameTime).TotalSeconds;
+            double elapsed = _lastFrameTime == default(DateTime)
+                ? 1.0 / 60.0   // First frame: assume ~60fps
+                : (now - _lastFrameTime).TotalSeconds;
             _lastFrameTime = now;
             CurrentTick++;
 
@@ -161,11 +181,14 @@ namespace SESpriteLCDLayoutTool.Services
                 return;
             }
 
+            LastOutputLines = result.OutputLines;
+            LastMethodTimings = result.MethodTimings;
+            RecordTickSnapshot(CurrentTick);
             FrameRendered?.Invoke(result.Sprites, CurrentTick);
             UpdateTimerInterval();
         }
 
-        // ── Timer callback ─────────────────────────────────────────────────────
+        // ── Timer callback
 
         private void OnTimerTick(object sender, EventArgs e)
         {
@@ -217,11 +240,14 @@ namespace SESpriteLCDLayoutTool.Services
                 return;
             }
 
+            LastOutputLines = result.OutputLines;
+            LastMethodTimings = result.MethodTimings;
+            RecordTickSnapshot(tick);
             FrameRendered?.Invoke(result.Sprites, tick);
             UpdateTimerInterval();
         }
 
-        // ── Update-frequency → timer interval ─────────────────────────────────
+        // ── Update-frequency
 
         private void UpdateTimerInterval()
         {
@@ -263,6 +289,139 @@ namespace SESpriteLCDLayoutTool.Services
                 _timer.Interval = FallbackIntervalMs;
                 _currentUpdateType = 32; // Default UpdateType.Update10
             }
+        }
+
+        /// <summary>
+        /// Snapshots all runner fields into the tick history buffer.
+        /// Called automatically after each successful frame.
+        /// </summary>
+        private void RecordTickSnapshot(int tick)
+        {
+            var fields = InspectFields();
+            if (fields != null)
+                _tickHistory.Record(tick, fields);
+        }
+
+        // ── Variable Inspector ─────────────────────────────────────────────
+
+        /// <summary>
+        /// Inspects all instance fields of the compiled runner class using reflection.
+        /// Returns null if no animation is prepared.
+        /// </summary>
+        public Dictionary<string, object> InspectFields()
+        {
+            if (_ctx?.Runner == null)
+                return null;
+
+            var result = new Dictionary<string, object>();
+            var fields = _ctx.Runner.GetType()
+                .GetFields(System.Reflection.BindingFlags.Public | 
+                          System.Reflection.BindingFlags.NonPublic | 
+                          System.Reflection.BindingFlags.Instance);
+
+            foreach (var field in fields)
+            {
+                try
+                {
+                    var value = field.GetValue(_ctx.Runner);
+                    result[field.Name] = value;
+                }
+                catch (Exception ex)
+                {
+                    result[field.Name] = $"(error: {ex.Message})";
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Returns the field names and their declared types from the runner instance.
+        /// Used by watch expression compilation to generate properly-typed local variables.
+        /// Returns null if no animation is prepared.
+        /// </summary>
+        public Dictionary<string, Type> InspectFieldTypes()
+        {
+            if (_ctx?.Runner == null)
+                return null;
+
+            var result = new Dictionary<string, Type>();
+            var fields = _ctx.Runner.GetType()
+                .GetFields(System.Reflection.BindingFlags.Public |
+                          System.Reflection.BindingFlags.NonPublic |
+                          System.Reflection.BindingFlags.Instance);
+
+            foreach (var field in fields)
+            {
+                result[field.Name] = field.FieldType;
+            }
+
+            return result;
+        }
+
+        // ── Variable Editor ────────────────────────────────────────────────
+
+        /// <summary>
+        /// Sets an instance field on the live runner via reflection.
+        /// Converts <paramref name="newValue"/> from string to the field's declared type.
+        /// Returns null on success, or an error message on failure.
+        /// </summary>
+        public string SetFieldValue(string fieldName, string newValue)
+        {
+            if (_ctx?.Runner == null)
+                return "No active animation session.";
+
+            var field = _ctx.Runner.GetType()
+                .GetField(fieldName,
+                    System.Reflection.BindingFlags.Public |
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance);
+
+            if (field == null)
+                return $"Field '{fieldName}' not found.";
+
+            try
+            {
+                object converted = ConvertToFieldType(newValue, field.FieldType);
+                field.SetValue(_ctx.Runner, converted);
+                return null; // success
+            }
+            catch (Exception ex)
+            {
+                return $"Cannot set '{fieldName}': {ex.Message}";
+            }
+        }
+
+        /// <summary>
+        /// Converts a user-entered string to the target field type.
+        /// Handles common primitives, nullable wrappers, and enums.
+        /// </summary>
+        private static object ConvertToFieldType(string text, Type targetType)
+        {
+            if (text == null || text.Equals("(null)", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!targetType.IsValueType || Nullable.GetUnderlyingType(targetType) != null)
+                    return null;
+                throw new InvalidCastException($"Cannot assign null to value type {targetType.Name}.");
+            }
+
+            // Unwrap Nullable<T>
+            Type underlying = Nullable.GetUnderlyingType(targetType) ?? targetType;
+
+            // Boolean: accept true/false/1/0
+            if (underlying == typeof(bool))
+            {
+                if (text == "1") return true;
+                if (text == "0") return false;
+                return bool.Parse(text);
+            }
+
+            // Enum
+            if (underlying.IsEnum)
+                return Enum.Parse(underlying, text, ignoreCase: true);
+
+            // All other primitives + string via Convert
+            return Convert.ChangeType(text, underlying, System.Globalization.CultureInfo.InvariantCulture);
         }
 
         // ── Dispose ────────────────────────────────────────────────────────────

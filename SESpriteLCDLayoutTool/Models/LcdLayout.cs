@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Xml.Serialization;
 
 namespace SESpriteLCDLayoutTool.Models
 {
@@ -42,6 +43,7 @@ namespace SESpriteLCDLayoutTool.Models
         /// Not serialized - rebuilt when needed or loaded from .sprmap file.
         /// </summary>
         [NonSerialized]
+        [XmlIgnore]
         public ElementSpriteMapping SpriteMapping;
     }
 }

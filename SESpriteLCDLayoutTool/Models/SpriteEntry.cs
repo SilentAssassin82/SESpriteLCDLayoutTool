@@ -176,6 +176,27 @@ namespace SESpriteLCDLayoutTool.Models
         /// </summary>
         [XmlIgnore] public int SourceMethodIndex { get; set; } = -1;
 
+        /// <summary>
+        /// Line number (1-based) where this sprite was created in the source code.
+        /// Used for precise code navigation when clicking sprites in the layer list.
+        /// -1 = not tracked.
+        /// </summary>
+        [XmlIgnore] public int SourceLineNumber { get; set; } = -1;
+
+        /// <summary>
+        /// Character position (0-based) within the line where this sprite creation starts.
+        /// Used in combination with SourceLineNumber for exact code location.
+        /// -1 = not tracked.
+        /// </summary>
+        [XmlIgnore] public int SourceCharacterPosition { get; set; } = -1;
+
+        /// <summary>
+        /// The actual code snippet that creates this sprite (e.g. "frame.Add(new MySprite(...))").
+        /// Captured from Roslyn syntax tree for user-friendly code navigation tooltips.
+        /// Null = not tracked.
+        /// </summary>
+        [XmlIgnore] public string SourceCodeSnippet { get; set; }
+
         /// <summary>Snapshot of property values at import time, used for diffing in per-sprite round-trip.</summary>
         [XmlIgnore] public SpriteEntry ImportBaseline { get; set; }
 
