@@ -764,7 +764,11 @@ namespace SESpriteLCDLayoutTool.Controls
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (_layout == null) return;
+            if (_layout == null)
+            {
+                System.Diagnostics.Debug.WriteLine("[LcdCanvas.OnMouseDown] _layout is NULL — ignoring click");
+                return;
+            }
             Focus();
 
             // Middle-click = pan
@@ -784,6 +788,8 @@ namespace SESpriteLCDLayoutTool.Controls
             ComputeTransform(out float scale, out PointF origin);
             var pt = new PointF(e.X, e.Y);
 
+            System.Diagnostics.Debug.WriteLine($"[LcdCanvas.OnMouseDown] Click at ({pt.X:F0},{pt.Y:F0}), sprites={_layout.Sprites.Count}, scale={scale:F3}, origin=({origin.X:F0},{origin.Y:F0}), highlighted={HighlightedSprites?.Count.ToString() ?? "null"}");
+
             // Check resize handles on the currently selected sprite first
             if (_selectedSprite != null && !_selectedSprite.IsHidden)
             {
@@ -794,15 +800,35 @@ namespace SESpriteLCDLayoutTool.Controls
             }
 
             // Hit-test all sprites in reverse (top-layer first)
+            // Stale-ref guard: if HighlightedSprites is set but contains NONE of the
+            // current layout sprites, it's from a previous execution — clear it so
+            // clicking isn't silently blocked.
+            if (HighlightedSprites != null && _layout.Sprites.Count > 0)
+            {
+                bool anyMatch = false;
+                foreach (var sp in _layout.Sprites)
+                {
+                    if (HighlightedSprites.Contains(sp)) { anyMatch = true; break; }
+                }
+                if (!anyMatch)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[LcdCanvas.OnMouseDown] ⚠ HighlightedSprites is STALE ({HighlightedSprites.Count} entries match none of {_layout.Sprites.Count} sprites) — clearing");
+                    HighlightedSprites = null;
+                }
+            }
+
+            int skippedHidden = 0, skippedHighlight = 0, testedCount = 0;
             for (int i = _layout.Sprites.Count - 1; i >= 0; i--)
             {
-                if (_layout.Sprites[i].IsHidden) continue;
+                if (_layout.Sprites[i].IsHidden) { skippedHidden++; continue; }
                 // During isolation, skip dimmed (non-highlighted) sprites
-                if (HighlightedSprites != null && !HighlightedSprites.Contains(_layout.Sprites[i])) continue;
+                if (HighlightedSprites != null && !HighlightedSprites.Contains(_layout.Sprites[i])) { skippedHighlight++; continue; }
                 var rect = GetSpriteScreenRect(_layout.Sprites[i], scale, origin);
+                testedCount++;
                 if (rect.Contains(pt))
                 {
                     var clickedSprite = _layout.Sprites[i];
+                    System.Diagnostics.Debug.WriteLine($"[LcdCanvas.OnMouseDown] ✓ Hit sprite [{i}] '{clickedSprite.DisplayName}' rect=({rect.X:F0},{rect.Y:F0},{rect.Width:F0},{rect.Height:F0})");
 
                     if (shiftHeld)
                     {
@@ -830,6 +856,8 @@ namespace SESpriteLCDLayoutTool.Controls
                     return;
                 }
             }
+
+            System.Diagnostics.Debug.WriteLine($"[LcdCanvas.OnMouseDown] ✗ No sprite hit — tested={testedCount}, skippedHidden={skippedHidden}, skippedHighlight={skippedHighlight}");
 
             // Clicked empty — deselect
             SelectedSprite = null;

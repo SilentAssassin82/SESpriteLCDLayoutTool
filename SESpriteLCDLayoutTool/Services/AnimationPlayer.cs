@@ -61,6 +61,15 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public TickHistoryBuffer TickHistory => _tickHistory;
 
+        // ── Sprite history for snapshot comparison ────────────────────────────
+        private SpriteHistoryBuffer _spriteHistory = new SpriteHistoryBuffer(500);
+
+        /// <summary>
+        /// Ring buffer of per-tick sprite snapshots.  The Snapshot Comparison
+        /// feature reads this to diff sprite states between bookmarked ticks.
+        /// </summary>
+        public SpriteHistoryBuffer SpriteHistory => _spriteHistory;
+
         // ── Constructor ────────────────────────────────────────────────────────
         /// <param name="syncControl">
         /// A control on the UI thread used for <see cref="Control.BeginInvoke"/>
@@ -92,6 +101,7 @@ namespace SESpriteLCDLayoutTool.Services
         {
             Stop();
             _tickHistory.Clear();
+            _spriteHistory.Clear();
 
             try
             {
@@ -183,7 +193,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             LastOutputLines = result.OutputLines;
             LastMethodTimings = result.MethodTimings;
-            RecordTickSnapshot(CurrentTick);
+            RecordTickSnapshot(CurrentTick, result.Sprites);
             FrameRendered?.Invoke(result.Sprites, CurrentTick);
             UpdateTimerInterval();
         }
@@ -242,7 +252,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             LastOutputLines = result.OutputLines;
             LastMethodTimings = result.MethodTimings;
-            RecordTickSnapshot(tick);
+            RecordTickSnapshot(tick, result.Sprites);
             FrameRendered?.Invoke(result.Sprites, tick);
             UpdateTimerInterval();
         }
@@ -292,14 +302,16 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
-        /// Snapshots all runner fields into the tick history buffer.
+        /// Snapshots all runner fields and sprite states into the history buffers.
         /// Called automatically after each successful frame.
         /// </summary>
-        private void RecordTickSnapshot(int tick)
+        private void RecordTickSnapshot(int tick, List<SpriteEntry> sprites)
         {
             var fields = InspectFields();
             if (fields != null)
                 _tickHistory.Record(tick, fields);
+            if (sprites != null)
+                _spriteHistory.Record(tick, sprites);
         }
 
         // ── Variable Inspector ─────────────────────────────────────────────
@@ -423,6 +435,18 @@ namespace SESpriteLCDLayoutTool.Services
             // All other primitives + string via Convert
             return Convert.ChangeType(text, underlying, System.Globalization.CultureInfo.InvariantCulture);
         }
+
+        // ── Snapshot Comparison Bookmarks ──────────────────────────────────────
+
+        /// <summary>
+        /// Bookmarks the current tick (or the scrubber tick) as snapshot A for comparison.
+        /// </summary>
+        public void SetBookmarkA(int tick) => _spriteHistory.SetBookmarkA(tick);
+
+        /// <summary>
+        /// Bookmarks the current tick (or the scrubber tick) as snapshot B for comparison.
+        /// </summary>
+        public void SetBookmarkB(int tick) => _spriteHistory.SetBookmarkB(tick);
 
         // ── Dispose ────────────────────────────────────────────────────────────
 

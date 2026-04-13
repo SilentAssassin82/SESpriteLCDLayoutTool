@@ -131,6 +131,7 @@ namespace SESpriteLCDLayoutTool
         // patcher can work.  Cleared when streaming stops entirely.
         private List<SpriteEntry> _preLiveCodeSprites;
         private List<SpriteEntry> _lastLiveFrame;
+        private List<Models.DebugVariable> _liveDebugVars;
 
         // ── Isolated call view ────────────────────────────────────────────────
         // When the user double-clicks a detected call, we execute just that call
@@ -147,6 +148,10 @@ namespace SESpriteLCDLayoutTool
         private Panel  _animBar;
         private Button _btnAnimPlay, _btnAnimPause, _btnAnimStop, _btnAnimStep;
         private Label  _lblAnimTick;
+
+        // ── Snapshot comparison bookmarks ─────────────────────────────────────
+        private Button _btnBookmarkA, _btnBookmarkB, _btnCompareSnapshots;
+        private Label  _lblBookmarks;
 
         // ── Debug tools ──────────────────────────────────────────────────────
         private Panel _debugPanel;
@@ -1137,14 +1142,15 @@ namespace SESpriteLCDLayoutTool
                     if (sp.SourceMethodIndex >= 0) withIndex++;
                 }
                 System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Sprite method attribution: {withMethod}/{total} have SourceMethodName, {withIndex}/{total} have SourceMethodIndex");
-                if (total > 0 && total <= 20)
+                // Log first 50 sprites for debugging off-by-one navigation
+                int logLimit = Math.Min(total, 50);
+                for (int di = 0; di < logLimit; di++)
                 {
-                    for (int di = 0; di < total; di++)
-                    {
-                        var dsp = _layout.Sprites[di];
-                        System.Diagnostics.Debug.WriteLine($"[ExecuteCode]   [{di}] {dsp.DisplayName}: Method='{dsp.SourceMethodName ?? "(null)"}' Idx={dsp.SourceMethodIndex} SourceStart={dsp.SourceStart}");
-                    }
+                    var dsp = _layout.Sprites[di];
+                    System.Diagnostics.Debug.WriteLine($"[ExecuteCode]   [{di}] {dsp.DisplayName}: Method='{dsp.SourceMethodName ?? "(null)"}' Idx={dsp.SourceMethodIndex} SourceStart={dsp.SourceStart}");
                 }
+                if (total > logLimit)
+                    System.Diagnostics.Debug.WriteLine($"[ExecuteCode]   ... and {total - logLimit} more sprites");
             }
 
             // Don't regenerate code for Pulsar/Mod scripts - keep original code intact.
@@ -1612,6 +1618,159 @@ namespace SESpriteLCDLayoutTool
         private void ResetScrubbing()
         {
             _isScrubbing = false;
+        }
+
+        // ── Snapshot Comparison Bookmarks ────────────────────────────────────────
+
+        private void OnBookmarkAClick(object sender, EventArgs e)
+        {
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            if (player == null) return;
+
+            int tick = _isScrubbing ? _timelineScrubber.Value : player.CurrentTick;
+            player.SetBookmarkA(tick);
+            UpdateBookmarkLabel(player);
+        }
+
+        private void OnBookmarkBClick(object sender, EventArgs e)
+        {
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            if (player == null) return;
+
+            int tick = _isScrubbing ? _timelineScrubber.Value : player.CurrentTick;
+            player.SetBookmarkB(tick);
+            UpdateBookmarkLabel(player);
+        }
+
+        private void OnCompareSnapshotsClick(object sender, EventArgs e)
+        {
+            AnimationPlayer player = _animPlayer ?? _lastAnimPlayer;
+            if (player == null) return;
+
+            var spriteHistory = player.SpriteHistory;
+            if (spriteHistory == null) return;
+
+            int tickA = spriteHistory.BookmarkTickA;
+            int tickB = spriteHistory.BookmarkTickB;
+            if (tickA < 0 || tickB < 0) return;
+
+            var beforeSnap = spriteHistory.GetSnapshot(tickA);
+            var afterSnap  = spriteHistory.GetSnapshot(tickB);
+
+            var changes = Services.SnapshotComparer.Compare(beforeSnap, afterSnap);
+            ShowSpriteComparisonDiff(changes, tickA, tickB,
+                beforeSnap?.Length ?? 0, afterSnap?.Length ?? 0);
+
+            SetStatus($"Compared tick {tickA} vs {tickB}: {changes.Count} change(s).");
+        }
+
+        private void UpdateBookmarkLabel(AnimationPlayer player)
+        {
+            if (_lblBookmarks == null) return;
+
+            var history = player?.SpriteHistory;
+            int a = history?.BookmarkTickA ?? -1;
+            int b = history?.BookmarkTickB ?? -1;
+
+            string aText = a >= 0 ? $"A=Tick {a}" : "A=—";
+            string bText = b >= 0 ? $"B=Tick {b}" : "B=—";
+            _lblBookmarks.Text = $"{aText}  |  {bText}";
+
+            _btnCompareSnapshots.Enabled = a >= 0 && b >= 0;
+        }
+
+        /// <summary>
+        /// Formats sprite comparison results into the Diff tab.
+        /// Left panel shows "Before" sprite states, right panel shows "After".
+        /// </summary>
+        private void ShowSpriteComparisonDiff(
+            List<Services.SpriteChange> changes,
+            int tickA, int tickB,
+            int totalBefore, int totalAfter)
+        {
+            if (_rtbDiffBefore == null || _rtbDiffAfter == null) return;
+
+            _rtbDiffBefore.SuspendLayout();
+            _rtbDiffAfter.SuspendLayout();
+            _rtbDiffBefore.Clear();
+            _rtbDiffAfter.Clear();
+
+            var colorMoved     = Color.FromArgb(25, 35, 60);    // dark blue
+            var colorRecolored = Color.FromArgb(40, 25, 50);    // dark purple
+            var colorResized   = Color.FromArgb(50, 35, 15);    // dark orange
+            var colorAdded     = Color.FromArgb(25, 50, 25);    // dark green
+            var colorRemoved   = Color.FromArgb(60, 30, 30);    // dark red
+            var colorDefault   = Color.FromArgb(18, 20, 30);
+
+            var fgMoved     = Color.FromArgb(120, 170, 255);
+            var fgRecolored = Color.FromArgb(200, 140, 255);
+            var fgResized   = Color.FromArgb(255, 180, 100);
+            var fgAdded     = Color.FromArgb(140, 255, 140);
+            var fgRemoved   = Color.FromArgb(255, 140, 140);
+            var fgDefault   = Color.FromArgb(100, 110, 140);
+            var fgHeader    = Color.FromArgb(180, 200, 240);
+
+            // Headers
+            AppendDiffLine(_rtbDiffBefore, $"  ── Before: Tick {tickA} ({totalBefore} sprites) ──", colorDefault, fgHeader);
+            AppendDiffLine(_rtbDiffAfter,  $"  ── After:  Tick {tickB} ({totalAfter} sprites) ──",  colorDefault, fgHeader);
+
+            if (changes.Count == 0)
+            {
+                AppendDiffLine(_rtbDiffBefore, "  No visual changes detected.", colorDefault, fgDefault);
+                AppendDiffLine(_rtbDiffAfter,  "  No visual changes detected.", colorDefault, fgDefault);
+            }
+            else
+            {
+                foreach (var c in changes)
+                {
+                    Color bgBefore, bgAfter, fgBefore, fgAfter;
+
+                    if ((c.Kind & Services.SpriteChangeKind.Added) != 0)
+                    {
+                        bgBefore = colorDefault; bgAfter = colorAdded;
+                        fgBefore = fgDefault;    fgAfter = fgAdded;
+                        AppendDiffLine(_rtbDiffBefore, $"  [{c.Index}] (not present)", bgBefore, fgBefore);
+                        AppendDiffLine(_rtbDiffAfter,  $"  [{c.Index}] + {FormatSpriteSnap(c.After.Value)}", bgAfter, fgAfter);
+                    }
+                    else if ((c.Kind & Services.SpriteChangeKind.Removed) != 0)
+                    {
+                        bgBefore = colorRemoved; bgAfter = colorDefault;
+                        fgBefore = fgRemoved;    fgAfter = fgDefault;
+                        AppendDiffLine(_rtbDiffBefore, $"  [{c.Index}] - {FormatSpriteSnap(c.Before.Value)}", bgBefore, fgBefore);
+                        AppendDiffLine(_rtbDiffAfter,  $"  [{c.Index}] (removed)", bgAfter, fgAfter);
+                    }
+                    else
+                    {
+                        // Modified — pick color based on primary change type
+                        if ((c.Kind & Services.SpriteChangeKind.Moved) != 0)
+                        { bgBefore = colorMoved; bgAfter = colorMoved; fgBefore = fgMoved; fgAfter = fgMoved; }
+                        else if ((c.Kind & Services.SpriteChangeKind.Recolored) != 0)
+                        { bgBefore = colorRecolored; bgAfter = colorRecolored; fgBefore = fgRecolored; fgAfter = fgRecolored; }
+                        else if ((c.Kind & Services.SpriteChangeKind.Resized) != 0)
+                        { bgBefore = colorResized; bgAfter = colorResized; fgBefore = fgResized; fgAfter = fgResized; }
+                        else
+                        { bgBefore = colorDefault; bgAfter = colorDefault; fgBefore = fgDefault; fgAfter = fgDefault; }
+
+                        AppendDiffLine(_rtbDiffBefore, $"  [{c.Index}] {FormatSpriteSnap(c.Before.Value)}", bgBefore, fgBefore);
+                        AppendDiffLine(_rtbDiffAfter,  $"  [{c.Index}] {FormatSpriteSnap(c.After.Value)}  ← {c.Summary}", bgAfter, fgAfter);
+                    }
+                }
+            }
+
+            _rtbDiffBefore.SelectionStart = 0;
+            _rtbDiffAfter.SelectionStart  = 0;
+            _rtbDiffBefore.ResumeLayout();
+            _rtbDiffAfter.ResumeLayout();
+
+            _tabDiff.Text = changes.Count > 0 ? $"Diff ({changes.Count})" : "Diff";
+        }
+
+        private static string FormatSpriteSnap(Models.SpriteSnapshotEntry sp)
+        {
+            string name = sp.Type == Models.SpriteEntryType.Text
+                ? $"TEXT \"{(sp.Text?.Length > 15 ? sp.Text.Substring(0, 12) + "..." : sp.Text)}\""
+                : sp.SpriteName ?? "(unnamed)";
+            return $"{name}  pos=({sp.X:F1},{sp.Y:F1})  size=({sp.Width:F1}×{sp.Height:F1})  color=({sp.ColorR},{sp.ColorG},{sp.ColorB},{sp.ColorA})";
         }
 
         // ── Variables ListView owner-draw (sparklines) ──────────────────────────
@@ -2743,6 +2902,49 @@ namespace SESpriteLCDLayoutTool
             _timelineBar.Controls.Add(_lblTimelineTick);
             panel.Controls.Add(_timelineBar);
 
+            // ── Snapshot comparison bar (below timeline) ──────────────────────────
+            var snapBar = new Panel
+            {
+                Dock      = DockStyle.Bottom,
+                Height    = 26,
+                BackColor = Color.FromArgb(22, 22, 38),
+                Visible   = false,
+            };
+            // Link visibility to timeline bar
+            _timelineBar.VisibleChanged += (s, ev) => snapBar.Visible = _timelineBar.Visible;
+
+            _btnBookmarkA = DarkButton("📌A", Color.FromArgb(40, 70, 110));
+            _btnBookmarkA.Dock  = DockStyle.Left;
+            _btnBookmarkA.Width = 44;
+            _btnBookmarkA.Click += OnBookmarkAClick;
+
+            _btnBookmarkB = DarkButton("📌B", Color.FromArgb(40, 70, 110));
+            _btnBookmarkB.Dock  = DockStyle.Left;
+            _btnBookmarkB.Width = 44;
+            _btnBookmarkB.Click += OnBookmarkBClick;
+
+            _btnCompareSnapshots = DarkButton("🔍 Compare", Color.FromArgb(60, 50, 90));
+            _btnCompareSnapshots.Dock  = DockStyle.Left;
+            _btnCompareSnapshots.Width = 80;
+            _btnCompareSnapshots.Enabled = false;
+            _btnCompareSnapshots.Click += OnCompareSnapshotsClick;
+
+            _lblBookmarks = new Label
+            {
+                Text      = "Bookmark two ticks to compare",
+                Dock      = DockStyle.Fill,
+                ForeColor = Color.FromArgb(120, 140, 180),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding   = new Padding(6, 0, 0, 0),
+                Font      = new Font("Consolas", 7.5f),
+            };
+
+            snapBar.Controls.Add(_lblBookmarks);
+            snapBar.Controls.Add(_btnCompareSnapshots);
+            snapBar.Controls.Add(_btnBookmarkB);
+            snapBar.Controls.Add(_btnBookmarkA);
+            panel.Controls.Add(snapBar);
+
             // ── Splitter for resizing the tabs section ────────────────────────────────
             var splitter = new Splitter
             {
@@ -3866,6 +4068,7 @@ namespace SESpriteLCDLayoutTool
         private void OnSelectionChanged(object sender, EventArgs e)
         {
             var sp = _canvas.SelectedSprite;
+            System.Diagnostics.Debug.WriteLine($"[OnSelectionChanged] sprite='{sp?.DisplayName ?? "(null)"}' _updatingProps={_updatingProps}");
             _updatingProps = true;
             try
             {
@@ -4240,10 +4443,13 @@ namespace SESpriteLCDLayoutTool
                     if (sel != null)
                     {
                         _updatingProps = true;
-                        _colorPreview.BackColor = sel.Color;
-                        _trackAlpha.Value       = Math.Max(0, Math.Min(255, sel.ColorA));
-                        _lblAlpha.Text          = sel.ColorA.ToString();
-                        _updatingProps = false;
+                        try
+                        {
+                            _colorPreview.BackColor = sel.Color;
+                            _trackAlpha.Value       = Math.Max(0, Math.Min(255, sel.ColorA));
+                            _lblAlpha.Text          = sel.ColorA.ToString();
+                        }
+                        finally { _updatingProps = false; }
                     }
                 }
             }
@@ -4289,11 +4495,16 @@ namespace SESpriteLCDLayoutTool
 
         private void OnLayerListSelectionChanged(object sender, EventArgs e)
         {
-            if (_updatingProps || _layout == null) return;
+            if (_updatingProps || _layout == null)
+            {
+                System.Diagnostics.Debug.WriteLine($"[OnLayerListSelectionChanged] SKIPPED — _updatingProps={_updatingProps}, _layout={((_layout == null) ? "null" : "ok")}");
+                return;
+            }
             // In multi-select mode, set canvas to the focused item (last clicked)
             // SelectedIndex still returns the most recently toggled item
             int idx = _lstLayers.SelectedIndex;
             var sprite = SpriteFromLayerIndex(idx);
+            System.Diagnostics.Debug.WriteLine($"[OnLayerListSelectionChanged] idx={idx}, sprite='{sprite?.DisplayName ?? "(null)"}', _layerListSprites={((_layerListSprites == null) ? "null" : _layerListSprites.Count.ToString())}");
             if (sprite != null)
                 _canvas.SelectedSprite = sprite;
         }
@@ -4320,6 +4531,21 @@ namespace SESpriteLCDLayoutTool
             }
 
             System.Diagnostics.Debug.WriteLine($"[OnLayerListDoubleClick] Navigating to sprite: {sprite.DisplayName}");
+            System.Diagnostics.Debug.WriteLine($"[OnLayerListDoubleClick] Text='{sprite.Text}' SpriteName='{sprite.SpriteName}' SourceStart={sprite.SourceStart} Method='{sprite.SourceMethodName}' Idx={sprite.SourceMethodIndex}");
+
+            // VALIDATION: Show what code line SourceStart points to
+            if (sprite.SourceStart >= 0 && sprite.SourceStart < _codeBox.TextLength)
+            {
+                string cText = _codeBox.Text;
+                int vLineStart = cText.LastIndexOf('\n', sprite.SourceStart) + 1;
+                int vLineEnd = cText.IndexOf('\n', sprite.SourceStart);
+                if (vLineEnd < 0) vLineEnd = cText.Length;
+                string vLine = cText.Substring(vLineStart, Math.Min(100, vLineEnd - vLineStart)).Trim();
+                int lineNum = 1;
+                for (int ci = 0; ci < sprite.SourceStart; ci++)
+                    if (cText[ci] == '\n') lineNum++;
+                System.Diagnostics.Debug.WriteLine($"[OnLayerListDoubleClick] SourceStart {sprite.SourceStart} → line {lineNum}: \"{vLine}\"");
+            }
 
             // Use the NEW navigation system - parses current code with Roslyn EVERY TIME
             // No stale tracking, no approximations, no fallbacks - just EXACT navigation
@@ -5332,7 +5558,7 @@ namespace SESpriteLCDLayoutTool
             // Un-tag sprites whose text is hard-coded as a literal in a
             // MySprite.CreateText("text",...) call — those are user-authored
             // constants, not runtime row data.
-            string src = _layout?.OriginalSourceCode;
+            string src = _layout?.OriginalSourceCode ?? _codeBox?.Text;
             if (src != null)
             {
                 var codeLiterals = new HashSet<string>(StringComparer.Ordinal);
@@ -6929,6 +7155,14 @@ namespace SESpriteLCDLayoutTool
                 // executor can replay switch-case render methods with real game data.
                 var frameRows = CodeParser.ParseSnapshotRows(frame);
 
+                // Parse debug variables streamed by SnapshotDebug() calls in the plugin
+                var debugVars = CodeParser.ParseDebugVars(frame);
+                if (debugVars.Count > 0)
+                {
+                    _liveDebugVars = debugVars;
+                    UpdateLiveDebugVariables(debugVars, frameTag);
+                }
+
                 // Create a default layout if none is loaded so live frames always land somewhere
                 if (_layout == null)
                 {
@@ -6999,9 +7233,74 @@ namespace SESpriteLCDLayoutTool
                     RefreshDetectedCalls();
 
                 SetStatus(frameTag != null
-                    ? $"Live frame [{frameTag}]: {sprites.Count} sprites"
-                    : $"Live frame: {sprites.Count} sprites");
+                    ? $"Live frame [{frameTag}]: {sprites.Count} sprites{(debugVars.Count > 0 ? $", {debugVars.Count} vars" : "")}"
+                    : $"Live frame: {sprites.Count} sprites{(debugVars.Count > 0 ? $", {debugVars.Count} vars" : "")}");
             }));
+        }
+
+        /// <summary>
+        /// Populates the Variables tab with debug variables received from a live
+        /// stream frame.  Follows the same pattern as
+        /// <see cref="UpdateVariablesDuringAnimation"/> — in-place updates to
+        /// avoid flashing, change highlighting, and type-based colour coding.
+        /// </summary>
+        private void UpdateLiveDebugVariables(List<Models.DebugVariable> vars, string tag)
+        {
+            if (vars == null || vars.Count == 0) return;
+
+            // Track previous values for change highlighting
+            var previousValues = new Dictionary<string, string>();
+            foreach (ListViewItem existing in _lstVariables.Items)
+            {
+                previousValues[existing.Text] = existing.SubItems[1].Text;
+            }
+
+            _lstVariables.BeginUpdate();
+
+            var ordered = vars.OrderBy(v => v.Name).ToList();
+
+            if (_lstVariables.Items.Count != ordered.Count)
+            {
+                _lstVariables.Items.Clear();
+                foreach (var dv in ordered)
+                {
+                    string value = FormatFieldValue(dv.TypedValue);
+                    var item = new ListViewItem(new[] { dv.Name, value, dv.TypeName });
+                    item.ForeColor = GetColorForType(dv.TypedValue);
+                    _lstVariables.Items.Add(item);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < ordered.Count; i++)
+                {
+                    var dv = ordered[i];
+                    string value = FormatFieldValue(dv.TypedValue);
+                    var item = _lstVariables.Items[i];
+
+                    if (item.Text != dv.Name)
+                        item.Text = dv.Name;
+                    if (item.SubItems[1].Text != value)
+                        item.SubItems[1].Text = value;
+                    if (item.SubItems.Count > 2)
+                        item.SubItems[2].Text = dv.TypeName;
+
+                    Color baseColor = GetColorForType(dv.TypedValue);
+                    if (previousValues.TryGetValue(dv.Name, out string oldValue) && oldValue != value)
+                        item.ForeColor = BrightenColor(baseColor);
+                    else
+                        item.ForeColor = baseColor;
+                }
+            }
+
+            _lstVariables.EndUpdate();
+
+            if (_tabVariables != null)
+            {
+                _tabVariables.Text = tag != null
+                    ? $"Variables [{tag}] ({vars.Count})"
+                    : $"Variables (Live: {vars.Count})";
+            }
         }
 
         /// <summary>

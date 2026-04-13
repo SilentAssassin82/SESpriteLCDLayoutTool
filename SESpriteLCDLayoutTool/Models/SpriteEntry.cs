@@ -184,6 +184,14 @@ namespace SESpriteLCDLayoutTool.Models
         [XmlIgnore] public int SourceLineNumber { get; set; } = -1;
 
         /// <summary>
+        /// Which invocation (0-based) of the method produced this sprite.
+        /// For multi-call methods like DrawGauge called 3 times, this distinguishes
+        /// invocation 0 (POWER) from invocation 1 (OXYGEN) from invocation 2 (HYDROGEN).
+        /// -1 = not tracked / single-call method.
+        /// </summary>
+        [XmlIgnore] public int SourceInvocationIndex { get; set; } = -1;
+
+        /// <summary>
         /// Character position (0-based) within the line where this sprite creation starts.
         /// Used in combination with SourceLineNumber for exact code location.
         /// -1 = not tracked.

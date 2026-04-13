@@ -110,11 +110,13 @@
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Models\DebugVariable.cs" />
     <Compile Include="Models\DetectedMethodInfo.cs" />
     <Compile Include="Models\ElementSpriteMapping.cs" />
     <Compile Include="Models\LcdLayout.cs" />
     <Compile Include="Models\SnapshotRowData.cs" />
     <Compile Include="Models\SpriteEntry.cs" />
+    <Compile Include="Models\SpriteHistoryBuffer.cs" />
     <Compile Include="Models\TemplateDefinition.cs" />
     <Compile Include="Models\TickHistoryBuffer.cs" />
     <Compile Include="Models\WatchExpression.cs" />
@@ -134,9 +136,11 @@
     <Compile Include="Services\MethodBodyAnalyzer.cs" />
     <Compile Include="Services\RoslynCodeMerger.cs" />
     <Compile Include="Services\SeFontAtlas.cs" />
+    <Compile Include="Services\SnapshotComparer.cs" />
     <Compile Include="Services\SnapshotMerger.cs" />
     <Compile Include="Services\SpriteAddMapper.cs" />
     <Compile Include="Services\SpriteMappingBuilder.cs" />
+    <Compile Include="Services\SpriteNavigationIndex.cs" />
     <Compile Include="Services\SpriteSourceMapper.cs" />
     <Compile Include="Services\SpriteTextureCache.cs" />
     <Compile Include="Services\TemplateGallery.cs" />

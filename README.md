@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.6.0) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.7.0) |
 
 ---
 
@@ -157,12 +157,19 @@ Design your screens with drag & drop, preview real in-game textures, then export
 ### 🧭 Code Navigation
 - **Sprite-to-code navigation** — double-click any sprite in the **layer list** to jump to its exact source code location in the editor
   - Uses Roslyn to parse the CURRENT code every time — works even after edits, no stale tracking
-  - **Strategy 0 (SourceStart):** Direct character offset from source tracking — most reliable, works for file-synced and parsed sprites
-  - **Strategy 1 (SpriteAddMapper):** Falls back to matching `frame.Add()` / `s.Add()` calls by method name and occurrence index when SourceStart is unavailable
-  - **Strategy 2 (Roslyn parse):** Full Roslyn syntax tree search for `new MySprite` expressions as a last resort
-- **`SpriteAddMapper` service** — parses render methods to build a map of all `.Add()` calls with line numbers, variable names, and sprite names
+  - **Multi-strategy chain** with automatic fallback:
+    - **Strategy 0 (SourceStart):** Direct character offset from source tracking — most reliable, works for file-synced and parsed sprites
+    - **Strategy 0a (CallerLineNumber):** Uses `[CallerLineNumber]`-annotated line numbers recorded by `SpriteCollector.PreRecord()` during execution
+    - **Strategy 0b (PreRecord queue):** Matches `PreRecord` line attributions for batch-flushed `List<MySprite>` patterns
+    - **Strategy 1 (SpriteNavigationIndex + SpriteAddMapper):** Roslyn-built index of all sprite creation expressions (`new MySprite`, `CreateText`, `CreateSprite`, etc.) combined with `SpriteAddMapper` occurrence matching. For in-range sprites, navigates directly to the creation line. For out-of-range loop-generated sprites, searches for the sprite's text content in the method body and navigates to the **text line** (not the `Add()` line)
+    - **Strategy 2 (Content search):** Searches the current code for the sprite's `Data` string, with prefix matching for interpolated strings (e.g. `$"WIND: {windData}"` matched by `"WIND:"`)
+    - **Strategy 3–5 (Roslyn parse, Variable tracking, Global search):** Progressively broader fallbacks using full syntax tree analysis
+  - **Loop-aware navigation** — sprites generated inside loops (common in Mod/Pulsar scripts) are correctly navigated even when runtime sprite count exceeds source `Add()` call count. The `SpriteAddMapper` detects `for`/`foreach`/`while` loop ranges and marks each `Add()` call with `IsInLoop`
+- **`SpriteNavigationIndex`** — Roslyn-based index mapping sprite names/data to source locations with `EntryKind` classification (`DirectSprite`, `CallSiteArg`, `Generic`)
+- **`SpriteAddMapper` service** — parses render methods to build a map of all `.Add()` calls with line numbers, variable names, sprite names, and loop context
   - Handles both `List<MySprite>` patterns (`s.Add`) and `MySpriteDrawFrame` patterns (`frame.Add`)
   - Tracks indirect additions via variable assignment (`var lbl = new MySprite {...}; s.Add(lbl);`)
+  - **Loop detection** via `FindLoopRanges()` — identifies `for`/`foreach`/`while` loop bodies and flags `Add()` calls within them
 - **`SpriteSourceMapper` service** — uses Roslyn syntax trees to map sprite creation calls to exact source locations
   - Groups results by method name with creation index for ordered matching
   - Produces `SpriteSourceLocation` objects with line number, character position, span, and code snippet
@@ -771,6 +778,35 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.7.0
+- **Code Navigation Overhaul** — completely reworked sprite-to-code navigation for Mod/Pulsar scripts with loop-generated sprites
+  - Expanded from 3 strategies to a full 6+ strategy chain with automatic fallback (0 → 0a → 0b → 1 → 2 → 3 → 4 → 5 → Fallback)
+  - **`SpriteNavigationIndex`** — new Roslyn-based index that maps all sprite creation patterns (`new MySprite`, `CreateText`, `CreateSprite`, object initializers) to source locations with `EntryKind` classification (`DirectSprite`, `CallSiteArg`, `Generic`)
+  - **`CallerLineNumber` pipeline** — new Strategy 0a/0b using `[CallerLineNumber]`-annotated `PreRecord()` calls injected at compile time to track which source line produced each sprite
+  - **Loop-aware `SpriteAddMapper`** — new `FindLoopRanges()` detects `for`/`foreach`/`while` loop bodies and marks each `Add()` call with `IsInLoop` flag; `AddCharPosition` enables proximity-based matching for out-of-range runtime sprites
+  - **`NavigateToNearestLoopAdd` helper** — when runtime sprite count exceeds source `Add()` count (e.g. 47 runtime sprites from 19 source `Add()` calls in loops), finds the sprite's text content in the method body and navigates directly to the **text line** where the string appears — not the `Add()` line
+  - **Generic index validation** (Strategy 1) — prevents false navigation to array initialization lines when the `SpriteNavigationIndex` returns a `[Generic]` entry on a non-sprite-creation line
+  - **Prefix matching** (Strategy 2) — handles interpolated strings like `$"WIND: {windData}"` by matching the literal prefix `"WIND:"`
+  - Navigation now consistently lands on the line containing **editable content** (text strings, sprite constructors) rather than `Add()` plumbing lines
+- **Snapshot Comparison Bookmarks** — bookmark any two animation ticks (A/B) and compare sprite state changes between them
+  - **Bookmark A / Bookmark B** buttons capture the current timeline scrubber tick
+  - **🔍 Compare** button runs `SnapshotComparer.Compare()` to diff all sprite properties between the two bookmarked ticks
+  - Results shown in a formatted diff dialog highlighting added, removed, and changed sprites with per-property deltas (position, size, color, rotation, data, type)
+  - `SpriteHistoryBuffer` stores per-tick sprite snapshots alongside the existing field-value `TickHistoryBuffer`
+- **`SnapshotComparer` service** — compares two sprite snapshot arrays and produces a structured change list with matched, added, and removed sprite entries
+- **`DebugVariable` model** — structured representation of debug variables parsed from `// @DebugVar:` comment annotations in compiled output, with name, type, and value
+- **`CodeParser.ParseDebugVars()`** — parses `// @DebugVar: name (type) = value` comment lines from compiled output for the Variables panel
+- **`CodeGenerator.SnapshotDebug()`** — generates debug variable snapshot helper method for code injection
+- **Code injection instrumentation improvements:**
+  - `InstrumentRenderMethods` now injects `SetCurrentMethod` calls into switch-case blocks for ModSurface/Pulsar plugins, enabling per-case sprite attribution
+  - `InstrumentAddCalls` distinguishes between frame-based `Add()` (direct attribution) and local `List<MySprite>` `Add()` calls (batch-flush via `PreRecord`)
+  - Step 1b: switch-case `SetCurrentMethod` injection for virtual render method tracking
+  - Step 1c: local `List<MySprite>` variable detection for `PreRecord` instrumentation
+- **`StripTrailingAttributes` fix** — prevents CS0592 compilation errors caused by stray `[CallerLineNumber]` attributes leaking into the compiled source after code transformation
+- **`StripPreprocessorDirectives` line-number fix** — preserves original line numbers when stripping `#if`/`#endif` blocks by replacing directive lines with blank lines instead of removing them
+- **Canvas click diagnostics** — `LcdCanvas.OnMouseDown` now logs detailed debug info (click position, scale, origin, highlight state, hit/miss with sprite rects) for troubleshooting click-target issues
+- **Copilot instructions updated** — added Sprite Code Navigation rule: navigation must land on the sprite CREATION line, not the `.Add()` line
 
 ### v2.6.0
 - **Runtime Variable Inspector** — new **Variables** tab shows all instance fields of the compiled script class with live values, updated every animation tick

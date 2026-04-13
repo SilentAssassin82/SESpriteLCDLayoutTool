@@ -22,3 +22,6 @@
 
 ### CRITICAL: Switch-Case Method Extraction
 - The switch-case method extraction feature in CodeExecutor.DetectSwitchCaseRenderMethods() must be preserved during any future code changes. This feature auto-generates virtual render methods (RenderHeader, RenderBar, etc.) from switch statement case blocks in queue processor patterns (e.g., IML's switch(row.RowKind)). It was broken during previous UI restoration work and must not be broken again. Always verify that DetectSwitchCaseRenderMethods is still being called in the ModSurface/PulsarPlugin detection pipeline and that the regex pattern @"case\s+(?:[\w\.]+\.)?(\w+)\s*:" correctly matches fully-qualified enum names like "case LcdSpriteRow.Kind.Header:".
+
+### CRITICAL: Sprite Code Navigation
+- Code navigation from clicking a sprite in the layer list MUST land on the sprite CREATION line (e.g. `var t = MySprite.CreateText(...)` or `new MySprite(...)`) — NOT on the `.Add()` line. The `.Add()` line has no editable sprite data. This applies to ALL plugin types.

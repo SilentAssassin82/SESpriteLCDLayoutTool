@@ -1133,5 +1133,66 @@ namespace SESpriteLCDLayoutTool.Services
                 a = match.Groups[4].Success ? int.Parse(match.Groups[4].Value) : 255;
             }
         }
+
+        // ── Debug Variable Parsing ──────────────────────────────────────────
+
+        /// <summary>
+        /// Parses <c>// @DebugVar: name (type) = value</c> comment lines from a
+        /// snapshot payload into a list of <see cref="DebugVariable"/> entries.
+        /// The format mirrors <c>@ROW</c> but carries arbitrary key/value pairs
+        /// so plugin developers can stream diagnostic state into the layout tool.
+        /// </summary>
+        public static List<DebugVariable> ParseDebugVars(string code)
+        {
+            var results = new List<DebugVariable>();
+            if (string.IsNullOrWhiteSpace(code)) return results;
+
+            const string marker = "// @DebugVar:";
+            int searchFrom = 0;
+            while (searchFrom < code.Length)
+            {
+                int idx = code.IndexOf(marker, searchFrom, StringComparison.Ordinal);
+                if (idx < 0) break;
+
+                int lineStart = idx + marker.Length;
+                int lineEnd = code.IndexOf('\n', lineStart);
+                if (lineEnd < 0) lineEnd = code.Length;
+                string line = code.Substring(lineStart, lineEnd - lineStart).TrimEnd('\r').Trim();
+
+                var dv = ParseDebugVarLine(line);
+                if (dv != null)
+                    results.Add(dv);
+
+                searchFrom = lineEnd + 1;
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Parses a single debug variable line.
+        /// Expected format: <c>name (type) = value</c>
+        /// Examples:
+        ///   <c>_itemCount (Int32) = 42</c>
+        ///   <c>_playerName (String) = "Steve"</c>
+        ///   <c>_ratio (Single) = 0.7500</c>
+        ///   <c>_isActive (Boolean) = True</c>
+        /// </summary>
+        private static DebugVariable ParseDebugVarLine(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return null;
+
+            // Pattern: name (type) = value
+            // The type portion is in parentheses; value is everything after " = "
+            var match = Regex.Match(line, @"^(\S+)\s+\((\w+)\)\s*=\s*(.+)$");
+            if (!match.Success) return null;
+
+            return new DebugVariable
+            {
+                Name = match.Groups[1].Value,
+                TypeName = match.Groups[2].Value,
+                RawValue = match.Groups[3].Value.Trim(),
+            };
+        }
     }
 }

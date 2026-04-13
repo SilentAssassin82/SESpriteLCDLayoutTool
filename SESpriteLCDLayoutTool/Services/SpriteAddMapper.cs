@@ -18,8 +18,10 @@ namespace SESpriteLCDLayoutTool.Services
             public int LineNumber { get; set; }        // Line of sprite CREATION (not Add call)
             public int CharPosition { get; set; }      // Char position of sprite CREATION
             public int AddLineNumber { get; set; }     // Line of the .Add() call (for reference)
+            public int AddCharPosition { get; set; }   // Char position of the .Add() call in full code
             public string SpriteName { get; set; }     // "SquareSimple", "Circle", or text content
             public string VariableName { get; set; }   // Variable name if indirect (e.g., "lbl")
+            public bool IsInLoop { get; set; }         // True if .Add() is inside a for/foreach/while/lambda
         }
 
         /// <summary>
@@ -130,6 +132,12 @@ namespace SESpriteLCDLayoutTool.Services
                 ParseMethodAddCalls(code, result, methodName, frameVarName, methodMatch.Index);
             }
 
+            // === PASS 4: Map switch/case blocks as virtual "Render{CaseName}" methods ===
+            // Complex plugins (e.g. IML) render via switch(row.RowKind) { case Header: ... }
+            // The executor creates virtual method names like "RenderHeader" for each case.
+            // We map each case block's .Add() calls under that virtual name so code jumps work.
+            MapSwitchCaseBlocks(code, result);
+
             return result;
         }
 
@@ -146,6 +154,9 @@ namespace SESpriteLCDLayoutTool.Services
             if (bodyEnd <= bodyStart) return;
 
             string methodBody = code.Substring(bodyStart, bodyEnd - bodyStart + 1);
+
+            // Detect loop/lambda ranges in the method body for IsInLoop flagging
+            var loopRanges = FindLoopRanges(methodBody);
 
             var addPattern = new Regex(
                 Regex.Escape(addTargetVar) + @"\.Add\s*\(",
@@ -188,13 +199,26 @@ namespace SESpriteLCDLayoutTool.Services
                     }
                 }
 
+                // Check if this Add() is inside a loop or lambda
+                bool isInLoop = false;
+                foreach (var range in loopRanges)
+                {
+                    if (addPosInBody >= range[0] && addPosInBody <= range[1])
+                    {
+                        isInLoop = true;
+                        break;
+                    }
+                }
+
                 addCalls.Add(new AddCallInfo
                 {
                     LineNumber = creationLineNumber,
                     CharPosition = creationCharPos,
                     AddLineNumber = addLineNumber,
+                    AddCharPosition = addPosInCode,
                     SpriteName = spriteName,
-                    VariableName = variableName
+                    VariableName = variableName,
+                    IsInLoop = isInLoop
                 });
             }
 
@@ -206,15 +230,196 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     var call = addCalls[i];
                     string varInfo = call.VariableName != null ? $" (via {call.VariableName})" : " (direct)";
-                    System.Diagnostics.Debug.WriteLine($"  [{i}] Creation line {call.LineNumber}, Add line {call.AddLineNumber}: {call.SpriteName ?? "(unknown)"}{varInfo}");
-                }
-            }
-        }
+                    string loopTag = call.IsInLoop ? " [LOOP]" : "";
+                            System.Diagnostics.Debug.WriteLine($"  [{i}] Creation line {call.LineNumber}, Add line {call.AddLineNumber}: {call.SpriteName ?? "(unknown)"}{varInfo}{loopTag}");
+                            }
+                        }
+                    }
 
-        /// <summary>
-        /// Gets the line number (1-based) for a character position in the code.
-        /// </summary>
-        private static int GetLineNumber(string code, int charPosition)
+                    /// <summary>
+                    /// Maps switch/case blocks as virtual "Render{CaseName}" entries in the Add call map.
+                    /// This lets <see cref="CodeNavigationService"/> navigate to the correct case block
+                    /// when the user clicks a sprite produced by a switch/case render pattern.
+                    /// </summary>
+                    private static void MapSwitchCaseBlocks(string code, Dictionary<string, List<AddCallInfo>> result)
+                    {
+                        // Find switch statements
+                        var rxSwitch = new Regex(
+                            @"switch\s*\(\s*\w+(?:\.\w+)?\s*\)\s*\{",
+                            RegexOptions.Singleline);
+
+                        foreach (Match switchMatch in rxSwitch.Matches(code))
+                        {
+                            int switchBodyStart = switchMatch.Index + switchMatch.Length;
+                            int switchBodyEnd = FindMatchingBrace(code, switchMatch.Index + switchMatch.Length - 1);
+                            if (switchBodyEnd <= switchBodyStart) continue;
+
+                            // Find the sprite list variable used inside this switch.
+                            // Look backwards from the switch for a List<MySprite> declaration.
+                            string searchBefore = code.Substring(0, switchMatch.Index);
+                            string addTarget = null;
+
+                            // Pattern: var/List<MySprite> name = new List<MySprite>();
+                            var listDeclMatches = Regex.Matches(searchBefore,
+                                @"(?:var|List<MySprite>)\s+(\w+)\s*=\s*new\s+List<MySprite>",
+                                RegexOptions.Singleline);
+                            if (listDeclMatches.Count > 0)
+                                addTarget = listDeclMatches[listDeclMatches.Count - 1].Groups[1].Value;
+
+                            if (addTarget == null) continue;
+
+                            // Extract case blocks
+                            string switchBody = code.Substring(switchBodyStart, switchBodyEnd - switchBodyStart);
+                            var rxCase = new Regex(
+                                @"case\s+(?:[\w\.]+\.)?(\w+)\s*:",
+                                RegexOptions.Singleline);
+
+                            foreach (Match caseMatch in rxCase.Matches(switchBody))
+                            {
+                                string caseName = caseMatch.Groups[1].Value;
+                                string virtualName = "Render" + caseName;
+
+                                // Skip if already mapped (real method takes priority)
+                                if (result.ContainsKey(virtualName)) continue;
+
+                                // Find the extent of this case block (up to next case or end of switch)
+                                int caseStart = caseMatch.Index + caseMatch.Length;
+                                int caseEnd = switchBody.Length;
+
+                                // Look for the next case/default label or end of switch
+                                var nextCase = rxCase.Match(switchBody, caseStart);
+                                if (nextCase.Success)
+                                    caseEnd = nextCase.Index;
+                                else
+                                {
+                                    // Check for default: label
+                                    var defaultMatch = Regex.Match(switchBody.Substring(caseStart), @"\bdefault\s*:");
+                                    if (defaultMatch.Success)
+                                        caseEnd = caseStart + defaultMatch.Index;
+                                }
+
+                                string caseBody = switchBody.Substring(caseStart, caseEnd - caseStart);
+                                int caseAbsoluteStart = switchBodyStart + caseStart;
+
+                                // Find .Add() calls within this case block
+                                var addPattern = new Regex(
+                                    Regex.Escape(addTarget) + @"\.Add\s*\(",
+                                    RegexOptions.Singleline);
+
+                                var addCalls = new List<AddCallInfo>();
+                                foreach (Match addMatch in addPattern.Matches(caseBody))
+                                {
+                                    int addPosInCode = caseAbsoluteStart + addMatch.Index;
+                                    int addLineNumber = GetLineNumber(code, addPosInCode);
+
+                                    int parenStart = addMatch.Index + addMatch.Length - 1;
+                                    string addContents = ExtractParenContents(caseBody, parenStart);
+
+                                    int creationLineNumber = addLineNumber;
+                                    int creationCharPos = addPosInCode;
+                                    string variableName = null;
+                                    string spriteName = null;
+
+                                    bool isDirect = addContents != null &&
+                                        (addContents.TrimStart().StartsWith("new ") ||
+                                         addContents.TrimStart().StartsWith("MySprite."));
+
+                                    if (isDirect)
+                                    {
+                                        spriteName = ExtractSpriteName(caseBody, addMatch.Index);
+                                    }
+                                    else if (addContents != null)
+                                    {
+                                        variableName = addContents.Trim().TrimEnd(')');
+                                        var creationPos = FindVariableCreation(caseBody, variableName, addMatch.Index);
+                                        if (creationPos >= 0)
+                                        {
+                                            creationCharPos = caseAbsoluteStart + creationPos;
+                                            creationLineNumber = GetLineNumber(code, creationCharPos);
+                                            spriteName = ExtractSpriteName(caseBody, creationPos);
+                                        }
+                                    }
+
+                                    addCalls.Add(new AddCallInfo
+                                    {
+                                        LineNumber = creationLineNumber,
+                                        CharPosition = creationCharPos,
+                                        AddLineNumber = addLineNumber,
+                                        SpriteName = spriteName,
+                                        VariableName = variableName
+                                    });
+                                }
+
+                                if (addCalls.Count > 0)
+                                {
+                                    result[virtualName] = addCalls;
+                                    System.Diagnostics.Debug.WriteLine($"[SpriteAddMapper] {virtualName} (case {caseName}): {addCalls.Count} Add() calls");
+                                }
+                            }
+                        }
+                    }
+
+                    /// <summary>
+                    /// Detects for/foreach/while loop bodies and lambda/delegate blocks in a method body.
+                    /// Returns a list of [start, end] char position pairs (relative to methodBody start).
+                    /// </summary>
+                    private static List<int[]> FindLoopRanges(string methodBody)
+                    {
+                        var ranges = new List<int[]>();
+
+                        // Match for/foreach/while loops
+                        var loopRx = new Regex(@"\b(for|foreach|while)\s*\(", RegexOptions.Singleline);
+                        foreach (Match m in loopRx.Matches(methodBody))
+                        {
+                            int parenOpen = methodBody.IndexOf('(', m.Index);
+                            if (parenOpen < 0) continue;
+
+                            // Find matching closing paren
+                            int depth = 0;
+                            int parenClose = -1;
+                            for (int i = parenOpen; i < methodBody.Length; i++)
+                            {
+                                if (methodBody[i] == '(') depth++;
+                                else if (methodBody[i] == ')')
+                                {
+                                    depth--;
+                                    if (depth == 0) { parenClose = i; break; }
+                                }
+                            }
+                            if (parenClose < 0) continue;
+
+                            // Find loop body opening brace (within a few chars of closing paren)
+                            int braceOpen = -1;
+                            for (int i = parenClose + 1; i < Math.Min(parenClose + 30, methodBody.Length); i++)
+                            {
+                                if (methodBody[i] == '{') { braceOpen = i; break; }
+                            }
+                            if (braceOpen < 0) continue;
+
+                            int braceClose = FindMatchingBrace(methodBody, braceOpen);
+                            if (braceClose <= braceOpen) continue;
+
+                            ranges.Add(new[] { braceOpen, braceClose });
+                        }
+
+                        // Also detect lambda bodies: (...) => { ... } and delegate { ... }
+                        var lambdaRx = new Regex(@"(?:=>\s*\{|delegate\s*(?:\([^)]*\)\s*)?\{)", RegexOptions.Singleline);
+                        foreach (Match m in lambdaRx.Matches(methodBody))
+                        {
+                            int braceOpen = methodBody.IndexOf('{', m.Index);
+                            if (braceOpen < 0) continue;
+                            int braceClose = FindMatchingBrace(methodBody, braceOpen);
+                            if (braceClose <= braceOpen) continue;
+                            ranges.Add(new[] { braceOpen, braceClose });
+                        }
+
+                        return ranges;
+                    }
+
+                                /// <summary>
+                    /// Gets the line number (1-based) for a character position in the code.
+                    /// </summary>
+                    private static int GetLineNumber(string code, int charPosition)
         {
             int line = 1;
             for (int i = 0; i < charPosition && i < code.Length; i++)

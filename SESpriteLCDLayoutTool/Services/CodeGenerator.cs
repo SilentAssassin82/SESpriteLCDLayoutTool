@@ -188,6 +188,10 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("//   Me.CustomData = SerializeSnapshot();");
             sb.AppendLine("// Then copy the PB's Custom Data and paste into the layout tool's");
             sb.AppendLine("// \"Paste Layout\" dialog with \"Import as reference layout\" checked.");
+            sb.AppendLine("//");
+            sb.AppendLine("// Debug Variables:  Call SnapshotDebug(\"name\", value) before");
+            sb.AppendLine("// SerializeSnapshot() to stream field values into the layout tool's");
+            sb.AppendLine("// Variables tab for live debugging.");
             sb.AppendLine("// ───────────────────────────────────────────────────────────────────────");
             sb.AppendLine();
             AppendSnapshotCore(sb, accessModifier: "");
@@ -209,9 +213,14 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("//   var output = SerializeSnapshot();");
             sb.AppendLine("//   MyAPIGateway.Utilities.ShowMissionScreen(\"Snapshot\", \"\", \"\", output);");
             sb.AppendLine("// Copy from the mission screen and paste into the layout tool.");
+            sb.AppendLine("//");
+            sb.AppendLine("// Debug Variables:  Call SnapshotDebug(\"name\", value) before");
+            sb.AppendLine("// SerializeSnapshot() to stream field values into the layout tool's");
+            sb.AppendLine("// Variables tab for live debugging.");
             sb.AppendLine("// ───────────────────────────────────────────────────────────────────────");
             sb.AppendLine();
             sb.AppendLine("// Required usings:");
+            sb.AppendLine("//   using System.Collections.Generic;");
             sb.AppendLine("//   using System.Text;");
             sb.AppendLine("//   using VRage.Game.GUI.TextPanel;");
             sb.AppendLine("//   using VRageMath;");
@@ -234,6 +243,10 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("// /lcd watch) and the snippet will stream frames to the layout tool");
             sb.AppendLine("// over a named pipe for 60 seconds, then auto-disarm.  The code is");
             sb.AppendLine("// completely dormant and causes zero overhead when not streaming.");
+            sb.AppendLine("//");
+            sb.AppendLine("// Debug Variables:  Call SnapshotDebug(\"name\", value) before");
+            sb.AppendLine("// SerializeSnapshot() to stream field values into the layout tool's");
+            sb.AppendLine("// Variables tab for live debugging.");
             sb.AppendLine("// ───────────────────────────────────────────────────────────────────────");
             sb.AppendLine();
             sb.AppendLine("// Required usings:");
@@ -458,6 +471,10 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("// will stream frames to the layout tool over a named pipe for 60 seconds,");
             sb.AppendLine("// then auto-disarm.  The code is completely dormant and causes zero");
             sb.AppendLine("// overhead when not streaming.");
+            sb.AppendLine("//");
+            sb.AppendLine("// Debug Variables:  Call SnapshotDebug(\"name\", value) before");
+            sb.AppendLine("// SerializeSnapshot() to stream field values into the layout tool's");
+            sb.AppendLine("// Variables tab for live debugging.");
             sb.AppendLine("//");
             sb.AppendLine("// Surface access (Pulsar — no GridTerminalSystem):");
             sb.AppendLine("//   foreach (MyEntity e in MyEntities.GetEntities())");
@@ -719,6 +736,24 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("}");
             sb.AppendLine();
 
+            // ── Debug Variables ──────────────────────────────────────────────
+            // Plugin developers can stream arbitrary diagnostic state alongside
+            // the sprite data so it appears in the layout tool's Variables tab.
+            sb.AppendLine($"{accessModifier}Dictionary<string, object> _debugVars = new Dictionary<string, object>();");
+            sb.AppendLine();
+
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// Records a named debug variable that will be sent to the layout tool");
+            sb.AppendLine("/// alongside the sprite snapshot.  Call this for any field or computed value");
+            sb.AppendLine("/// you want to inspect in the editor's Variables tab while live-streaming.");
+            sb.AppendLine("/// <para>Example:  SnapshotDebug(\"_itemCount\", _itemCount);</para>");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine($"{accessModifier}void SnapshotDebug(string name, object value)");
+            sb.AppendLine("{");
+            sb.AppendLine("    _debugVars[name] = value;");
+            sb.AppendLine("}");
+            sb.AppendLine();
+
             // Serializer
             sb.AppendLine("/// <summary>");
             sb.AppendLine("/// Serializes collected sprites AND row data into a snapshot that the");
@@ -773,6 +808,25 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("            string bfc      = $\"{r.BarFillColor.R},{r.BarFillColor.G},{r.BarFillColor.B},{r.BarFillColor.A}\";");
             sb.AppendLine("            string alert    = r.ShowAlert ? \"1\" : \"0\";");
             sb.AppendLine("            sb.AppendLine($\"// @ROW:{r.RowKind}|{text}|{statText}|{icon}|{tc}|{bf}|{bfc}|{alert}\");");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+
+            // Debug variables section — encoded as comments alongside row/sprite data
+            sb.AppendLine("    // Serialize debug variables");
+            sb.AppendLine("    if (_debugVars.Count > 0)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        sb.AppendLine();");
+            sb.AppendLine("        sb.AppendLine(\"// ── Debug Variables ──\");");
+            sb.AppendLine("        sb.AppendLine(\"// Format: @DebugVar: name (Type) = value\");");
+            sb.AppendLine("        foreach (var kv in _debugVars)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            string typeName = kv.Value != null ? kv.Value.GetType().Name : \"Null\";");
+            sb.AppendLine("            string val = kv.Value != null ? kv.Value.ToString() : \"(null)\";");
+            sb.AppendLine("            if (kv.Value is string) val = \"\\\"\" + val + \"\\\"\";");
+            sb.AppendLine("            if (kv.Value is float f) val = f.ToString(\"F4\");");
+            sb.AppendLine("            if (kv.Value is double d) val = d.ToString(\"F4\");");
+            sb.AppendLine("            sb.AppendLine($\"// @DebugVar: {kv.Key} ({typeName}) = {val}\");");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
             sb.AppendLine();
