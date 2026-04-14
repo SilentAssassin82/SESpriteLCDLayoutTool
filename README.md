@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.7.0) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.8.0) |
 
 ---
 
@@ -748,8 +748,8 @@ IMyTextSurfaceProvider panel = FindPanel(allBlocks, "MyTag", out string foundNam
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+Z` | Undo |
-| `Ctrl+Y` | Redo |
+| `Ctrl+Z` | Undo (canvas state; press **Generate Code** to sync the code panel — see note below) |
+| `Ctrl+Y` | Redo (same workflow as Undo) |
 | `Ctrl+S` | Save layout |
 | `Ctrl+O` | Open layout |
 | `Ctrl+V` | Paste layout code |
@@ -764,6 +764,10 @@ IMyTextSurfaceProvider panel = FindPanel(allBlocks, "MyTag", out string foundNam
 | Middle-click drag | Pan canvas |
 
 </details>
+
+> **💡 Undo / Redo & Code Sync:** `Ctrl+Z` and `Ctrl+Y` instantly restore the canvas to its previous state (sprite properties, positions, textures, etc.).
+> Because the code panel uses expression-safe round-trip patching, the code text is not updated automatically after undo — click **Generate Code** to regenerate the code panel from the restored canvas.
+> This two-step workflow protects hand-edited expressions and dynamic code from being silently overwritten.
 
 ---
 
@@ -807,6 +811,11 @@ MIT License
 - **`StripPreprocessorDirectives` line-number fix** — preserves original line numbers when stripping `#if`/`#endif` blocks by replacing directive lines with blank lines instead of removing them
 - **Canvas click diagnostics** — `LcdCanvas.OnMouseDown` now logs detailed debug info (click position, scale, origin, highlight state, hit/miss with sprite rects) for troubleshooting click-target issues
 - **Copilot instructions updated** — added Sprite Code Navigation rule: navigation must land on the sprite CREATION line, not the `.Add()` line
+
+### v2.8.0
+- **Fixed PB expression code destruction**
+- **Fixed animation playback code destruction** — animation frames (which replace sprites every tick with untracked copies) no longer trigger code regeneration; `IsPlaying` guard freezes the code panel during playback
+- **Fixed undo/redo code sync** — `Ctrl+Z` / `Ctrl+Y` now snapshot and restore `OriginalSourceCode` alongside sprite state, so round-trip patching diffs correctly after undo instead of silently keeping the pre-undo code; `SourceLineNumber` is also preserved for accurate code navigation after undo
 
 ### v2.6.0
 - **Runtime Variable Inspector** — new **Variables** tab shows all instance fields of the compiled script class with live values, updated every animation tick

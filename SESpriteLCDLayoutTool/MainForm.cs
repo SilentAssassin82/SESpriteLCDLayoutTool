@@ -165,6 +165,7 @@ namespace SESpriteLCDLayoutTool
         // ── Editable code panel ──────────────────────────────────────────────
         private bool  _codeBoxDirty;
         private bool  _suppressCodeBoxEvents;
+        private bool  _executingCode;  // true while OnExecCodeClick is running — suppresses RefreshCode from OnSelectionChanged
         private Label _lblCodeTitle;
         private Label _lblCodeMode;
         private Button _btnApplyCode;
@@ -1041,12 +1042,43 @@ namespace SESpriteLCDLayoutTool
                 _layout.Sprites.Add(sp);
             }
 
+            // ── Determine script type BEFORE source tracking so we can set
+            //    OriginalSourceCode for Pulsar/Mod (needed by the tracking section). ──
+            bool isPulsarOrMod = result.ScriptType == ScriptType.PulsarPlugin
+                              || result.ScriptType == ScriptType.ModSurface
+                              || result.ScriptType == ScriptType.TorchPlugin;
+
+            if (isPulsarOrMod)
+            {
+                // Pulsar/Mod/Torch: set OriginalSourceCode so source tracking works
+                // and PatchOriginalSource can do surgical round-trip patching later.
+                _layout.OriginalSourceCode = code;
+                _layout.IsPulsarOrModLayout = true;
+                ClearCodeDirty();
+            }
+            else if (result.ScriptType == ScriptType.ProgrammableBlock)
+            {
+                // PB scripts: preserve the user's code so RefreshCode doesn't regenerate
+                // from scratch (which destroys expressions, animation data, PB structure).
+                _layout.OriginalSourceCode = code;
+                _layout.IsPulsarOrModLayout = false;
+                ClearCodeDirty();
+            }
+            else
+            {
+                // For other script types (templates, etc.) without source tracking,
+                // clear OriginalSourceCode to prevent round-trip patching issues.
+                _layout.OriginalSourceCode = null;
+                _layout.IsPulsarOrModLayout = false;
+            }
+
             // ══════════════════════════════════════════════════════════════════════════
             // ESTABLISH SOURCE TRACKING: Execution sprites have runtime values but no
             // SourceStart/SourceEnd/ImportBaseline, so PatchOriginalSource can't
             // round-trip property edits (text, color, etc.) back to code.
-            // Fix: Parse OriginalSourceCode to get source positions, match to execution
-            // sprites by type+content, and transfer the source range.
+            // Strategy 1: Match by type+content (works for literal texture names, etc.)
+            // Strategy 2: Match by SourceLineNumber (works for expression-based text)
+            // Strategy 3: Index-based matching (PB/Pulsar/Mod fallback when counts match)
             // ══════════════════════════════════════════════════════════════════════════
             if (_layout.OriginalSourceCode != null)
             {
@@ -1063,7 +1095,7 @@ namespace SESpriteLCDLayoutTool
                         return a.SourceStart.CompareTo(b.SourceStart);
                     });
 
-                    // Build pool of parsed sprites keyed by (Type, Data) in source order
+                    // ── Strategy 1: Type+Content matching ────────────────────────
                     var pool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
                     foreach (var ps in parsedSprites)
                     {
@@ -1075,7 +1107,6 @@ namespace SESpriteLCDLayoutTool
                         pool[key].Enqueue(ps);
                     }
 
-                    // Match execution sprites to parsed sprites and transfer source tracking
                     int tracked = 0;
                     int unmatched = 0;
                     foreach (var sp in _layout.Sprites)
@@ -1098,7 +1129,91 @@ namespace SESpriteLCDLayoutTool
                         }
                     }
 
-                    System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Source tracking: {tracked} matched, {unmatched} unmatched out of {_layout.Sprites.Count} sprites");
+                    System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Strategy 1 (type+content): {tracked} matched, {unmatched} unmatched out of {_layout.Sprites.Count} sprites");
+
+                    // ── Strategy 2: SourceLineNumber matching (fallback) ─────────
+                    // Handles expression-based text sprites where runtime text differs
+                    // from code literals (e.g. code has $"Temp: {val}°C", runtime has
+                    // "Temp: 22.5°C"). Uses the reliable SourceLineNumber from Phase 8
+                    // instrumentation to locate the parsed sprite at that line.
+                    if (unmatched > 0)
+                    {
+                        // Build a line-number → parsed sprite lookup from remaining unmatched parsed sprites
+                        // (those still in the pool queues are already consumed; use direct line computation)
+                        string src = _layout.OriginalSourceCode;
+                        int lineNumberFallback = 0;
+                        foreach (var sp in _layout.Sprites)
+                        {
+                            if (sp.SourceStart >= 0) continue; // already matched
+                            if (sp.SourceLineNumber <= 0) continue; // no line info
+
+                            // Find the parsed sprite whose SourceStart falls on sp.SourceLineNumber
+                            int targetLine = sp.SourceLineNumber;
+                            SpriteEntry bestMatch = null;
+                            foreach (var ps in parsedSprites)
+                            {
+                                if (ps.SourceStart < 0) continue;
+                                // Compute line number of this parsed sprite
+                                int psLine = 1;
+                                for (int ci = 0; ci < ps.SourceStart && ci < src.Length; ci++)
+                                    if (src[ci] == '\n') psLine++;
+
+                                if (psLine == targetLine && ps.Type == sp.Type)
+                                {
+                                    bestMatch = ps;
+                                    break;
+                                }
+                            }
+
+                            if (bestMatch != null)
+                            {
+                                sp.SourceStart = bestMatch.SourceStart;
+                                sp.SourceEnd = bestMatch.SourceEnd;
+                                sp.ImportBaseline = sp.CloneValues();
+                                lineNumberFallback++;
+                            }
+                        }
+
+                        if (lineNumberFallback > 0)
+                            System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Strategy 2 (SourceLineNumber): {lineNumberFallback} additional sprites matched");
+                    }
+
+                    // ── Strategy 3: Index-based matching (all-or-nothing fallback) ──
+                    // When type+content and line-number matching leave sprites untracked
+                    // AND parsed/execution counts match with aligned types, use positional
+                    // index: 1st parsed → 1st execution, etc. Works for interpolated strings
+                    // in PB/Pulsar/Mod where runtime text differs from code expressions.
+                    bool hasUntracked = false;
+                    foreach (var sp in _layout.Sprites)
+                        if (sp.SourceStart < 0) { hasUntracked = true; break; }
+
+                    if (hasUntracked && parsedSprites.Count == _layout.Sprites.Count)
+                    {
+                        bool typesMatch = true;
+                        for (int i = 0; i < parsedSprites.Count; i++)
+                        {
+                            if (parsedSprites[i].Type != _layout.Sprites[i].Type)
+                            {
+                                typesMatch = false;
+                                break;
+                            }
+                        }
+
+                        if (typesMatch)
+                        {
+                            for (int i = 0; i < parsedSprites.Count; i++)
+                            {
+                                _layout.Sprites[i].SourceStart = parsedSprites[i].SourceStart;
+                                _layout.Sprites[i].SourceEnd = parsedSprites[i].SourceEnd;
+                                _layout.Sprites[i].ImportBaseline = _layout.Sprites[i].CloneValues();
+                            }
+                            System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Strategy 3 (index-based): {parsedSprites.Count} sprites matched by position");
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Strategy 3 (index-based): type mismatch, skipping");
+                        }
+                    }
                 }
             }
             else
@@ -1106,29 +1221,13 @@ namespace SESpriteLCDLayoutTool
                 System.Diagnostics.Debug.WriteLine($"[ExecuteCode] OriginalSourceCode is NULL — skipping source tracking");
             }
 
-            // For Pulsar/Mod/Torch scripts: PRESERVE the original source code.
-            // These scripts use DrawFrame() at runtime so sprites have no static
-            // source tracking, but we still want to keep the original code in the
-            // code panel so the user can edit and re-execute. Clearing OriginalSourceCode
-            // and calling RefreshCode() would regenerate broken code from untracked sprites.
-            bool isPulsarOrMod = result.ScriptType == ScriptType.PulsarPlugin
-                              || result.ScriptType == ScriptType.ModSurface
-                              || result.ScriptType == ScriptType.TorchPlugin;
-
-            if (isPulsarOrMod)
+            // Suppress RefreshCode calls from OnSelectionChanged during execution.
+            // Without this, expression-based PB code is destroyed: OnSelectionChanged
+            // fires RefreshCode → PatchOriginalSource fails for expression text →
+            // GenerateRoundTrip replaces expressions with literal evaluated values.
+            _executingCode = true;
+            try
             {
-                // Mark the layout as Pulsar/Mod/Torch so RefreshCode() skips regeneration
-                // for ALL subsequent canvas operations (add sprite, delete, drag, etc.)
-                _layout.IsPulsarOrModLayout = true;
-            }
-            else
-            {
-                // For other script types (templates, etc.) without source tracking,
-                // clear OriginalSourceCode to prevent round-trip patching issues.
-                _layout.OriginalSourceCode = null;
-                _layout.IsPulsarOrModLayout = false;
-            }
-
             _canvas.SelectedSprite = result.Sprites.Count > 0 ? result.Sprites[0] : null;
             _canvas.Invalidate();
             RefreshLayerList();
@@ -1152,10 +1251,15 @@ namespace SESpriteLCDLayoutTool
                 if (total > logLimit)
                     System.Diagnostics.Debug.WriteLine($"[ExecuteCode]   ... and {total - logLimit} more sprites");
             }
+            } // try
+            finally { _executingCode = false; }
 
             // Don't regenerate code for Pulsar/Mod scripts - keep original code intact.
-            // For other scripts, RefreshCode is protected by _codeBoxDirty check.
-            if (!isPulsarOrMod)
+            // For PB scripts with OriginalSourceCode set, also skip — RefreshCode would
+            // destroy expression-based code (interpolated strings, ternary colors) by
+            // falling through PatchOriginalSource → GenerateRoundTrip → literal replacement.
+            // The original user code is already displayed correctly at this point.
+            if (!isPulsarOrMod && _layout.OriginalSourceCode == null)
                 RefreshCode();
 
             SetStatus($"Executed — {result.Sprites.Count} sprite(s) captured.");
@@ -4145,7 +4249,12 @@ namespace SESpriteLCDLayoutTool
             finally { _updatingProps = false; }
 
             RefreshExpressionColors();
-            RefreshCode();  // Protected by _codeBoxDirty check inside RefreshCode()
+            // Skip RefreshCode during execution — the execution handler manages code display.
+            // Without this guard, expression-based PB code (e.g. $"Temp: {temperature:F1}°C")
+            // gets destroyed: PatchOriginalSource fails for expression text → GenerateRoundTrip
+            // replaces expressions with literal evaluated values.
+            if (!_executingCode)
+                RefreshCode();  // Protected by _codeBoxDirty check inside RefreshCode()
             HighlightLinkedVariables(_canvas.SelectedSprite);
             UpdateStatus();
         }
@@ -4863,6 +4972,16 @@ namespace SESpriteLCDLayoutTool
             // we need to regenerate code and write it back to the file.
             if (IsOneWayStreaming) return;
 
+            // During animation playback, _layout.Sprites are replaced with
+            // fresh execution sprites every frame — they have no source tracking
+            // (SourceStart=-1, no ImportBaseline).  PatchOriginalSource fails
+            // for these, and GenerateRoundTrip replaces expression-based code
+            // (interpolated strings, ternary colors) with literal evaluated values.
+            // Freeze the code panel during animation; OnAnimStopped restores
+            // the pre-animation sprites with full source tracking.
+            if (_animPlayer != null && _animPlayer.IsPlaying)
+                return;
+
             // Try round-trip: splice updated sprites back into the original pasted code
             if (_layout.OriginalSourceCode != null)
             {
@@ -4992,11 +5111,16 @@ namespace SESpriteLCDLayoutTool
                 }
             }
 
-            // Full regeneration fallback - but NOT for Pulsar/Mod layouts
-            // (their sprites have no source tracking, regeneration produces broken code)
-            if (_layout.IsPulsarOrModLayout && !force)
+            // Full regeneration fallback - NEVER for Pulsar/Mod layouts.
+            // Their dynamic code (expressions, loops, conditionals) cannot be
+            // regenerated from runtime sprites — always preserve the original.
+            if (_layout.IsPulsarOrModLayout)
             {
-                // Keep whatever is in the code box - don't regenerate
+                // Keep the original code — full regeneration would destroy it.
+                // If we got here, PatchOriginalSource and GenerateRoundTrip both failed;
+                // the original code is still the safest thing to show.
+                if (_layout.OriginalSourceCode != null)
+                    SetCodeText(_layout.OriginalSourceCode);
                 RefreshDetectedCalls();
                 return;
             }
@@ -5009,6 +5133,10 @@ namespace SESpriteLCDLayoutTool
         /// Re-establishes SourceStart/SourceEnd/ImportBaseline on layout sprites
         /// after PatchOriginalSource changes the code.  This ensures subsequent
         /// property edits diff against the correct baseline and correct offsets.
+        /// Uses the same 3-strategy matching as the execution handler:
+        ///   Strategy 1: Type+content pool matching (exact text/sprite name)
+        ///   Strategy 2: SourceLineNumber fallback (for expression-based text)
+        ///   Strategy 3: Index-based all-or-nothing (when counts match)
         /// </summary>
         private void RefreshSourceTracking()
         {
@@ -5026,7 +5154,7 @@ namespace SESpriteLCDLayoutTool
                 return a.SourceStart.CompareTo(b.SourceStart);
             });
 
-            // Build pool keyed by (Type, Data) in source order
+            // ── Strategy 1: Type+content pool matching ──
             var pool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
             foreach (var ps in parsedSprites)
             {
@@ -5038,7 +5166,11 @@ namespace SESpriteLCDLayoutTool
                 pool[key].Enqueue(ps);
             }
 
-            // Match layout sprites to parsed sprites and transfer updated offsets
+            // Match layout sprites to parsed sprites and transfer updated offsets.
+            // IMPORTANT: Clear SourceLineNumber when updating SourceStart — the execution-time
+            // line number is stale after code patching (adding/removing sprites shifts lines).
+            // Navigation will use the fresh SourceStart (Strategy 0a) instead.
+            int unmatched = 0;
             foreach (var sp in _layout.Sprites)
             {
                 string key = sp.Type == SpriteEntryType.Text
@@ -5050,7 +5182,86 @@ namespace SESpriteLCDLayoutTool
                     var parsed = queue.Dequeue();
                     sp.SourceStart = parsed.SourceStart;
                     sp.SourceEnd = parsed.SourceEnd;
+                    sp.SourceLineNumber = -1; // stale after code modification — let SourceStart navigate
                     sp.ImportBaseline = sp.CloneValues();
+                }
+                else
+                {
+                    unmatched++;
+                }
+            }
+
+            // ── Strategy 2: SourceLineNumber fallback ──
+            // Handles expression-based text sprites where runtime text differs from
+            // code literals (e.g. code has $"Temp: {val}°C", runtime has "Temp: 22.5°C").
+            if (unmatched > 0)
+            {
+                string src = _layout.OriginalSourceCode;
+                int lineNumberFallback = 0;
+                foreach (var sp in _layout.Sprites)
+                {
+                    if (sp.SourceStart >= 0) continue; // already matched
+                    if (sp.SourceLineNumber <= 0) continue; // no line info
+
+                    int targetLine = sp.SourceLineNumber;
+                    SpriteEntry bestMatch = null;
+                    foreach (var ps in parsedSprites)
+                    {
+                        if (ps.SourceStart < 0) continue;
+                        int psLine = 1;
+                        for (int ci = 0; ci < ps.SourceStart && ci < src.Length; ci++)
+                            if (src[ci] == '\n') psLine++;
+
+                        if (psLine == targetLine && ps.Type == sp.Type)
+                        {
+                            bestMatch = ps;
+                            break;
+                        }
+                    }
+
+                    if (bestMatch != null)
+                    {
+                        sp.SourceStart = bestMatch.SourceStart;
+                        sp.SourceEnd = bestMatch.SourceEnd;
+                        sp.SourceLineNumber = -1; // stale after code modification
+                        sp.ImportBaseline = sp.CloneValues();
+                        lineNumberFallback++;
+                    }
+                }
+
+                if (lineNumberFallback > 0)
+                    System.Diagnostics.Debug.WriteLine($"[RefreshSourceTracking] Strategy 2 (SourceLineNumber): {lineNumberFallback} additional sprites matched");
+            }
+
+            // ── Strategy 3: Index-based all-or-nothing fallback ──
+            // When type+content and line-number matching leave sprites untracked
+            // AND parsed/execution counts match with aligned types, use positional index.
+            bool hasUntracked = false;
+            foreach (var sp in _layout.Sprites)
+                if (sp.SourceStart < 0) { hasUntracked = true; break; }
+
+            if (hasUntracked && parsedSprites.Count == _layout.Sprites.Count)
+            {
+                bool typesMatch = true;
+                for (int i = 0; i < parsedSprites.Count; i++)
+                {
+                    if (parsedSprites[i].Type != _layout.Sprites[i].Type)
+                    {
+                        typesMatch = false;
+                        break;
+                    }
+                }
+
+                if (typesMatch)
+                {
+                    for (int i = 0; i < parsedSprites.Count; i++)
+                    {
+                        _layout.Sprites[i].SourceStart = parsedSprites[i].SourceStart;
+                        _layout.Sprites[i].SourceEnd = parsedSprites[i].SourceEnd;
+                        _layout.Sprites[i].SourceLineNumber = -1; // stale after code modification
+                        _layout.Sprites[i].ImportBaseline = _layout.Sprites[i].CloneValues();
+                    }
+                    System.Diagnostics.Debug.WriteLine($"[RefreshSourceTracking] Strategy 3 (index-based): {parsedSprites.Count} sprites matched by position");
                 }
             }
         }
@@ -9001,32 +9212,37 @@ namespace SESpriteLCDLayoutTool
                 var result = CodeExecutor.ExecuteWithInit(code, null, filteredRows);
                 if (!result.Success || result.Sprites.Count == 0)
                 {
-                    SetStatus($"Could not identify sprites for {call}");
-                    return;
-                }
-
-                // Build focus set from filtered execution
-                _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var sp in result.Sprites)
-                {
-                    string key = BuildFocusSpriteKey(sp);
-                    _animFocusSprites.Add(key);
-                }
-                _animFocusCall = call;
-
-                // ISOLATION MODE: If isolation is active, run ONLY this method (not full scene)
-                // Otherwise run full scene with all captured rows for normal focused mode
-                if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
-                {
-                    // Keep execCall pointing to this specific method - don't run full orchestrator
-                    execCall = call;
-                    execRows = filteredRows;
+                    // Could not build focus set — fall back to unfocused animation
+                    _animFocusSprites = null;
+                    _animFocusCall = null;
+                    execCall = null;
+                    execRows = _layout?.CapturedRows;
                 }
                 else
                 {
-                    // Normal focused mode: run full scene (null call) with all captured rows
-                    execCall = null;
-                    execRows = _layout?.CapturedRows;
+                    // Build focus set from filtered execution
+                    _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var sp in result.Sprites)
+                    {
+                        string key = BuildFocusSpriteKey(sp);
+                        _animFocusSprites.Add(key);
+                    }
+                    _animFocusCall = call;
+
+                    // ISOLATION MODE: If isolation is active, run ONLY this method (not full scene)
+                    // Otherwise run full scene with all captured rows for normal focused mode
+                    if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                    {
+                        // Keep execCall pointing to this specific method - don't run full orchestrator
+                        execCall = call;
+                        execRows = filteredRows;
+                    }
+                    else
+                    {
+                        // Normal focused mode: run full scene (null call) with all captured rows
+                        execCall = null;
+                        execRows = _layout?.CapturedRows;
+                    }
                 }
             }
             else
@@ -9035,37 +9251,42 @@ namespace SESpriteLCDLayoutTool
                 var result = CodeExecutor.ExecuteWithInit(code, call, _layout?.CapturedRows);
                 if (!result.Success || result.Sprites.Count == 0)
                 {
-                    SetStatus($"Could not identify sprites for {call}");
-                    return;
-                }
-
-                // Build focus set using type + name + approximate position to uniquely
-                // identify sprites from this method even when other methods use the
-                // same sprite names (e.g., Circle, SquareSimple).
-                _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var sp in result.Sprites)
-                {
-                    string key = BuildFocusSpriteKey(sp);
-                    _animFocusSprites.Add(key);
-                }
-                _animFocusCall = call;
-
-                // ISOLATION MODE: If isolation is active, run ONLY this method (not full scene)
-                // Otherwise run full scene for normal focused mode (dim others, show all)
-                if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
-                {
-                    // Keep execCall pointing to this specific method - don't run full orchestrator
-                    // This ensures animation runs ONLY the isolated method
-                    execCall = call;
+                    // Could not build focus set — fall back to unfocused animation
+                    _animFocusSprites = null;
+                    _animFocusCall = null;
+                    execCall = null;
+                    execRows = _layout?.CapturedRows;
                 }
                 else
                 {
-                    // Normal focused mode: run the full scene (null call) so the orchestrator
-                    // calculates correct positions; _animFocusSprites will highlight
-                    // only sprites belonging to this focused method.
-                    execCall = null;
+                    // Build focus set using type + name + approximate position to uniquely
+                    // identify sprites from this method even when other methods use the
+                    // same sprite names (e.g., Circle, SquareSimple).
+                    _animFocusSprites = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var sp in result.Sprites)
+                    {
+                        string key = BuildFocusSpriteKey(sp);
+                        _animFocusSprites.Add(key);
+                    }
+                    _animFocusCall = call;
+
+                    // ISOLATION MODE: If isolation is active, run ONLY this method (not full scene)
+                    // Otherwise run full scene for normal focused mode (dim others, show all)
+                    if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                    {
+                        // Keep execCall pointing to this specific method - don't run full orchestrator
+                        // This ensures animation runs ONLY the isolated method
+                        execCall = call;
+                    }
+                    else
+                    {
+                        // Normal focused mode: run the full scene (null call) so the orchestrator
+                        // calculates correct positions; _animFocusSprites will highlight
+                        // only sprites belonging to this focused method.
+                        execCall = null;
+                    }
+                    execRows = _layout?.CapturedRows;
                 }
-                execRows = _layout?.CapturedRows;
             }
 
             // If animation is already running, just apply the focus — the next
@@ -9097,7 +9318,9 @@ namespace SESpriteLCDLayoutTool
 
             _animPlayer.Play();
             UpdateAnimButtonStates();
-            SetStatus($"Animation playing — focused on: {call}");
+            SetStatus(_animFocusCall != null
+                ? $"Animation playing — focused on: {_animFocusCall}"
+                : "Animation playing");
         }
 
         private void OnAnimPlayClick(object sender, EventArgs e)

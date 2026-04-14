@@ -29,7 +29,7 @@ namespace SESpriteLCDLayoutTool.Services
 
         public static Bitmap Load(string path)
         {
-            return Load(path, out _);
+            return Load(path, 0, out _, out _, out _);
         }
 
         /// <summary>
@@ -37,7 +37,25 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public static Bitmap Load(string path, out string error)
         {
+            return Load(path, 0, out error, out _, out _);
+        }
+
+        // Format identifiers for two-phase detect→decompress
+        private const int FMT_BC1 = 1, FMT_BC3 = 2, FMT_BC7 = 3, FMT_RAW32 = 4;
+
+        /// <summary>
+        /// Loads a DDS texture with optional mip-level selection for preview.
+        /// When <paramref name="maxDim"/> &gt; 0, skips to the smallest mip level
+        /// whose largest dimension is still &gt;= maxDim, avoiding full decompression
+        /// of large textures. Returns the original file dimensions in
+        /// <paramref name="fileWidth"/>/<paramref name="fileHeight"/> for VRAM analysis.
+        /// </summary>
+        public static Bitmap Load(string path, int maxDim, out string error,
+            out int fileWidth, out int fileHeight)
+        {
             error = null;
+            fileWidth = 0;
+            fileHeight = 0;
             if (!File.Exists(path)) { error = "File not found"; return null; }
             try
             {
@@ -61,8 +79,14 @@ namespace SESpriteLCDLayoutTool.Services
                     return null;
                 }
 
+                fileWidth = width;
+                fileHeight = height;
+
                 int off = 128;
-                byte[] pixels;
+
+                // ── Phase 1: Determine format and block size ──────────────────
+                int format = 0;
+                int blockBytes = 0; // >0 for block-compressed formats
 
                 if ((pfFlags & DDPF_FOURCC) != 0)
                 {
@@ -71,15 +95,15 @@ namespace SESpriteLCDLayoutTool.Services
                         if (data.Length < 148) { error = "DX10 extended header truncated"; return null; }
                         uint dxgi = BitConverter.ToUInt32(data, 128);
                         off = 148;
-                        if (dxgi == 98 || dxgi == 99)      pixels = DecompressBC7(data, off, width, height);
-                        else if (dxgi == 71 || dxgi == 72)  pixels = DecompressBC1(data, off, width, height);
-                        else if (dxgi == 77 || dxgi == 78)  pixels = DecompressBC3(data, off, width, height);
-                        else if (dxgi == 74 || dxgi == 75)  pixels = DecompressBC3(data, off, width, height);
+                        if (dxgi == 98 || dxgi == 99)       { format = FMT_BC7; blockBytes = 16; }
+                        else if (dxgi == 71 || dxgi == 72)   { format = FMT_BC1; blockBytes = 8; }
+                        else if (dxgi == 77 || dxgi == 78)   { format = FMT_BC3; blockBytes = 16; }
+                        else if (dxgi == 74 || dxgi == 75)   { format = FMT_BC3; blockBytes = 16; }
                         else { error = $"Unsupported DXGI format ({dxgi})"; return null; }
                     }
-                    else if (pfFourCC == FCC_DXT1) pixels = DecompressBC1(data, off, width, height);
-                    else if (pfFourCC == FCC_DXT5) pixels = DecompressBC3(data, off, width, height);
-                    else if (pfFourCC == FCC_DXT3) pixels = DecompressBC3(data, off, width, height);
+                    else if (pfFourCC == FCC_DXT1) { format = FMT_BC1; blockBytes = 8; }
+                    else if (pfFourCC == FCC_DXT5) { format = FMT_BC3; blockBytes = 16; }
+                    else if (pfFourCC == FCC_DXT3) { format = FMT_BC3; blockBytes = 16; }
                     else
                     {
                         char c0 = (char)(pfFourCC & 0xFF);
@@ -92,12 +116,51 @@ namespace SESpriteLCDLayoutTool.Services
                 }
                 else if ((pfFlags & DDPF_RGB) != 0 && pfBits == 32)
                 {
-                    pixels = DecodeRaw32(data, off, width, height, pfR, pfG, pfB, pfA);
+                    format = FMT_RAW32;
                 }
                 else
                 {
                     error = $"Unsupported pixel format (flags=0x{pfFlags:X}, bits={pfBits})";
                     return null;
+                }
+
+                // ── Phase 2: Mip-level selection (skip to smaller mip for preview) ──
+                if (maxDim > 0 && Math.Max(width, height) > maxDim)
+                {
+                    uint headerFlags = BitConverter.ToUInt32(data, 8);
+                    int mipCount = (headerFlags & 0x20000) != 0
+                        ? Math.Max(1, (int)BitConverter.ToUInt32(data, 28))
+                        : 1;
+
+                    if (mipCount > 1)
+                    {
+                        for (int m = 0; m < mipCount - 1; m++)
+                        {
+                            int nw = Math.Max(1, width >> 1);
+                            int nh = Math.Max(1, height >> 1);
+                            if (Math.Max(nw, nh) < maxDim) break;
+
+                            // Advance offset past current mip level data
+                            if (blockBytes > 0)
+                                off += Math.Max(1, (width + 3) / 4) * Math.Max(1, (height + 3) / 4) * blockBytes;
+                            else
+                                off += width * height * ((int)pfBits / 8);
+
+                            width = nw;
+                            height = nh;
+                        }
+                    }
+                }
+
+                // ── Phase 3: Decompress selected mip level ───────────────────
+                byte[] pixels;
+                switch (format)
+                {
+                    case FMT_BC1:   pixels = DecompressBC1(data, off, width, height); break;
+                    case FMT_BC3:   pixels = DecompressBC3(data, off, width, height); break;
+                    case FMT_BC7:   pixels = DecompressBC7(data, off, width, height); break;
+                    case FMT_RAW32: pixels = DecodeRaw32(data, off, width, height, pfR, pfG, pfB, pfA); break;
+                    default:        pixels = null; break;
                 }
 
                 if (pixels == null) { error = "Pixel decompression failed (data truncated?)"; return null; }

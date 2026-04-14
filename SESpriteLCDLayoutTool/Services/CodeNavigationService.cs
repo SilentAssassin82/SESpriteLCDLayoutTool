@@ -142,9 +142,184 @@ namespace SESpriteLCDLayoutTool.Services
             int mapperFallbackStart = -1;
             int mapperFallbackEnd   = -1;
 
-            // STRATEGY 0 (MOST RELIABLE): Use SourceStart — direct source position pointer.
-            // This is the primary strategy for file sync sprites and any sprite with source
-            // tracking (CodeParser sets SourceStart, and RefreshSourceTracking maintains it).
+            // ══════════════════════════════════════════════════════════════════════
+            // STRATEGY 0 (MOST RELIABLE): DIRECT LINE NUMBER from instrumentation.
+            // SourceLineNumber is set at instrumentation time for EVERY .Add() call
+            // across ALL script types (PBs, Mods, Pulsar, Torch, LCD helpers).
+            // It's a 1-based line number in the ORIGINAL user code — no post-hoc
+            // matching, no Roslyn, no content comparison. Just: go to line N.
+            // This is the primary strategy because it can't break when code structure
+            // changes — it was computed from the code itself at compile time.
+            // ══════════════════════════════════════════════════════════════════════
+            if (sprite.SourceLineNumber > 0)
+            {
+                try
+                {
+                    int targetLine = sprite.SourceLineNumber; // 1-based
+                    int lineStart = 0;
+                    int currentLine = 1;
+                    for (int i = 0; i < currentCode.Length; i++)
+                    {
+                        if (currentLine == targetLine)
+                        {
+                            lineStart = i;
+                            break;
+                        }
+                        if (currentCode[i] == '\n')
+                        {
+                            currentLine++;
+                            if (currentLine == targetLine)
+                            {
+                                lineStart = i + 1;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (currentLine == targetLine)
+                    {
+                        int lineEnd = currentCode.IndexOf('\n', lineStart);
+                        if (lineEnd < 0) lineEnd = currentCode.Length;
+
+                        // The SourceLineNumber points to the .Add() call, but in a WYSIWYG
+                        // editor we need to land on the sprite CREATION line where the actual
+                        // editable data lives (e.g. MySprite.CreateText / new MySprite).
+                        // If the .Add() line itself has inline sprite data, use it as-is.
+                        // Otherwise, extract the variable name and scan backwards to find
+                        // where that variable was created/assigned.
+                        string targetLineText = currentCode.Substring(lineStart, lineEnd - lineStart);
+
+                        // VALIDATION: SourceLineNumber was recorded at the .Add() call during
+                        // instrumentation. If the user has since edited the code (adding/removing
+                        // lines), this line may no longer be an .Add() call. If the target line
+                        // doesn't contain sprite-related content, the line number is stale —
+                        // fall through to content-based strategies that parse the CURRENT code.
+                        bool looksLikeSpriteCode =
+                            targetLineText.IndexOf(".Add(", StringComparison.Ordinal) >= 0 ||
+                            targetLineText.IndexOf("new MySprite", StringComparison.Ordinal) >= 0 ||
+                            targetLineText.IndexOf("MySprite.Create", StringComparison.Ordinal) >= 0;
+
+                        if (!looksLikeSpriteCode)
+                        {
+                            System.Diagnostics.Debug.WriteLine(
+                                $"[CodeNav] → Strategy 0: Line {targetLine} doesn't contain sprite code (stale after edit?), falling through. Line: \"{targetLineText.Trim()}\"");
+                        }
+                        else
+                        {
+                            bool hasInlineData = targetLineText.IndexOf("new MySprite", StringComparison.Ordinal) >= 0 ||
+                                                 targetLineText.IndexOf("CreateText", StringComparison.Ordinal) >= 0;
+
+                            if (!hasInlineData)
+                            {
+                                // Extract variable name from .Add(varName)
+                                var addVarRx = new System.Text.RegularExpressions.Regex(@"\.Add\s*\(\s*(\w+)\s*\)");
+                                var addVarMatch = addVarRx.Match(targetLineText);
+
+                                if (addVarMatch.Success)
+                                {
+                                    string varName = addVarMatch.Groups[1].Value;
+                                    string varEscaped = System.Text.RegularExpressions.Regex.Escape(varName);
+
+                                    // Scan backwards to find where this variable was created
+                                    int scanPos = lineStart;
+                                    for (int back = 0; back < 30 && scanPos > 0; back++)
+                                    {
+                                        if (scanPos < 2) break;
+                                        int prevStart = currentCode.LastIndexOf('\n', scanPos - 2);
+                                        prevStart = (prevStart < 0) ? 0 : prevStart + 1;
+                                        string prevLine = currentCode.Substring(prevStart, scanPos - prevStart);
+
+                                        // Match: "var varName =" or "MySprite varName =" or "varName = ..."
+                                        bool isCreation =
+                                            System.Text.RegularExpressions.Regex.IsMatch(prevLine,
+                                                @"\bvar\s+" + varEscaped + @"\b") ||
+                                            System.Text.RegularExpressions.Regex.IsMatch(prevLine,
+                                                @"\b" + varEscaped + @"\s*=[^=]");
+
+                                        if (isCreation)
+                                        {
+                                            lineStart = prevStart;
+                                            lineEnd = currentCode.IndexOf('\n', lineStart);
+                                            if (lineEnd < 0) lineEnd = currentCode.Length;
+                                            System.Diagnostics.Debug.WriteLine(
+                                                $"[CodeNav] → Adjusted from .Add({varName}) to creation line ({back + 1} lines back)");
+                                            break;
+                                        }
+                                        scanPos = prevStart;
+                                    }
+                                }
+                            }
+
+                            // ── TEXT LITERAL REDIRECT ──────────────────────────────
+                            // For loop/parameterized patterns (e.g. DrawGauge called
+                            // in a loop, or a for-loop creating status items), the
+                            // creation line is a generic template like:
+                            //     var nt = CreateText(label, ...)
+                            // where 'label' is a variable, not the actual text.
+                            // In this case, find the nearest quoted literal matching
+                            // the sprite's text and navigate THERE instead — that's
+                            // where the user can see/edit the specific value.
+                            string spriteTextForRedirect = sprite.Type == SpriteEntryType.Text ? sprite.Text : null;
+                            if (!string.IsNullOrEmpty(spriteTextForRedirect) && spriteTextForRedirect.Length > 1)
+                            {
+                                string currentCreationLine = currentCode.Substring(lineStart, lineEnd - lineStart);
+                                string quotedLiteral = "\"" + spriteTextForRedirect + "\"";
+
+                                if (currentCreationLine.IndexOf(quotedLiteral, StringComparison.Ordinal) < 0)
+                                {
+                                    // Creation line doesn't contain the text as a literal.
+                                    // Search for the nearest quoted occurrence in the code.
+                                    int bestPos = -1;
+                                    int bestDist = int.MaxValue;
+                                    int searchIdx = 0;
+                                    while ((searchIdx = currentCode.IndexOf(quotedLiteral, searchIdx, StringComparison.Ordinal)) >= 0)
+                                    {
+                                        int dist = Math.Abs(searchIdx - lineStart);
+                                        if (dist < bestDist)
+                                        {
+                                            bestDist = dist;
+                                            bestPos = searchIdx;
+                                        }
+                                        searchIdx += quotedLiteral.Length;
+                                    }
+
+                                    if (bestPos >= 0)
+                                    {
+                                        lineStart = currentCode.LastIndexOf('\n', bestPos) + 1;
+                                        lineEnd = currentCode.IndexOf('\n', bestPos);
+                                        if (lineEnd < 0) lineEnd = currentCode.Length;
+                                        System.Diagnostics.Debug.WriteLine(
+                                            $"[CodeNav] → Redirected to text literal \"{spriteTextForRedirect}\" (nearest match, distance={bestDist} chars)");
+                                    }
+                                }
+                            }
+
+                            codeBox.Focus();
+                            codeBox.Select(lineStart, lineEnd - lineStart);
+                            codeBox.ScrollToCaret();
+
+                            System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ STRATEGY 0 (LineNumber): Navigated using SourceLineNumber {sprite.SourceLineNumber}");
+                            return true;
+                        }
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[CodeNav] → SourceLineNumber {sprite.SourceLineNumber} exceeds code line count ({currentLine})");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[CodeNav] Error using SourceLineNumber: {ex.Message}");
+                }
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine($"[CodeNav] → SKIPPING Strategy 0 (SourceLineNumber): SourceLineNumber={sprite.SourceLineNumber}");
+            }
+
+            // STRATEGY 0a: Use SourceStart — direct character offset from source tracking.
+            // This is the primary fallback for file-synced sprites and any sprite with source
+            // tracking from CodeParser (SourceStart is set, RefreshSourceTracking maintains it).
             // SourceStart is a direct character offset into the code — no runtime/static
             // matching needed, so it works correctly for loops, sub-calls, and complex code.
             if (sprite.SourceStart >= 0 && sprite.SourceStart < currentCode.Length)
@@ -159,7 +334,7 @@ namespace SESpriteLCDLayoutTool.Services
                     codeBox.Select(lineStart, lineEnd - lineStart);
                     codeBox.ScrollToCaret();
 
-                    System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ STRATEGY 0: Navigated using SourceStart {sprite.SourceStart}");
+                    System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ STRATEGY 0a (SourceStart): Navigated using SourceStart {sprite.SourceStart}");
                     return true;
                 }
                 catch (Exception ex)
@@ -169,7 +344,7 @@ namespace SESpriteLCDLayoutTool.Services
             }
             else
             {
-                System.Diagnostics.Debug.WriteLine($"[CodeNav] → SKIPPING Strategy 0 (SourceStart): SourceStart={sprite.SourceStart}, codeLength={currentCode.Length}");
+                System.Diagnostics.Debug.WriteLine($"[CodeNav] → SKIPPING Strategy 0a (SourceStart): SourceStart={sprite.SourceStart}, codeLength={currentCode.Length}");
             }
 
             // ──────────────────────────────────────────────────────────────────
@@ -326,168 +501,15 @@ namespace SESpriteLCDLayoutTool.Services
                     }
                     else
                     {
-                        // 0 or 1 call site — nothing to disambiguate, fall through to 0b
+                        // 0 or 1 call site — nothing to disambiguate, fall through
                         System.Diagnostics.Debug.WriteLine(
-                            $"[CodeNav] → Strategy 0a: {callSites.Count} call site(s) for '{sprite.SourceMethodName}' — falling through to 0b for in-method navigation");
+                            $"[CodeNav] → Strategy 0b (call-site): {callSites.Count} call site(s) for '{sprite.SourceMethodName}' — falling through to content strategies");
                     }
                 }
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine($"[CodeNav] Strategy 0a error: {ex.Message}");
                 }
-            }
-
-            // ──────────────────────────────────────────────────────────────────
-            // STRATEGY 0b: DIRECT LINE NUMBER (PRIMARY for executed code)
-            // SourceLineNumber is a 1-based line number recorded at instrumentation
-            // time — the exact line in the ORIGINAL user code where .Add() was called.
-            // This is the most reliable strategy for executed sprites.
-            // ──────────────────────────────────────────────────────────────────
-            if (sprite.SourceLineNumber > 0)
-            {
-                try
-                {
-                    int targetLine = sprite.SourceLineNumber; // 1-based
-                    int lineStart = 0;
-                    int currentLine = 1;
-                    for (int i = 0; i < currentCode.Length; i++)
-                    {
-                        if (currentLine == targetLine)
-                        {
-                            lineStart = i;
-                            break;
-                        }
-                        if (currentCode[i] == '\n')
-                        {
-                            currentLine++;
-                            if (currentLine == targetLine)
-                            {
-                                lineStart = i + 1;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (currentLine == targetLine)
-                    {
-                        int lineEnd = currentCode.IndexOf('\n', lineStart);
-                        if (lineEnd < 0) lineEnd = currentCode.Length;
-
-                        // The SourceLineNumber points to the .Add() call, but in a WYSIWYG
-                        // editor we need to land on the sprite CREATION line where the actual
-                        // editable data lives (e.g. MySprite.CreateText / new MySprite).
-                        // If the .Add() line itself has inline sprite data, use it as-is.
-                        // Otherwise, extract the variable name and scan backwards to find
-                        // where that variable was created/assigned.
-                        string targetLineText = currentCode.Substring(lineStart, lineEnd - lineStart);
-                        bool hasInlineData = targetLineText.IndexOf("new MySprite", StringComparison.Ordinal) >= 0 ||
-                                             targetLineText.IndexOf("CreateText", StringComparison.Ordinal) >= 0;
-
-                        if (!hasInlineData)
-                        {
-                            // Extract variable name from .Add(varName)
-                            var addVarRx = new System.Text.RegularExpressions.Regex(@"\.Add\s*\(\s*(\w+)\s*\)");
-                            var addVarMatch = addVarRx.Match(targetLineText);
-
-                            if (addVarMatch.Success)
-                            {
-                                string varName = addVarMatch.Groups[1].Value;
-                                string varEscaped = System.Text.RegularExpressions.Regex.Escape(varName);
-
-                                // Scan backwards to find where this variable was created
-                                int scanPos = lineStart;
-                                for (int back = 0; back < 30 && scanPos > 0; back++)
-                                {
-                                    if (scanPos < 2) break;
-                                    int prevStart = currentCode.LastIndexOf('\n', scanPos - 2);
-                                    prevStart = (prevStart < 0) ? 0 : prevStart + 1;
-                                    string prevLine = currentCode.Substring(prevStart, scanPos - prevStart);
-
-                                    // Match: "var varName =" or "MySprite varName =" or "varName = ..."
-                                    bool isCreation =
-                                        System.Text.RegularExpressions.Regex.IsMatch(prevLine,
-                                            @"\bvar\s+" + varEscaped + @"\b") ||
-                                        System.Text.RegularExpressions.Regex.IsMatch(prevLine,
-                                            @"\b" + varEscaped + @"\s*=[^=]");
-
-                                    if (isCreation)
-                                    {
-                                        lineStart = prevStart;
-                                        lineEnd = currentCode.IndexOf('\n', lineStart);
-                                        if (lineEnd < 0) lineEnd = currentCode.Length;
-                                        System.Diagnostics.Debug.WriteLine(
-                                            $"[CodeNav] → Adjusted from .Add({varName}) to creation line ({back + 1} lines back)");
-                                        break;
-                                    }
-                                    scanPos = prevStart;
-                                }
-                            }
-                        }
-
-                        // ── TEXT LITERAL REDIRECT ──────────────────────────────
-                        // For loop/parameterized patterns (e.g. DrawGauge called
-                        // in a loop, or a for-loop creating status items), the
-                        // creation line is a generic template like:
-                        //     var nt = CreateText(label, ...)
-                        // where 'label' is a variable, not the actual text.
-                        // In this case, find the nearest quoted literal matching
-                        // the sprite's text and navigate THERE instead — that's
-                        // where the user can see/edit the specific value.
-                        string spriteTextForRedirect = sprite.Type == SpriteEntryType.Text ? sprite.Text : null;
-                        if (!string.IsNullOrEmpty(spriteTextForRedirect) && spriteTextForRedirect.Length > 1)
-                        {
-                            string currentCreationLine = currentCode.Substring(lineStart, lineEnd - lineStart);
-                            string quotedLiteral = "\"" + spriteTextForRedirect + "\"";
-
-                            if (currentCreationLine.IndexOf(quotedLiteral, StringComparison.Ordinal) < 0)
-                            {
-                                // Creation line doesn't contain the text as a literal.
-                                // Search for the nearest quoted occurrence in the code.
-                                int bestPos = -1;
-                                int bestDist = int.MaxValue;
-                                int searchIdx = 0;
-                                while ((searchIdx = currentCode.IndexOf(quotedLiteral, searchIdx, StringComparison.Ordinal)) >= 0)
-                                {
-                                    int dist = Math.Abs(searchIdx - lineStart);
-                                    if (dist < bestDist)
-                                    {
-                                        bestDist = dist;
-                                        bestPos = searchIdx;
-                                    }
-                                    searchIdx += quotedLiteral.Length;
-                                }
-
-                                if (bestPos >= 0)
-                                {
-                                    lineStart = currentCode.LastIndexOf('\n', bestPos) + 1;
-                                    lineEnd = currentCode.IndexOf('\n', bestPos);
-                                    if (lineEnd < 0) lineEnd = currentCode.Length;
-                                    System.Diagnostics.Debug.WriteLine(
-                                        $"[CodeNav] → Redirected to text literal \"{spriteTextForRedirect}\" (nearest match, distance={bestDist} chars)");
-                                }
-                            }
-                        }
-
-                        codeBox.Focus();
-                        codeBox.Select(lineStart, lineEnd - lineStart);
-                        codeBox.ScrollToCaret();
-
-                        System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ STRATEGY 0b: Navigated using SourceLineNumber {sprite.SourceLineNumber}");
-                        return true;
-                    }
-                    else
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[CodeNav] → SourceLineNumber {sprite.SourceLineNumber} exceeds code line count ({currentLine})");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[CodeNav] Error using SourceLineNumber: {ex.Message}");
-                }
-            }
-            else
-            {
-                System.Diagnostics.Debug.WriteLine($"[CodeNav] → SKIPPING Strategy 0b (SourceLineNumber): SourceLineNumber={sprite.SourceLineNumber}");
             }
 
             // ──────────────────────────────────────────────────────────────────

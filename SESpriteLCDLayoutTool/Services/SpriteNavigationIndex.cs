@@ -228,6 +228,14 @@ namespace SESpriteLCDLayoutTool.Services
             if (!string.IsNullOrEmpty(sourceMethodName))
             {
                 var inMethod = entries.Where(e => e.Method == sourceMethodName).ToList();
+
+                // Fallback: PB scripts wrap top-level code into generated methods
+                // (e.g. Render0) at runtime, so the Roslyn index stores Method=null
+                // but the runtime reports the generated wrapper name.  Treat top-level
+                // entries as belonging to the requested method when no direct match.
+                if (inMethod.Count == 0)
+                    inMethod = entries.Where(e => e.Method == null).ToList();
+
                 if (inMethod.Count == 1)
                     return inMethod[0];
 
@@ -240,6 +248,8 @@ namespace SESpriteLCDLayoutTool.Services
 
                 // Also try call-site args in the calling method
                 var callInMethod = entries.Where(e => e.Kind == EntryKind.CallSiteArg && e.Method == sourceMethodName).ToList();
+                if (callInMethod.Count == 0)
+                    callInMethod = entries.Where(e => e.Kind == EntryKind.CallSiteArg && e.Method == null).ToList();
                 if (callInMethod.Count == 1)
                     return callInMethod[0];
             }

@@ -25,3 +25,10 @@
 
 ### CRITICAL: Sprite Code Navigation
 - Code navigation from clicking a sprite in the layer list MUST land on the sprite CREATION line (e.g. `var t = MySprite.CreateText(...)` or `new MySprite(...)`) — NOT on the `.Add()` line. The `.Add()` line has no editable sprite data. This applies to ALL plugin types.
+
+## SESpriteLCDLayoutTool Guidelines
+- The SESpriteLCDLayoutTool is designed as a full WYSIWYG visual editor for Space Engineers LCD sprites, akin to "3ds Max for LCDs."
+- All elements (color, size, sprite selection, text, animations) should work cohesively together.
+- Test plugins for Torch and Pulsar should support straightforward frame animations that are fully editable.
+- More complex data-driven plugins (e.g., inventory counts, game engine values) may still contain hardcoded values (positions, padding, colors) that should be editable.
+- The user aims to expand and refine editing capabilities for data-driven plugins over time.

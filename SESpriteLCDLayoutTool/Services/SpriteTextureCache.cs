@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Xml.Linq;
 
 namespace SESpriteLCDLayoutTool.Services
@@ -110,12 +112,16 @@ namespace SESpriteLCDLayoutTool.Services
                 }
             }
 
-            // Phase 2 — load textures (paths are already absolute)
+            // Phase 2 — load textures in parallel (DDS decompression is CPU-bound)
             int loaded = 0;
             int failed = 0;
             int notFound = 0;
             _loadErrors.Clear();
-            foreach (var kv in _spriteToPath)
+            var lockObj = new object();
+
+            Parallel.ForEach(_spriteToPath,
+                new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+                kv =>
             {
                 string spriteName = kv.Key;
                 string texPath = kv.Value;
@@ -130,17 +136,27 @@ namespace SESpriteLCDLayoutTool.Services
                     }
                     if (!File.Exists(texPath))
                     {
-                        notFound++;
-                        _loadErrors.Add($"[MISSING] {spriteName}  →  {texPath}");
-                        continue;
+                        lock (lockObj)
+                        {
+                            notFound++;
+                            _loadErrors.Add($"[MISSING] {spriteName}  →  {texPath}");
+                        }
+                        return;
                     }
                 }
 
                 Bitmap bmp = null;
                 string decodeError = null;
+                Size originalSize = Size.Empty;
+
                 if (texPath.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
                 {
-                    bmp = DdsLoader.Load(texPath, out decodeError);
+                    // Use mip-level selection: skip to ~256px mip to avoid
+                    // decompressing full 2048×2048 textures for preview.
+                    bmp = DdsLoader.Load(texPath, 256, out decodeError,
+                        out int origW, out int origH);
+                    if (origW > 0 && origH > 0)
+                        originalSize = new Size(origW, origH);
                 }
                 else
                 {
@@ -151,10 +167,12 @@ namespace SESpriteLCDLayoutTool.Services
 
                 if (bmp != null)
                 {
-                    Debug.WriteLine($"[TextureCache] Loaded: {spriteName} -> {texPath}");
-                    // Record original dimensions before downscaling (for VRAM budget analysis)
-                    _originalSizes[spriteName] = new Size(bmp.Width, bmp.Height);
-                    // Resize large textures to save memory (preview only — 256px max)
+                    // Record original file dimensions for VRAM budget analysis
+                    if (originalSize.IsEmpty)
+                        originalSize = new Size(bmp.Width, bmp.Height);
+
+                    // Resize if still larger than 256px (mip selection gets close,
+                    // but the mip may be e.g. 512px if no smaller mip existed)
                     if (bmp.Width > 256 || bmp.Height > 256)
                     {
                         float scale = Math.Min(256f / bmp.Width, 256f / bmp.Height);
@@ -163,23 +181,29 @@ namespace SESpriteLCDLayoutTool.Services
                         var thumb = new Bitmap(tw, th);
                         using (var g = Graphics.FromImage(thumb))
                         {
-                            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            g.InterpolationMode = InterpolationMode.Bilinear;
                             g.DrawImage(bmp, 0, 0, tw, th);
                         }
                         bmp.Dispose();
                         bmp = thumb;
                     }
 
-                    _cache[spriteName] = bmp;
-                    loaded++;
+                    lock (lockObj)
+                    {
+                        _originalSizes[spriteName] = originalSize;
+                        _cache[spriteName] = bmp;
+                        loaded++;
+                    }
                 }
                 else
                 {
-                    Debug.WriteLine($"[TextureCache] DECODE FAILED: {spriteName} -> {texPath}");
-                    _loadErrors.Add($"[DECODE FAILED] {spriteName}  →  {texPath}  —  {decodeError ?? "unknown"}");
-                    failed++;
+                    lock (lockObj)
+                    {
+                        _loadErrors.Add($"[DECODE FAILED] {spriteName}  →  {texPath}  —  {decodeError ?? "unknown"}");
+                        failed++;
+                    }
                 }
-            }
+            });
 
             string msg = $"Loaded {loaded} sprite textures ({_spriteToPath.Count} mappings found";
             if (failed > 0) msg += $", {failed} decode errors";
@@ -362,9 +386,13 @@ namespace SESpriteLCDLayoutTool.Services
             }
 
             Bitmap bmp = null;
+            Size originalSize = Size.Empty;
             if (absPath.EndsWith(".dds", StringComparison.OrdinalIgnoreCase))
             {
-                bmp = DdsLoader.Load(absPath);
+                bmp = DdsLoader.Load(absPath, 256, out _,
+                    out int origW, out int origH);
+                if (origW > 0 && origH > 0)
+                    originalSize = new Size(origW, origH);
             }
             else
             {
@@ -374,8 +402,10 @@ namespace SESpriteLCDLayoutTool.Services
 
             if (bmp == null) return null;
 
-            // Record original dimensions before downscaling (for VRAM budget analysis)
-            _originalSizes[spriteName] = new Size(bmp.Width, bmp.Height);
+            // Record original file dimensions for VRAM budget analysis
+            if (originalSize.IsEmpty)
+                originalSize = new Size(bmp.Width, bmp.Height);
+            _originalSizes[spriteName] = originalSize;
 
             // Resize large textures (preview only — 256px max)
             if (bmp.Width > 256 || bmp.Height > 256)
@@ -386,7 +416,7 @@ namespace SESpriteLCDLayoutTool.Services
                 var thumb = new Bitmap(tw, th);
                 using (var g = Graphics.FromImage(thumb))
                 {
-                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.InterpolationMode = InterpolationMode.Bilinear;
                     g.DrawImage(bmp, 0, 0, tw, th);
                 }
                 bmp.Dispose();

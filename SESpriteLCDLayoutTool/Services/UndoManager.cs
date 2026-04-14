@@ -11,8 +11,8 @@ namespace SESpriteLCDLayoutTool.Services
     /// </summary>
     public class UndoManager
     {
-        private readonly Stack<List<SpriteSnapshot>> _undoStack = new Stack<List<SpriteSnapshot>>();
-        private readonly Stack<List<SpriteSnapshot>> _redoStack = new Stack<List<SpriteSnapshot>>();
+        private readonly Stack<LayoutSnapshot> _undoStack = new Stack<LayoutSnapshot>();
+        private readonly Stack<LayoutSnapshot> _redoStack = new Stack<LayoutSnapshot>();
 
         private const int MaxHistory = 80;
 
@@ -25,7 +25,7 @@ namespace SESpriteLCDLayoutTool.Services
         public void PushUndo(LcdLayout layout)
         {
             if (layout == null) return;
-            _undoStack.Push(Snapshot(layout.Sprites));
+            _undoStack.Push(Snapshot(layout));
             _redoStack.Clear();
 
             // Trim oldest entries if we exceed the limit
@@ -45,7 +45,7 @@ namespace SESpriteLCDLayoutTool.Services
         public bool Undo(LcdLayout layout)
         {
             if (!CanUndo || layout == null) return false;
-            _redoStack.Push(Snapshot(layout.Sprites));
+            _redoStack.Push(Snapshot(layout));
             Restore(layout, _undoStack.Pop());
             return true;
         }
@@ -53,7 +53,7 @@ namespace SESpriteLCDLayoutTool.Services
         public bool Redo(LcdLayout layout)
         {
             if (!CanRedo || layout == null) return false;
-            _undoStack.Push(Snapshot(layout.Sprites));
+            _undoStack.Push(Snapshot(layout));
             Restore(layout, _redoStack.Pop());
             return true;
         }
@@ -65,9 +65,9 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         // ── Snapshot helpers ──────────────────────────────────────────────────────
-        private static List<SpriteSnapshot> Snapshot(List<SpriteEntry> sprites)
+        private static LayoutSnapshot Snapshot(LcdLayout layout)
         {
-            return sprites.Select(s => new SpriteSnapshot
+            var sprites = layout.Sprites.Select(s => new SpriteSnapshot
             {
                 Id         = s.Id,
                 Type       = s.Type,
@@ -90,13 +90,20 @@ namespace SESpriteLCDLayoutTool.Services
                 SourceStart       = s.SourceStart,
                 SourceEnd         = s.SourceEnd,
                 ImportBaseline    = s.ImportBaseline,
+                SourceLineNumber  = s.SourceLineNumber,
             }).ToList();
+
+            return new LayoutSnapshot
+            {
+                Sprites = sprites,
+                OriginalSourceCode = layout.OriginalSourceCode,
+            };
         }
 
-        private static void Restore(LcdLayout layout, List<SpriteSnapshot> snapshot)
+        private static void Restore(LcdLayout layout, LayoutSnapshot snapshot)
         {
             layout.Sprites.Clear();
-            foreach (var snap in snapshot)
+            foreach (var snap in snapshot.Sprites)
             {
                 layout.Sprites.Add(new SpriteEntry
                 {
@@ -121,8 +128,17 @@ namespace SESpriteLCDLayoutTool.Services
                     SourceStart       = snap.SourceStart,
                     SourceEnd         = snap.SourceEnd,
                     ImportBaseline    = snap.ImportBaseline,
+                    SourceLineNumber  = snap.SourceLineNumber,
                 });
             }
+            layout.OriginalSourceCode = snapshot.OriginalSourceCode;
+        }
+
+        /// <summary>Full layout snapshot including sprites and code state.</summary>
+        private struct LayoutSnapshot
+        {
+            public List<SpriteSnapshot> Sprites;
+            public string OriginalSourceCode;
         }
 
         /// <summary>Internal value-copy of a SpriteEntry for the undo stack.</summary>
@@ -143,6 +159,7 @@ namespace SESpriteLCDLayoutTool.Services
             public int SourceStart;
             public int SourceEnd;
             public SpriteEntry ImportBaseline;
+            public int SourceLineNumber;
         }
     }
 }
