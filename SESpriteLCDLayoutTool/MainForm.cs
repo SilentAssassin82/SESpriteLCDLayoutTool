@@ -162,6 +162,9 @@ namespace SESpriteLCDLayoutTool
         private ToolStripMenuItem _mnuOverlayHeatmap;
         private ToolStripMenuItem _mnuSizeWarnings;
 
+        // ── Animation clipboard ────────────────────────────────────────────
+        private KeyframeAnimationParams _copiedAnimation;
+
         // ── Editable code panel ──────────────────────────────────────────────
         private bool  _codeBoxDirty;
         private bool  _suppressCodeBoxEvents;
@@ -8952,6 +8955,8 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add(animMenu);
 
             var editAnimItem = ctx.Items.Add("Edit Animation…", null, (s, e) => ShowKeyframeAnimationDialog(editExisting: true));
+            var copyAnimItem  = ctx.Items.Add("Copy Animation",  null, (s, e) => CopySelectedAnimation());
+            var pasteAnimItem = ctx.Items.Add("Paste Animation", null, (s, e) => PasteAnimationToSelected());
 
             ctx.Items.Add(new ToolStripSeparator());
             ctx.Items.Add("Layer Up\tCtrl+]",         null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
@@ -8967,6 +8972,8 @@ namespace SESpriteLCDLayoutTool
                 bool hasAnim = sel?.KeyframeAnimation != null
                             || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text) != null;
                 editAnimItem.Visible = sel != null && hasAnim;
+                copyAnimItem.Visible = sel != null && hasAnim;
+                pasteAnimItem.Visible = sel != null && _copiedAnimation != null;
                 // Update "Hide Selected" label based on count
                 var selected = GetSelectedSprites();
                 hideItem.Text = selected.Count > 1 ? $"Hide Selected ({selected.Count})" : "Hide Selected";
@@ -8994,6 +9001,8 @@ namespace SESpriteLCDLayoutTool
             var showAllItem   = ctx.Items.Add("Show All Layers",    null, (s, e) => ShowAllLayers());
             ctx.Items.Add(new ToolStripSeparator());
             var editAnimItem  = ctx.Items.Add("Edit Animation…",    null, (s, e) => ShowKeyframeAnimationDialog(editExisting: true));
+            var copyAnimItem  = ctx.Items.Add("Copy Animation",      null, (s, e) => CopySelectedAnimation());
+            var pasteAnimItem = ctx.Items.Add("Paste Animation",     null, (s, e) => PasteAnimationToSelected());
 
             ctx.Opening += (s, e) =>
             {
@@ -9036,6 +9045,8 @@ namespace SESpriteLCDLayoutTool
                 bool hasAnim = _canvas.SelectedSprite.KeyframeAnimation != null
                             || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text) != null;
                 editAnimItem.Visible = !multi && hasAnim;
+                copyAnimItem.Visible = !multi && hasAnim;
+                pasteAnimItem.Visible = !multi && _copiedAnimation != null;
             };
 
             return ctx;
@@ -9905,6 +9916,76 @@ namespace SESpriteLCDLayoutTool
 
             blockLength = end - blockStart;
             return blockLength > 0;
+        }
+
+        // ── Copy / Paste keyframe animation ────────────────────────────────────
+
+        private void CopySelectedAnimation()
+        {
+            var sprite = _canvas.SelectedSprite;
+            if (sprite == null) return;
+
+            var src = sprite.KeyframeAnimation
+                   ?? AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
+            if (src == null) { SetStatus("No animation to copy"); return; }
+
+            // Deep-clone so edits to the copy don't mutate the original
+            _copiedAnimation = new KeyframeAnimationParams
+            {
+                ListVarName  = src.ListVarName,
+                Loop         = src.Loop,
+                TargetScript = src.TargetScript,
+                Keyframes    = src.Keyframes.Select(k => new Keyframe
+                {
+                    Tick        = k.Tick,
+                    X           = k.X,
+                    Y           = k.Y,
+                    Width       = k.Width,
+                    Height      = k.Height,
+                    ColorR      = k.ColorR,
+                    ColorG      = k.ColorG,
+                    ColorB      = k.ColorB,
+                    ColorA      = k.ColorA,
+                    Rotation    = k.Rotation,
+                    Scale       = k.Scale,
+                    EasingToNext = k.EasingToNext,
+                }).ToList(),
+            };
+
+            SetStatus($"Copied animation ({_copiedAnimation.Keyframes.Count} keyframes)");
+        }
+
+        private void PasteAnimationToSelected()
+        {
+            var sprite = _canvas.SelectedSprite;
+            if (sprite == null || _copiedAnimation == null) return;
+
+            PushUndo();
+
+            // Deep-clone again so each paste is independent
+            sprite.KeyframeAnimation = new KeyframeAnimationParams
+            {
+                ListVarName  = _copiedAnimation.ListVarName,
+                Loop         = _copiedAnimation.Loop,
+                TargetScript = _copiedAnimation.TargetScript,
+                Keyframes    = _copiedAnimation.Keyframes.Select(k => new Keyframe
+                {
+                    Tick        = k.Tick,
+                    X           = k.X,
+                    Y           = k.Y,
+                    Width       = k.Width,
+                    Height      = k.Height,
+                    ColorR      = k.ColorR,
+                    ColorG      = k.ColorG,
+                    ColorB      = k.ColorB,
+                    ColorA      = k.ColorA,
+                    Rotation    = k.Rotation,
+                    Scale       = k.Scale,
+                    EasingToNext = k.EasingToNext,
+                }).ToList(),
+            };
+
+            SetStatus($"Pasted animation ({sprite.KeyframeAnimation.Keyframes.Count} keyframes) to '{sprite.DisplayName}'");
         }
 
         // ── Keyframe animation dialog ──────────────────────────────────────────

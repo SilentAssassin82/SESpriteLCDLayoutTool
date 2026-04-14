@@ -783,6 +783,9 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.8.3
+- **Copy/Paste Animation** — right-click a sprite with a keyframe animation → **Copy Animation**, then right-click any other sprite → **Paste Animation** to apply the same keyframe set (deep-cloned, with undo support). Available in both canvas and layer list context menus.
+
 ### v2.8.2
 - **Fixed Variables panel flicker** — enabled double buffering on the owner-drawn `ListView` (sparklines, live field values) via reflection, eliminating visible flicker during fast Update1 animations
 - **Fixed Console tab flicker** — replaced `SuspendLayout`/`ResumeLayout` with `WM_SETREDRAW` paint suppression for flicker-free batch Echo output updates
