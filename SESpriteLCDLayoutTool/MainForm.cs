@@ -8919,6 +8919,8 @@ namespace SESpriteLCDLayoutTool
             animMenu.DropDownItems.Add("Keyframe Animation…", null, (s, e) => ShowKeyframeAnimationDialog());
             ctx.Items.Add(animMenu);
 
+            var editAnimItem = ctx.Items.Add("Edit Animation…", null, (s, e) => ShowKeyframeAnimationDialog(editExisting: true));
+
             ctx.Items.Add(new ToolStripSeparator());
             ctx.Items.Add("Layer Up\tCtrl+]",         null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
             ctx.Items.Add("Layer Down\tCtrl+[",       null, (s, e) => { PushUndo(); _canvas.MoveSelectedDown(); RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
@@ -8927,7 +8929,12 @@ namespace SESpriteLCDLayoutTool
 
             ctx.Opening += (s, e) =>
             {
-                animMenu.Enabled = _canvas.SelectedSprite != null;
+                var sel = _canvas.SelectedSprite;
+                animMenu.Enabled = sel != null;
+                // Show "Edit Animation" if sprite has in-memory data OR code panel has keyframe arrays
+                bool hasAnim = sel?.KeyframeAnimation != null
+                            || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text) != null;
+                editAnimItem.Visible = sel != null && hasAnim;
                 // Update "Hide Selected" label based on count
                 var selected = GetSelectedSprites();
                 hideItem.Text = selected.Count > 1 ? $"Hide Selected ({selected.Count})" : "Hide Selected";
@@ -8953,6 +8960,8 @@ namespace SESpriteLCDLayoutTool
             var showItem      = ctx.Items.Add("Show Layer",         null, (s, e) => ToggleSelectedLayerVisibility(false));
             var hideAboveItem = ctx.Items.Add("Hide Layers Above",  null, (s, e) => HideLayersAbove());
             var showAllItem   = ctx.Items.Add("Show All Layers",    null, (s, e) => ShowAllLayers());
+            ctx.Items.Add(new ToolStripSeparator());
+            var editAnimItem  = ctx.Items.Add("Edit Animation…",    null, (s, e) => ShowKeyframeAnimationDialog(editExisting: true));
 
             ctx.Opening += (s, e) =>
             {
@@ -8990,6 +8999,11 @@ namespace SESpriteLCDLayoutTool
                 foreach (var sp in _layout.Sprites)
                     if (sp.IsHidden) { anyHidden = true; break; }
                 showAllItem.Enabled = anyHidden;
+
+                // Edit Animation: visible if sprite has in-memory data OR code has keyframe arrays
+                bool hasAnim = _canvas.SelectedSprite.KeyframeAnimation != null
+                            || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text) != null;
+                editAnimItem.Visible = !multi && hasAnim;
             };
 
             return ctx;
@@ -9863,10 +9877,26 @@ namespace SESpriteLCDLayoutTool
 
         // ── Keyframe animation dialog ──────────────────────────────────────────
 
-        private void ShowKeyframeAnimationDialog()
+        private void ShowKeyframeAnimationDialog(bool editExisting = false)
         {
             var sprite = _canvas.SelectedSprite;
             if (sprite == null) { SetStatus("Select a sprite first"); return; }
+
+            // If editing existing but no in-memory data, try parsing from the code panel
+            if (editExisting && sprite.KeyframeAnimation == null)
+            {
+                var parsed = AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
+                if (parsed != null)
+                {
+                    sprite.KeyframeAnimation = parsed;
+                    SetStatus("Recovered keyframe data from code");
+                }
+                else
+                {
+                    SetStatus("No existing animation on this sprite");
+                    return;
+                }
+            }
 
             // Close any previously open snippet dialog
             if (_snippetDialog != null && !_snippetDialog.IsDisposed)
@@ -9876,393 +9906,56 @@ namespace SESpriteLCDLayoutTool
                 _snippetDialog = null;
             }
 
-            var kp = new KeyframeAnimationParams();
-            // Seed with two keyframes: tick 0 = current state, tick 60 = current state
-            kp.Keyframes.Add(Keyframe.FromSprite(sprite, 0));
-            kp.Keyframes.Add(Keyframe.FromSprite(sprite, 60));
-
             // ── Detect target script type from code style dropdown ──
             var target = MapCodeStyleToTarget();
-            kp.TargetScript = target;
-            bool isPbOrPlugin = target != TargetScriptType.LcdHelper;
-            if (isPbOrPlugin) kp.ListVarName = "frame";
 
-            string targetLabel = target == TargetScriptType.LcdHelper ? "LCD Helper"
-                : target == TargetScriptType.ProgrammableBlock ? "PB"
-                : target == TargetScriptType.Mod ? "Mod"
-                : target == TargetScriptType.Plugin ? "Plugin"
-                : "Pulsar";
-
-            bool isText = sprite.Type == SpriteEntryType.Text;
-
-            var dlg = new Form();
+            // Open the visual keyframe editor (pass existing params if editing)
+            var dlg = new KeyframeEditorDialog(sprite, target,
+                editExisting ? sprite.KeyframeAnimation : null, _textureCache);
             _snippetDialog = dlg;
+            dlg.CodeUpdateRequested += newCode =>
+            {
+                if (_codeBox == null || string.IsNullOrEmpty(newCode)) return;
 
-            dlg.Text = $"Keyframe Animation — \"{sprite.DisplayName}\" [{targetLabel}]";
-            dlg.Size = new Size(780, 660);
-            dlg.MinimumSize = new Size(620, 500);
-            dlg.StartPosition = FormStartPosition.CenterParent;
-            dlg.BackColor = Color.FromArgb(30, 30, 30);
-            dlg.ForeColor = Color.FromArgb(220, 220, 220);
-            dlg.Font = new Font("Segoe UI", 9f);
+                string existing = _codeBox.Text;
+
+                // Tier 1: Exact block replace (works when code was generated by us)
+                if (AnimationSnippetGenerator.FindKeyframedBlockRange(existing,
+                        out int blockStart, out int blockLength))
+                {
+                    string updated = existing.Substring(0, blockStart)
+                                   + newCode
+                                   + existing.Substring(blockStart + blockLength);
+                    _codeBox.Text = updated;
+                    _codeBoxDirty = false;
+                    SetStatus("✅ Animation code updated in code panel");
+                }
+                // Tier 2: Smart array-level merge (works for hand-written PB scripts)
+                else
+                {
+                    string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, newCode);
+                    if (merged != null)
+                    {
+                        _codeBox.Text = merged;
+                        _codeBoxDirty = false;
+                        SetStatus("✅ Animation arrays merged into code");
+                    }
+                    else
+                    {
+                        // Tier 3: Append fallback
+                        _codeBox.AppendText(Environment.NewLine + newCode);
+                        _codeBoxDirty = false;
+                        SetStatus("✅ Animation code appended to code panel");
+                    }
+                }
+            };
             dlg.FormClosed += (s2, e2) =>
             {
                 if (_snippetDialog == dlg) _snippetDialog = null;
-                dlg.Dispose();
             };
-
-            // ── Header ──
-            var lblHeader = new Label
-            {
-                Dock = DockStyle.Top,
-                Height = 36,
-                Padding = new Padding(8, 8, 8, 0),
-                Text = $"Keyframe Animation  |  Sprite: \"{sprite.DisplayName}\"  |  Target: {targetLabel}",
-                ForeColor = Color.FromArgb(180, 200, 255),
-                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-            };
-
-            // ── Code preview ──
-            var txtCode = new TextBox
-            {
-                Dock = DockStyle.Fill,
-                Multiline = true,
-                ReadOnly = true,
-                ScrollBars = ScrollBars.Both,
-                WordWrap = false,
-                BackColor = Color.FromArgb(20, 20, 20),
-                ForeColor = Color.FromArgb(200, 220, 200),
-                Font = new Font("Consolas", 9.5f),
-                MaxLength = 0,
-            };
-
-            // ── Keyframe list ──
-            var lstKeyframes = new ListBox
-            {
-                Dock = DockStyle.Fill,
-                BackColor = Color.FromArgb(35, 35, 40),
-                ForeColor = Color.FromArgb(220, 220, 220),
-                Font = new Font("Consolas", 9f),
-                IntegralHeight = false,
-            };
-
-            // ── Property editors panel ──
-            var pnlProps = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                AutoScroll = true,
-                ColumnCount = 2,
-                Padding = new Padding(4, 4, 4, 4),
-            };
-            pnlProps.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
-            pnlProps.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-            Action refreshCode = () =>
-            {
-                txtCode.Text = AnimationSnippetGenerator.GenerateKeyframed(sprite, kp);
-            };
-
-            Action refreshList = null;
-            Action<int> showKeyframeProps = null;
-
-            int selectedKfIndex = -1;
-
-            // ── Refresh keyframe list ──
-            refreshList = () =>
-            {
-                lstKeyframes.Items.Clear();
-                var sorted = kp.Keyframes.OrderBy(k => k.Tick).ToList();
-                kp.Keyframes = sorted;
-                for (int i = 0; i < sorted.Count; i++)
-                {
-                    var k = sorted[i];
-                    lstKeyframes.Items.Add($"[{i}] Tick {k.Tick}  |  {k.EasingToNext}  |  {k.Summary}");
-                }
-                refreshCode();
-                if (selectedKfIndex >= 0 && selectedKfIndex < lstKeyframes.Items.Count)
-                    lstKeyframes.SelectedIndex = selectedKfIndex;
-            };
-
-            // ── Build property editors for selected keyframe ──
-            showKeyframeProps = (int idx) =>
-            {
-                pnlProps.Controls.Clear();
-                pnlProps.RowStyles.Clear();
-                pnlProps.RowCount = 0;
-
-                if (idx < 0 || idx >= kp.Keyframes.Count) return;
-                var kf = kp.Keyframes[idx];
-                int row = 0;
-
-                // Tick
-                AddKfParamInt(pnlProps, ref row, "Tick:", kf.Tick, 0, 9999,
-                    v => { kf.Tick = v; refreshList(); });
-
-                // Easing
-                var easingNames = Enum.GetNames(typeof(EasingType));
-                AddParamCombo(pnlProps, ref row, "Easing:", easingNames, (int)kf.EasingToNext,
-                    v => { kf.EasingToNext = (EasingType)v; refreshList(); });
-
-                // Position
-                AddKfParamFloat(pnlProps, ref row, "X:", kf.X ?? sprite.X,
-                    v => { kf.X = v; refreshList(); });
-                AddKfParamFloat(pnlProps, ref row, "Y:", kf.Y ?? sprite.Y,
-                    v => { kf.Y = v; refreshList(); });
-
-                // Size (texture only)
-                if (!isText)
-                {
-                    AddKfParamFloat(pnlProps, ref row, "Width:", kf.Width ?? sprite.Width,
-                        v => { kf.Width = v; refreshList(); });
-                    AddKfParamFloat(pnlProps, ref row, "Height:", kf.Height ?? sprite.Height,
-                        v => { kf.Height = v; refreshList(); });
-                }
-
-                // Color
-                AddKfParamInt(pnlProps, ref row, "Red:", kf.ColorR ?? sprite.ColorR, 0, 255,
-                    v => { kf.ColorR = v; refreshList(); });
-                AddKfParamInt(pnlProps, ref row, "Green:", kf.ColorG ?? sprite.ColorG, 0, 255,
-                    v => { kf.ColorG = v; refreshList(); });
-                AddKfParamInt(pnlProps, ref row, "Blue:", kf.ColorB ?? sprite.ColorB, 0, 255,
-                    v => { kf.ColorB = v; refreshList(); });
-                AddKfParamInt(pnlProps, ref row, "Alpha:", kf.ColorA ?? sprite.ColorA, 0, 255,
-                    v => { kf.ColorA = v; refreshList(); });
-
-                // Rotation (texture) or Scale (text)
-                if (isText)
-                {
-                    AddKfParamFloat(pnlProps, ref row, "Scale:", kf.Scale ?? sprite.Scale,
-                        v => { kf.Scale = v; refreshList(); });
-                }
-                else
-                {
-                    AddKfParamFloat(pnlProps, ref row, "Rotation:", kf.Rotation ?? sprite.Rotation,
-                        v => { kf.Rotation = v; refreshList(); });
-                }
-            };
-
-            lstKeyframes.SelectedIndexChanged += (s, e) =>
-            {
-                selectedKfIndex = lstKeyframes.SelectedIndex;
-                showKeyframeProps(selectedKfIndex);
-            };
-
-            // ── Keyframe toolbar ──
-            var kfToolbar = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 32,
-                FlowDirection = FlowDirection.LeftToRight,
-                BackColor = Color.FromArgb(35, 35, 40),
-                Padding = new Padding(4, 2, 4, 2),
-            };
-
-            var btnAdd = DarkButton("+ Add", Color.FromArgb(0, 100, 80));
-            btnAdd.Width = 60;
-            btnAdd.Click += (s, e) =>
-            {
-                int nextTick = kp.Keyframes.Count > 0
-                    ? kp.Keyframes.Max(k => k.Tick) + 30
-                    : 0;
-                kp.Keyframes.Add(Keyframe.FromSprite(sprite, nextTick));
-                selectedKfIndex = kp.Keyframes.Count - 1;
-                refreshList();
-                lstKeyframes.SelectedIndex = selectedKfIndex;
-            };
-
-            var btnCapture = DarkButton("📷 Capture Current", Color.FromArgb(0, 80, 140));
-            btnCapture.Width = 140;
-            btnCapture.Click += (s, e) =>
-            {
-                if (selectedKfIndex < 0 || selectedKfIndex >= kp.Keyframes.Count)
-                {
-                    SetStatus("Select a keyframe first");
-                    return;
-                }
-                int tick = kp.Keyframes[selectedKfIndex].Tick;
-                var easing = kp.Keyframes[selectedKfIndex].EasingToNext;
-                var captured = Keyframe.FromSprite(sprite, tick);
-                captured.EasingToNext = easing;
-                kp.Keyframes[selectedKfIndex] = captured;
-                refreshList();
-                showKeyframeProps(selectedKfIndex);
-                SetStatus($"Captured current sprite state into keyframe at tick {tick}");
-            };
-
-            var btnDuplicate = DarkButton("⧉ Duplicate", Color.FromArgb(60, 60, 70));
-            btnDuplicate.Width = 95;
-            btnDuplicate.Click += (s, e) =>
-            {
-                if (selectedKfIndex < 0 || selectedKfIndex >= kp.Keyframes.Count) return;
-                var src = kp.Keyframes[selectedKfIndex];
-                var dup = Keyframe.FromSprite(sprite, src.Tick + 15);
-                dup.X = src.X; dup.Y = src.Y;
-                dup.Width = src.Width; dup.Height = src.Height;
-                dup.ColorR = src.ColorR; dup.ColorG = src.ColorG;
-                dup.ColorB = src.ColorB; dup.ColorA = src.ColorA;
-                dup.Rotation = src.Rotation; dup.Scale = src.Scale;
-                dup.EasingToNext = src.EasingToNext;
-                kp.Keyframes.Add(dup);
-                selectedKfIndex = kp.Keyframes.Count - 1;
-                refreshList();
-                lstKeyframes.SelectedIndex = selectedKfIndex;
-            };
-
-            var btnRemove = DarkButton("✕ Remove", Color.FromArgb(140, 40, 40));
-            btnRemove.Width = 85;
-            btnRemove.Click += (s, e) =>
-            {
-                if (selectedKfIndex < 0 || selectedKfIndex >= kp.Keyframes.Count) return;
-                if (kp.Keyframes.Count <= 2)
-                {
-                    SetStatus("Need at least 2 keyframes");
-                    return;
-                }
-                kp.Keyframes.RemoveAt(selectedKfIndex);
-                if (selectedKfIndex >= kp.Keyframes.Count) selectedKfIndex = kp.Keyframes.Count - 1;
-                refreshList();
-                if (selectedKfIndex >= 0) lstKeyframes.SelectedIndex = selectedKfIndex;
-            };
-
-            kfToolbar.Controls.Add(btnAdd);
-            kfToolbar.Controls.Add(btnCapture);
-            kfToolbar.Controls.Add(btnDuplicate);
-            kfToolbar.Controls.Add(btnRemove);
-
-            // ── Top settings bar (loop mode + list var) ──
-            var pnlSettings = new TableLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = 32,
-                ColumnCount = 4,
-                Padding = new Padding(8, 4, 8, 0),
-            };
-            pnlSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
-            pnlSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-            pnlSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            pnlSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-
-            var lblLoop = new Label { Text = "Loop mode:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.FromArgb(200, 200, 200) };
-            var cmbLoop = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.FromArgb(220, 220, 220) };
-            cmbLoop.Items.AddRange(new[] { "Once", "Loop", "PingPong" });
-            cmbLoop.SelectedIndex = (int)kp.Loop;
-            cmbLoop.SelectedIndexChanged += (s, e) => { kp.Loop = (LoopMode)cmbLoop.SelectedIndex; refreshCode(); };
-
-            var lblListVar = new Label { Text = "List variable:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.FromArgb(200, 200, 200) };
-            var cmbListVar = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 55), ForeColor = Color.FromArgb(220, 220, 220) };
-            cmbListVar.Items.AddRange(new[] { "sprites", "frame" });
-            cmbListVar.SelectedIndex = isPbOrPlugin ? 1 : 0;
-            cmbListVar.SelectedIndexChanged += (s, e) => { kp.ListVarName = cmbListVar.SelectedIndex == 0 ? "sprites" : "frame"; refreshCode(); };
-
-            pnlSettings.Controls.Add(lblLoop, 0, 0);
-            pnlSettings.Controls.Add(cmbLoop, 1, 0);
-            pnlSettings.Controls.Add(lblListVar, 2, 0);
-            pnlSettings.Controls.Add(cmbListVar, 3, 0);
-
-            // ── Bottom toolbar ──
-            var toolbar = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Bottom,
-                Height = 38,
-                FlowDirection = FlowDirection.RightToLeft,
-                BackColor = Color.FromArgb(30, 30, 30),
-                Padding = new Padding(4, 4, 8, 4),
-            };
-
-            var btnClose = DarkButton("Close", Color.FromArgb(70, 70, 70));
-            btnClose.Width = 80;
-            btnClose.Click += (s, e) => dlg.Close();
-
-            var btnCopy = DarkButton("\uD83D\uDCCB Copy to Clipboard", Color.FromArgb(0, 100, 180));
-            btnCopy.Width = 180;
-            btnCopy.Click += (s, e) =>
-            {
-                Clipboard.SetText(txtCode.Text);
-                SetStatus("Keyframe animation snippet copied to clipboard");
-            };
-
-            int autoStart, autoLen;
-            bool canReplace = TryFindSpriteBlockInCodeBox(sprite, out autoStart, out autoLen);
-
-            var btnInsert = DarkButton(
-                canReplace ? "📥 Replace in Code" : "📥 Insert at Cursor",
-                Color.FromArgb(0, 130, 80));
-            btnInsert.Width = canReplace ? 170 : 160;
-            btnInsert.Click += (s, e) =>
-            {
-                if (_codeBox == null) return;
-                _codeBox.Focus();
-                int bs, bl;
-                if (TryFindSpriteBlockInCodeBox(sprite, out bs, out bl))
-                {
-                    _codeBox.SelectionStart = bs;
-                    _codeBox.SelectionLength = bl;
-                }
-                _suppressCodeBoxEvents = true;
-                try { _codeBox.SelectedText = txtCode.Text; }
-                finally { _suppressCodeBoxEvents = false; }
-                SetStatus(bl > 0
-                    ? "Keyframe animation snippet replaced sprite code"
-                    : "Keyframe animation snippet inserted at cursor");
-            };
-
-            toolbar.Controls.Add(btnClose);
-            toolbar.Controls.Add(btnCopy);
-            toolbar.Controls.Add(btnInsert);
-
-            // ── Layout ──
-            // Left panel: keyframe list + property editors
-            var splitLeft = new SplitContainer
-            {
-                Dock = DockStyle.Fill,
-                Orientation = Orientation.Horizontal,
-                SplitterDistance = 160,
-                BackColor = Color.FromArgb(30, 30, 30),
-                SplitterWidth = 4,
-            };
-            splitLeft.Panel1.Controls.Add(lstKeyframes);
-            splitLeft.Panel1.Controls.Add(kfToolbar);
-            splitLeft.Panel2.Controls.Add(pnlProps);
-
-            // Right panel: code preview
-            var lblCodeHeader = new Label
-            {
-                Dock = DockStyle.Top,
-                Height = 22,
-                Text = "   Code Preview:",
-                ForeColor = Color.FromArgb(140, 160, 180),
-                Font = new Font("Segoe UI", 8.5f),
-                Padding = new Padding(4, 4, 0, 0),
-            };
-
-            var pnlRight = new Panel { Dock = DockStyle.Fill };
-            pnlRight.Controls.Add(txtCode);
-            pnlRight.Controls.Add(lblCodeHeader);
-
-            // Main split: left (keyframes) | right (code)
-            var splitMain = new SplitContainer
-            {
-                Dock = DockStyle.Fill,
-                Orientation = Orientation.Vertical,
-                SplitterDistance = 340,
-                BackColor = Color.FromArgb(30, 30, 30),
-                SplitterWidth = 4,
-            };
-            splitMain.Panel1.Controls.Add(splitLeft);
-            splitMain.Panel2.Controls.Add(pnlRight);
-
-            dlg.Controls.Add(splitMain);
-            dlg.Controls.Add(pnlSettings);
-            dlg.Controls.Add(lblHeader);
-            dlg.Controls.Add(toolbar);
-
-            // Initial state
-            refreshList();
-            if (kp.Keyframes.Count > 0)
-                lstKeyframes.SelectedIndex = 0;
-
             dlg.Show(this);
         }
+
 
         /// <summary>Helper for keyframe dialog float parameter fields.</summary>
         private static void AddKfParamFloat(TableLayoutPanel panel, ref int row,

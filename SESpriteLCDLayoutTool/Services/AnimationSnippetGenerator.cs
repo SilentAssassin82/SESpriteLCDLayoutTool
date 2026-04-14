@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using SESpriteLCDLayoutTool.Models;
 
 namespace SESpriteLCDLayoutTool.Services
@@ -674,6 +676,335 @@ namespace SESpriteLCDLayoutTool.Services
         {
             if (s == null) return "";
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        // ── Round-trip parser: code → KeyframeAnimationParams ───────────────────
+
+        // Regex patterns for the well-known array declarations emitted by GenerateKeyframed()
+        private static readonly Regex RxIntArray   = new Regex(@"int\[\]\s+(\w+)\s*=\s*\{\s*([^}]+)\}", RegexOptions.Compiled);
+        private static readonly Regex RxFloatArray = new Regex(@"float\[\]\s+(\w+)\s*=\s*\{\s*([^}]+)\}", RegexOptions.Compiled);
+        private static readonly Regex RxHeader     = new Regex(@"//\s*─+\s*Keyframe Animation:\s*""([^""]+)""\s*\[([^\]]+)\]", RegexOptions.Compiled);
+        private static readonly Regex RxLoopMode   = new Regex(@"Loop:\s*(\w+)", RegexOptions.Compiled);
+        private static readonly Regex RxListVar    = new Regex(@"(\w+)\.Add\(\s*new\s+MySprite", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Finds the start index and length of a keyframe animation block in source code.
+        /// The block starts at the header comment <c>// ─── Keyframe Animation:</c>
+        /// and ends after the sprite <c>.Add(new MySprite { … });</c> closing.
+        /// Returns <c>true</c> if a block was found.
+        /// </summary>
+        public static bool FindKeyframedBlockRange(string code, out int blockStart, out int blockLength)
+        {
+            blockStart = 0;
+            blockLength = 0;
+            if (string.IsNullOrEmpty(code)) return false;
+
+            var headerMatch = RxHeader.Match(code);
+            if (!headerMatch.Success) return false;
+
+            // Walk back to the start of the header line
+            blockStart = headerMatch.Index;
+            while (blockStart > 0 && code[blockStart - 1] != '\n')
+                blockStart--;
+
+            // Find the sprite .Add(new MySprite block after the header
+            var addMatch = RxListVar.Match(code, headerMatch.Index);
+            if (!addMatch.Success) return false;
+
+            // Find the closing }); for the sprite Add call
+            int searchFrom = addMatch.Index + addMatch.Length;
+            int endIdx = code.IndexOf("});", searchFrom, StringComparison.Ordinal);
+            if (endIdx < 0) return false;
+
+            // Move past }); and consume trailing whitespace/newline
+            endIdx += 3; // past ");"
+            if (endIdx < code.Length && code[endIdx] == '\r') endIdx++;
+            if (endIdx < code.Length && code[endIdx] == '\n') endIdx++;
+
+            blockLength = endIdx - blockStart;
+            return blockLength > 0;
+        }
+
+        /// <summary>
+        /// Attempts to parse keyframe animation data from generated code.
+        /// Returns a populated <see cref="KeyframeAnimationParams"/> or null if the code
+        /// does not contain recognizable keyframe arrays.
+        /// </summary>
+        public static KeyframeAnimationParams TryParseKeyframed(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return null;
+
+            // ── Must have kfTick and kfEase arrays at minimum ──
+            int[] ticks  = ParseIntArray(code, "kfTick");
+            int[] easings = ParseIntArray(code, "kfEase");
+            if (ticks == null || easings == null || ticks.Length < 2) return null;
+            if (ticks.Length != easings.Length) return null;
+
+            int count = ticks.Length;
+
+            // ── Optional property arrays ──
+            float[] xs   = ParseFloatArray(code, "kfX");
+            float[] ys   = ParseFloatArray(code, "kfY");
+            float[] ws   = ParseFloatArray(code, "kfW");
+            float[] hs   = ParseFloatArray(code, "kfH");
+            int[]   rs   = ParseIntArray(code, "kfR");
+            int[]   gs   = ParseIntArray(code, "kfG");
+            int[]   bs   = ParseIntArray(code, "kfB");
+            int[]   als  = ParseIntArray(code, "kfA");
+            float[] rots = ParseFloatArray(code, "kfRot");
+            float[] scls = ParseFloatArray(code, "kfScl");
+
+            // ── Build keyframes ──
+            var keyframes = new List<Keyframe>(count);
+            for (int i = 0; i < count; i++)
+            {
+                var kf = new Keyframe
+                {
+                    Tick = ticks[i],
+                    EasingToNext = (i < easings.Length && Enum.IsDefined(typeof(EasingType), easings[i]))
+                                   ? (EasingType)easings[i] : EasingType.Linear,
+                };
+
+                if (xs != null && i < xs.Length)   kf.X = xs[i];
+                if (ys != null && i < ys.Length)   kf.Y = ys[i];
+                if (ws != null && i < ws.Length)   kf.Width = ws[i];
+                if (hs != null && i < hs.Length)   kf.Height = hs[i];
+                if (rs != null && i < rs.Length)   kf.ColorR = rs[i];
+                if (gs != null && i < gs.Length)   kf.ColorG = gs[i];
+                if (bs != null && i < bs.Length)   kf.ColorB = bs[i];
+                if (als != null && i < als.Length) kf.ColorA = als[i];
+                if (rots != null && i < rots.Length) kf.Rotation = rots[i];
+                if (scls != null && i < scls.Length) kf.Scale = scls[i];
+
+                keyframes.Add(kf);
+            }
+
+            // ── Parse metadata from header comment ──
+            var loop = LoopMode.Loop; // default
+            var target = TargetScriptType.ProgrammableBlock; // default
+
+            var headerMatch = RxHeader.Match(code);
+            if (headerMatch.Success)
+            {
+                string targetStr = headerMatch.Groups[2].Value.Trim();
+                if (targetStr.IndexOf("Torch", StringComparison.OrdinalIgnoreCase) >= 0)
+                    target = TargetScriptType.Plugin;
+                else if (targetStr.IndexOf("Pulsar", StringComparison.OrdinalIgnoreCase) >= 0)
+                    target = TargetScriptType.Pulsar;
+                else if (targetStr.IndexOf("Mod", StringComparison.OrdinalIgnoreCase) >= 0)
+                    target = TargetScriptType.Mod;
+                else if (targetStr.IndexOf("LCD", StringComparison.OrdinalIgnoreCase) >= 0)
+                    target = TargetScriptType.LcdHelper;
+            }
+
+            var loopMatch = RxLoopMode.Match(code);
+            if (loopMatch.Success)
+            {
+                string loopStr = loopMatch.Groups[1].Value;
+                if (Enum.TryParse(loopStr, true, out LoopMode parsed))
+                    loop = parsed;
+            }
+
+            // ── Parse list variable name ──
+            string listVar = target == TargetScriptType.LcdHelper ? "sprites" : "frame";
+            var listMatch = RxListVar.Match(code);
+            if (listMatch.Success)
+                listVar = listMatch.Groups[1].Value;
+
+            return new KeyframeAnimationParams
+            {
+                TargetScript = target,
+                Loop = loop,
+                ListVarName = listVar,
+                Keyframes = keyframes,
+            };
+        }
+
+        /// <summary>Parses a named int[] array from code. Returns null if not found.</summary>
+        private static int[] ParseIntArray(string code, string name)
+        {
+            foreach (Match m in RxIntArray.Matches(code))
+            {
+                if (m.Groups[1].Value == name)
+                {
+                    return m.Groups[2].Value
+                        .Split(',')
+                        .Select(s => s.Trim())
+                        .Where(s => s.Length > 0)
+                        .Select(s => int.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out int v) ? v : 0)
+                        .ToArray();
+                }
+            }
+            return null;
+        }
+
+        /// <summary>Parses a named float[] array from code. Returns null if not found.</summary>
+        private static float[] ParseFloatArray(string code, string name)
+        {
+            foreach (Match m in RxFloatArray.Matches(code))
+            {
+                if (m.Groups[1].Value == name)
+                {
+                    return m.Groups[2].Value
+                        .Split(',')
+                        .Select(s => s.Trim().TrimEnd('f', 'F'))
+                        .Where(s => s.Length > 0)
+                        .Select(s => float.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out float v) ? v : 0f)
+                        .ToArray();
+                }
+            }
+            return null;
+        }
+
+        // ── Smart array-level merge ─────────────────────────────────────────────
+
+        /// <summary>Matches a full kf array declaration line including leading whitespace and trailing comments.</summary>
+        private static readonly Regex RxArrayLine = new Regex(
+            @"^[ \t]*(?:int|float)\[\]\s+(\w+)\s*=\s*\{[^}]+\}\s*;[^\r\n]*",
+            RegexOptions.Multiline | RegexOptions.Compiled);
+
+        /// <summary>Extracts the full text of a named array declaration line, or null if not found.</summary>
+        private static string ExtractArrayLine(string code, string name)
+        {
+            foreach (Match m in RxArrayLine.Matches(code))
+            {
+                if (m.Groups[1].Value == name)
+                    return m.Value;
+            }
+            return null;
+        }
+
+        /// <summary>Removes an entire source line that contains the given text.</summary>
+        private static string RemoveCodeLine(string code, string lineContent)
+        {
+            int idx = code.IndexOf(lineContent, StringComparison.Ordinal);
+            if (idx < 0) return code;
+
+            // Walk back to start of line
+            int lineStart = idx;
+            while (lineStart > 0 && code[lineStart - 1] != '\n')
+                lineStart--;
+
+            // Walk forward past end of line including newline
+            int lineEnd = idx + lineContent.Length;
+            if (lineEnd < code.Length && code[lineEnd] == '\r') lineEnd++;
+            if (lineEnd < code.Length && code[lineEnd] == '\n') lineEnd++;
+
+            return code.Substring(0, lineStart) + code.Substring(lineEnd);
+        }
+
+        /// <summary>Returns the leading whitespace of a line.</summary>
+        private static string GetIndent(string line)
+        {
+            int i = 0;
+            while (i < line.Length && (line[i] == ' ' || line[i] == '\t')) i++;
+            return line.Substring(0, i);
+        }
+
+        /// <summary>
+        /// Smart array-level merge: updates kfXxx array declarations, keyframe count
+        /// references, and max-tick references in existing code using values from a
+        /// newly-generated snippet. Works even when the existing code has a different
+        /// structure (e.g., a hand-written PB script) than the generated snippet.
+        /// Returns the merged code, or <c>null</c> if the existing code has no kfTick array.
+        /// </summary>
+        public static string MergeKeyframedIntoCode(string existingCode, string newSnippetCode)
+        {
+            if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(newSnippetCode))
+                return null;
+
+            // Both must have kfTick arrays
+            int[] oldTicks = ParseIntArray(existingCode, "kfTick");
+            int[] newTicks = ParseIntArray(newSnippetCode, "kfTick");
+            if (oldTicks == null || newTicks == null || oldTicks.Length < 2 || newTicks.Length < 2)
+                return null;
+
+            int oldCount = oldTicks.Length;
+            int newCount = newTicks.Length;
+            int oldMaxTick = oldTicks[oldTicks.Length - 1];
+            int newMaxTick = newTicks[newTicks.Length - 1];
+
+            string result = existingCode;
+
+            // All known kf array names in declaration order
+            string[] arrayNames = { "kfTick", "kfEase", "kfX", "kfY", "kfW", "kfH",
+                                    "kfR", "kfG", "kfB", "kfA", "kfRot", "kfScl" };
+
+            string lastFoundLine = null;
+
+            foreach (string name in arrayNames)
+            {
+                string oldLine = ExtractArrayLine(result, name);
+                string newLine = ExtractArrayLine(newSnippetCode, name);
+
+                if (oldLine != null && newLine != null)
+                {
+                    // Preserve original indentation
+                    string indent = GetIndent(oldLine);
+                    string replacement = indent + newLine.TrimStart();
+                    result = result.Replace(oldLine, replacement);
+                    lastFoundLine = replacement;
+                }
+                else if (oldLine != null && newLine == null)
+                {
+                    // Property no longer animated — remove the array
+                    result = RemoveCodeLine(result, oldLine);
+                }
+                else if (oldLine == null && newLine != null && lastFoundLine != null)
+                {
+                    // New property being animated — insert after last known array
+                    int insertIdx = result.IndexOf(lastFoundLine, StringComparison.Ordinal);
+                    if (insertIdx >= 0)
+                    {
+                        string indent = GetIndent(lastFoundLine);
+                        string toInsert = indent + newLine.TrimStart();
+                        int eol = result.IndexOf('\n', insertIdx);
+                        if (eol >= 0)
+                            result = result.Insert(eol + 1, toInsert + Environment.NewLine);
+                        else
+                            result += Environment.NewLine + toInsert;
+                        lastFoundLine = toInsert;
+                    }
+                }
+            }
+
+            // ── Update keyframe count references ──
+            if (oldCount != newCount)
+            {
+                // for (int i = 1; i < N; i++)
+                result = Regex.Replace(result,
+                    @"(for\s*\(\s*int\s+\w+\s*=\s*1\s*;\s*\w+\s*<\s*)" + oldCount + @"(\s*;)",
+                    "${1}" + newCount + "${2}");
+
+                // (seg + 1 < N)
+                result = Regex.Replace(result,
+                    @"(\(\s*\w+\s*\+\s*1\s*<\s*)" + oldCount + @"(\s*\))",
+                    "${1}" + newCount + "${2}");
+            }
+
+            // ── Update max tick references ──
+            if (oldMaxTick != newMaxTick)
+            {
+                // Loop: % maxTick;
+                result = Regex.Replace(result,
+                    @"(%\s*)" + oldMaxTick + @"(\s*;)",
+                    "${1}" + newMaxTick + "${2}");
+
+                // PingPong: % (maxTick*2);
+                if (oldMaxTick * 2 != newMaxTick * 2)
+                {
+                    result = Regex.Replace(result,
+                        @"(%\s*)" + (oldMaxTick * 2) + @"(\s*;)",
+                        "${1}" + (newMaxTick * 2) + "${2}");
+                }
+            }
+
+            // ── Update header comment counts if present ──
+            result = Regex.Replace(result,
+                @"(\d+)\s+keyframes\s+over\s+(\d+)\s+ticks",
+                $"{newCount} keyframes over {newMaxTick} ticks");
+
+            return result;
         }
     }
 }

@@ -97,6 +97,9 @@
     <Reference Include="System.Drawing" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Controls\KeyframeTimeline.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Controls\LcdCanvas.cs">
       <SubType>Component</SubType>
     </Compile>
@@ -107,6 +110,9 @@
     <Compile Include="Data\SpriteCatalog.cs" />
     <Compile Include="Data\GlyphCatalog.cs" />
     <Compile Include="Data\UserSpriteCatalog.cs" />
+    <Compile Include="KeyframeEditorDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>
