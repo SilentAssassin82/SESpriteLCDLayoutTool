@@ -783,6 +783,28 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.8.1
+- **Visual Keyframe Animation Editor** — new **Edit Animation…** dialog (right-click any sprite → Edit Animation) with a full visual timeline for creating multi-keyframe animations
+  - **KeyframeTimeline control** — interactive timeline strip with draggable keyframe diamonds, click-to-select, right-click add/delete, and tick ruler
+  - **Per-keyframe property editing** — X, Y, Width, Height, Rotation, Scale, Color (R/G/B/A) with easing type per keyframe
+  - **7 easing types** — Linear, SineInOut, EaseIn, EaseOut, EaseInOut, Bounce, Elastic
+  - **3 loop modes** — Loop, PingPong, Once
+  - **Live preview** — renders actual sprite shapes (SemiCircle, Circle, Triangle, SquareSimple, etc.) with interpolated properties at the current scrub position
+  - **Texture-aware preview** — loads real SE textures via `SpriteTextureCache` with ColorMatrix tinting
+- **Code round-trip for keyframe animations** — `TryParseKeyframed()` parses `kfTick`/`kfEase`/`kfRot`/`kfX`/etc. arrays from existing code back into the visual editor, enabling edit → tweak → update cycles
+- **✏ Update Code button** — generates updated keyframe arrays from the visual editor and merges them back into the code panel
+  - **3-tier merge strategy:**
+    - **Tier 1 — Block replace:** exact header match replaces the full generated animation block
+    - **Tier 2 — Smart array merge:** finds `kfTick`/`kfEase`/`kfRot`/etc. array declarations in any code structure (PB scripts, mods, plugins) and updates them in-place, including count references (`for (i < N)`, `seg + 1 < N`) and max-tick references (`% maxTick`)
+    - **Tier 3 — Append fallback:** appends the full snippet when no existing arrays are found
+  - Works with hand-written PB scripts, Torch plugins, Pulsar plugins, and generated snippets — any code using the `kfXxx` naming convention
+- **Script-type aware generation** — keyframe snippets include target-specific comments, field hints, and render hints for PB, Mod, Plugin, Pulsar, and LCD Helper targets
+
+### v2.8.0
+- **Fixed PB expression code destruction**
+- **Fixed animation playback code destruction** — animation frames (which replace sprites every tick with untracked copies) no longer trigger code regeneration; `IsPlaying` guard freezes the code panel during playback
+- **Fixed undo/redo code sync** — `Ctrl+Z` / `Ctrl+Y` now snapshot and restore `OriginalSourceCode` alongside sprite state, so round-trip patching diffs correctly after undo instead of silently keeping the pre-undo code; `SourceLineNumber` is also preserved for accurate code navigation after undo
+
 ### v2.7.0
 - **Code Navigation Overhaul** — completely reworked sprite-to-code navigation for Mod/Pulsar scripts with loop-generated sprites
   - Expanded from 3 strategies to a full 6+ strategy chain with automatic fallback (0 → 0a → 0b → 1 → 2 → 3 → 4 → 5 → Fallback)
@@ -811,28 +833,6 @@ MIT License
 - **`StripPreprocessorDirectives` line-number fix** — preserves original line numbers when stripping `#if`/`#endif` blocks by replacing directive lines with blank lines instead of removing them
 - **Canvas click diagnostics** — `LcdCanvas.OnMouseDown` now logs detailed debug info (click position, scale, origin, highlight state, hit/miss with sprite rects) for troubleshooting click-target issues
 - **Copilot instructions updated** — added Sprite Code Navigation rule: navigation must land on the sprite CREATION line, not the `.Add()` line
-
-### v2.8.1
-- **Visual Keyframe Animation Editor** — new **Edit Animation…** dialog (right-click any sprite → Edit Animation) with a full visual timeline for creating multi-keyframe animations
-  - **KeyframeTimeline control** — interactive timeline strip with draggable keyframe diamonds, click-to-select, right-click add/delete, and tick ruler
-  - **Per-keyframe property editing** — X, Y, Width, Height, Rotation, Scale, Color (R/G/B/A) with easing type per keyframe
-  - **7 easing types** — Linear, SineInOut, EaseIn, EaseOut, EaseInOut, Bounce, Elastic
-  - **3 loop modes** — Loop, PingPong, Once
-  - **Live preview** — renders actual sprite shapes (SemiCircle, Circle, Triangle, SquareSimple, etc.) with interpolated properties at the current scrub position
-  - **Texture-aware preview** — loads real SE textures via `SpriteTextureCache` with ColorMatrix tinting
-- **Code round-trip for keyframe animations** — `TryParseKeyframed()` parses `kfTick`/`kfEase`/`kfRot`/`kfX`/etc. arrays from existing code back into the visual editor, enabling edit → tweak → update cycles
-- **✏ Update Code button** — generates updated keyframe arrays from the visual editor and merges them back into the code panel
-  - **3-tier merge strategy:**
-    - **Tier 1 — Block replace:** exact header match replaces the full generated animation block
-    - **Tier 2 — Smart array merge:** finds `kfTick`/`kfEase`/`kfRot`/etc. array declarations in any code structure (PB scripts, mods, plugins) and updates them in-place, including count references (`for (i < N)`, `seg + 1 < N`) and max-tick references (`% maxTick`)
-    - **Tier 3 — Append fallback:** appends the full snippet when no existing arrays are found
-  - Works with hand-written PB scripts, Torch plugins, Pulsar plugins, and generated snippets — any code using the `kfXxx` naming convention
-- **Script-type aware generation** — keyframe snippets include target-specific comments, field hints, and render hints for PB, Mod, Plugin, Pulsar, and LCD Helper targets
-
-### v2.8.0
-- **Fixed PB expression code destruction**
-- **Fixed animation playback code destruction** — animation frames (which replace sprites every tick with untracked copies) no longer trigger code regeneration; `IsPlaying` guard freezes the code panel during playback
-- **Fixed undo/redo code sync** — `Ctrl+Z` / `Ctrl+Y` now snapshot and restore `OriginalSourceCode` alongside sprite state, so round-trip patching diffs correctly after undo instead of silently keeping the pre-undo code; `SourceLineNumber` is also preserved for accurate code navigation after undo
 
 ### v2.6.0
 - **Runtime Variable Inspector** — new **Variables** tab shows all instance fields of the compiled script class with live values, updated every animation tick
