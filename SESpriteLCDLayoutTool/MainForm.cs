@@ -3183,6 +3183,10 @@ namespace SESpriteLCDLayoutTool
                 GridLines     = true,
                 OwnerDraw     = true,
             };
+            // Enable double buffering to eliminate flicker during fast owner-draw updates (sparklines)
+            typeof(ListView).GetProperty("DoubleBuffered",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                ?.SetValue(_lstVariables, true, null);
             _lstVariables.Columns.Add("Field", 120);
             _lstVariables.Columns.Add("Value", 170);
             _lstVariables.Columns.Add("Trend", 110);
@@ -3768,20 +3772,44 @@ namespace SESpriteLCDLayoutTool
         /// Appends output lines (Echo calls) to the Console tab.
         /// Lines are color-coded: Echo in cyan, errors in red.
         /// </summary>
+        private const int MaxConsoleLines = 2000;
+        private const int ConsoleTrimTarget = 1500;
+
         private void AppendConsoleOutput(List<string> lines, int tick = -1)
         {
             if (_rtbConsole == null || lines == null || lines.Count == 0) return;
 
-            _rtbConsole.SuspendLayout();
-            foreach (string line in lines)
+            // Suppress all painting during the batch update
+            SendMessage(_rtbConsole.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+            try
             {
-                string prefix = tick >= 0 ? $"[T{tick}] " : "";
-                _rtbConsole.SelectionStart = _rtbConsole.TextLength;
-                _rtbConsole.SelectionLength = 0;
-                _rtbConsole.SelectionColor = Color.FromArgb(100, 200, 255); // cyan
-                _rtbConsole.AppendText(prefix + line + "\n");
+                foreach (string line in lines)
+                {
+                    string prefix = tick >= 0 ? $"[T{tick}] " : "";
+                    _rtbConsole.SelectionStart = _rtbConsole.TextLength;
+                    _rtbConsole.SelectionLength = 0;
+                    _rtbConsole.SelectionColor = Color.FromArgb(100, 200, 255);
+                    _rtbConsole.AppendText(prefix + line + "\n");
+                }
+
+                // Trim old lines to prevent unbounded growth
+                if (_rtbConsole.Lines.Length > MaxConsoleLines)
+                {
+                    int removeUpTo = _rtbConsole.Lines.Length - ConsoleTrimTarget;
+                    int charIdx = _rtbConsole.GetFirstCharIndexFromLine(removeUpTo);
+                    if (charIdx > 0)
+                    {
+                        _rtbConsole.Select(0, charIdx);
+                        _rtbConsole.SelectedText = "";
+                    }
+                }
             }
-            _rtbConsole.ResumeLayout();
+            finally
+            {
+                // Re-enable painting and force a single repaint
+                SendMessage(_rtbConsole.Handle, WM_SETREDRAW, (IntPtr)1, IntPtr.Zero);
+                _rtbConsole.Invalidate();
+            }
 
             // Auto-scroll to bottom
             _rtbConsole.SelectionStart = _rtbConsole.TextLength;
@@ -3959,9 +3987,13 @@ namespace SESpriteLCDLayoutTool
         private const int WM_USER = 0x0400;
         private const int EM_GETSCROLLPOS = WM_USER + 221;
         private const int EM_SETSCROLLPOS = WM_USER + 222;
+        private const int WM_SETREDRAW = 0x000B;
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref Point lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         private static Point GetScrollPos(RichTextBox rtb)
         {

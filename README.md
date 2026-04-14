@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.8.1) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.8.2) |
 
 ---
 
@@ -782,6 +782,11 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.8.2
+- **Fixed Variables panel flicker** — enabled double buffering on the owner-drawn `ListView` (sparklines, live field values) via reflection, eliminating visible flicker during fast Update1 animations
+- **Fixed Console tab flicker** — replaced `SuspendLayout`/`ResumeLayout` with `WM_SETREDRAW` paint suppression for flicker-free batch Echo output updates
+- **Console line trimming** — the Console tab now caps at 2,000 lines and trims to 1,500 when exceeded, preventing unbounded `RichTextBox` growth during long animation sessions
 
 ### v2.8.1
 - **Visual Keyframe Animation Editor** — new **Edit Animation…** dialog (right-click any sprite → Edit Animation) with a full visual timeline for creating multi-keyframe animations
