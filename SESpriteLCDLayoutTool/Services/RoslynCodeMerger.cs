@@ -390,8 +390,13 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.Append(sprite.Alignment.ToString().ToUpperInvariant());
                 sb.AppendLine(",");
             }
-            else if (Math.Abs(sprite.Rotation) > 0.001f)
+            else
             {
+                // Always emit Alignment and RotationOrScale for texture sprites —
+                // omitting them loses data when the sprite is later animated or
+                // round-tripped through code merge.
+                sb.Append(innerIndent);
+                sb.AppendLine("Alignment = TextAlignment.CENTER,");
                 sb.Append(innerIndent);
                 sb.Append("RotationOrScale = ");
                 sb.Append(sprite.Rotation.ToString("F4"));

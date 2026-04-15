@@ -272,8 +272,19 @@ namespace SESpriteLCDLayoutTool.Services
         public static List<DetectedMethodInfo> GetDetectedMethodsWithMetadata(string userCode,
             List<SnapshotRowData> capturedRows = null)
         {
+            return GetDetectedMethodsWithMetadata(userCode, null, capturedRows);
+        }
+
+        /// <summary>
+        /// Returns detected call expressions with metadata.
+        /// When <paramref name="preComputedCalls"/> is non-null, skips the
+        /// expensive <see cref="DetectAllCallExpressions"/> pass.
+        /// </summary>
+        public static List<DetectedMethodInfo> GetDetectedMethodsWithMetadata(string userCode,
+            List<string> preComputedCalls, List<SnapshotRowData> capturedRows = null)
+        {
             var result = new List<DetectedMethodInfo>();
-            var calls = DetectAllCallExpressions(userCode, capturedRows);
+            var calls = preComputedCalls ?? DetectAllCallExpressions(userCode, capturedRows);
 
             // Strip preprocessor directives for offset calculation
             string cleanCode = StripPreprocessorDirectives(userCode);
@@ -887,6 +898,22 @@ namespace SESpriteLCDLayoutTool.Services
         public static ExecutionResult ExecuteWithInit(string userCode, string callExpression,
             List<SnapshotRowData> capturedRows = null)
         {
+            AnimationContext discarded;
+            var result = ExecuteWithInit(userCode, callExpression, capturedRows, out discarded);
+            discarded?.Dispose();
+            return result;
+        }
+
+        /// <summary>
+        /// Same as the parameterless overload, but keeps the compiled
+        /// <see cref="AnimationContext"/> alive in <paramref name="keepAliveCtx"/>
+        /// so callers can reuse it for field inspection without a second compilation.
+        /// The caller takes ownership and must dispose the context when finished.
+        /// </summary>
+        public static ExecutionResult ExecuteWithInit(string userCode, string callExpression,
+            List<SnapshotRowData> capturedRows, out AnimationContext keepAliveCtx)
+        {
+            keepAliveCtx = null;
             if (string.IsNullOrWhiteSpace(userCode))
                 return Fail("No code provided.");
             // callExpression may be null — CompileForAnimation auto-detects
@@ -902,6 +929,8 @@ namespace SESpriteLCDLayoutTool.Services
                 InitAnimation(ctx);
                 var result = RunAnimationFrame(ctx, 32, 0, 0.016);
                 result.ScriptType = ctx.ScriptType;
+                keepAliveCtx = ctx;   // transfer ownership to caller
+                ctx = null;           // prevent finally from disposing
                 return result;
             }
             catch (Exception ex)

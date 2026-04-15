@@ -946,9 +946,11 @@ namespace SESpriteLCDLayoutTool
             _execResultLabel.ForeColor = Color.FromArgb(200, 180, 60);
             Refresh();
 
-            var result = CodeExecutor.ExecuteWithInit(code, call, _layout?.CapturedRows);
+            CodeExecutor.AnimationContext execCtx;
+            var result = CodeExecutor.ExecuteWithInit(code, call, _layout?.CapturedRows, out execCtx);
             if (!result.Success)
             {
+                execCtx?.Dispose();
                 _execResultLabel.Text      = "✗ Error";
                 _execResultLabel.ForeColor = Color.FromArgb(220, 80, 80);
                 AppendConsoleError(result.Error);
@@ -1032,6 +1034,7 @@ namespace SESpriteLCDLayoutTool
                         RefreshCode();
                     SetStatus($"Executed — {mergeResult.Summary}");
                     RefreshDebugStats();
+                    AutoInspectVariablesAfterExecution(execCtx);
                     return;
                 }
             }
@@ -1270,9 +1273,9 @@ namespace SESpriteLCDLayoutTool
 
             // ══════════════════════════════════════════════════════════════════════════
             // AUTOMATIC VARIABLE INSPECTION: Show instance fields after execution
-            // This helps debug "why isn't my counter incrementing?" without MessageBox spam
+            // Reuses the already-compiled context to avoid a second Roslyn compilation.
             // ══════════════════════════════════════════════════════════════════════════
-            AutoInspectVariablesAfterExecution(code, call);
+            AutoInspectVariablesAfterExecution(execCtx);
 
             // SpriteMappingBuilder removed: the instrumentation pipeline (SetCurrentMethod + RecordSpriteMethod)
             // now tags each sprite with SourceMethodName/SourceMethodIndex at execution time, making the
@@ -1450,8 +1453,11 @@ namespace SESpriteLCDLayoutTool
         /// <summary>
         /// Automatically inspects variables after Execute Code completes successfully.
         /// Populates the Variables tab and writes to Debug output.
+        /// When <paramref name="ctx"/> is non-null the already-compiled context is
+        /// adopted (zero-cost), avoiding a second Roslyn compilation.  Falls back
+        /// to the legacy compile path when ctx is null.
         /// </summary>
-        private void AutoInspectVariablesAfterExecution(string code, string call)
+        private void AutoInspectVariablesAfterExecution(CodeExecutor.AnimationContext ctx)
         {
             try
             {
@@ -1461,13 +1467,15 @@ namespace SESpriteLCDLayoutTool
                     _lastAnimPlayer.Dispose();
                 }
 
-                _lastAnimPlayer = new AnimationPlayer(this);
-                string prepError = _lastAnimPlayer.Prepare(code, call, _layout?.CapturedRows);
-                if (prepError != null)
+                if (ctx != null)
                 {
-                    _lastAnimPlayer?.Dispose();
+                    _lastAnimPlayer = new AnimationPlayer(this);
+                    _lastAnimPlayer.AdoptContext(ctx);
+                }
+                else
+                {
                     _lastAnimPlayer = null;
-                    return; // Silent failure - execution already succeeded, inspection is bonus
+                    return;
                 }
 
                 var fields = _lastAnimPlayer.InspectFields();
@@ -4827,6 +4835,10 @@ namespace SESpriteLCDLayoutTool
                         : s.SourceStart < 0 ? "· "
                         : "";
 
+                    // Animation group indicator
+                    if (!string.IsNullOrEmpty(s.AnimationGroupId))
+                        prefix += s.KeyframeAnimation != null ? "⟐ " : "⟡ ";
+
                     // Append variable name annotation when present (shows code structure)
                     string suffix = !string.IsNullOrEmpty(s.VariableName) 
                         ? $"  // {s.VariableName}"
@@ -5862,7 +5874,7 @@ namespace SESpriteLCDLayoutTool
             System.Diagnostics.Debug.WriteLine($"[RefreshDetectedCalls] Code length: {codeText.Length}");
 
             var calls = CodeExecutor.DetectAllCallExpressions(codeText, _layout?.CapturedRows);
-            _detectedMethods = CodeExecutor.GetDetectedMethodsWithMetadata(codeText, _layout?.CapturedRows);
+            _detectedMethods = CodeExecutor.GetDetectedMethodsWithMetadata(codeText, calls, _layout?.CapturedRows);
 
             System.Diagnostics.Debug.WriteLine($"[RefreshDetectedCalls] Detected {calls.Count} calls:");
             foreach (var c in calls)
@@ -8957,6 +8969,17 @@ namespace SESpriteLCDLayoutTool
             var editAnimItem = ctx.Items.Add("Edit Animation…", null, (s, e) => ShowKeyframeAnimationDialog(editExisting: true));
             var copyAnimItem  = ctx.Items.Add("Copy Animation",  null, (s, e) => CopySelectedAnimation());
             var pasteAnimItem = ctx.Items.Add("Paste Animation", null, (s, e) => PasteAnimationToSelected());
+            var createGroupItem = ctx.Items.Add("Create Animation Group", null, (s, e) => CreateAnimationGroup());
+            var joinGroupMenu = new ToolStripMenuItem("Join Animation Group")
+            {
+                BackColor = Color.FromArgb(45, 45, 48),
+                ForeColor = Color.FromArgb(220, 220, 220),
+            };
+            joinGroupMenu.DropDown.BackColor = Color.FromArgb(45, 45, 48);
+            joinGroupMenu.DropDown.ForeColor = Color.FromArgb(220, 220, 220);
+            if (joinGroupMenu.DropDown is ToolStripDropDownMenu jdd) jdd.Renderer = new DarkMenuRenderer();
+            ctx.Items.Add(joinGroupMenu);
+            var leaveGroupItem = ctx.Items.Add("Leave Animation Group", null, (s, e) => LeaveAnimationGroup());
 
             ctx.Items.Add(new ToolStripSeparator());
             ctx.Items.Add("Layer Up\tCtrl+]",         null, (s, e) => { PushUndo(); _canvas.MoveSelectedUp();   RefreshLayerList(); if (!_codeBoxDirty) RefreshCode(); });
@@ -8971,9 +8994,37 @@ namespace SESpriteLCDLayoutTool
                 // Show "Edit Animation" if sprite has in-memory data OR code panel has keyframe arrays
                 bool hasAnim = sel?.KeyframeAnimation != null
                             || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text) != null;
-                editAnimItem.Visible = sel != null && hasAnim;
-                copyAnimItem.Visible = sel != null && hasAnim;
+                // Also check if sprite is in a group (follower can edit via leader)
+                bool inGroup = !string.IsNullOrEmpty(sel?.AnimationGroupId);
+                bool isLeader = inGroup && sel?.KeyframeAnimation != null;
+                editAnimItem.Visible  = sel != null && (hasAnim || inGroup);
+                copyAnimItem.Visible  = sel != null && (hasAnim || inGroup);
                 pasteAnimItem.Visible = sel != null && _copiedAnimation != null;
+
+                // Group items
+                createGroupItem.Visible = sel != null && hasAnim && !inGroup;
+                leaveGroupItem.Visible  = sel != null && inGroup;
+
+                // Build "Join" submenu dynamically
+                joinGroupMenu.DropDownItems.Clear();
+                if (sel != null && !inGroup && _layout != null)
+                {
+                    var groups = _layout.Sprites
+                        .Where(sp => !string.IsNullOrEmpty(sp.AnimationGroupId) && sp.KeyframeAnimation != null)
+                        .GroupBy(sp => sp.AnimationGroupId)
+                        .ToList();
+                    foreach (var g in groups)
+                    {
+                        var leader = g.First();
+                        int count = GetGroupMembers(g.Key).Count;
+                        joinGroupMenu.DropDownItems.Add(
+                            $"{leader.DisplayName} ({count} sprites)",
+                            null,
+                            (s2, e2) => JoinAnimationGroup(g.Key));
+                    }
+                }
+                joinGroupMenu.Visible = sel != null && !inGroup && joinGroupMenu.DropDownItems.Count > 0;
+
                 // Update "Hide Selected" label based on count
                 var selected = GetSelectedSprites();
                 hideItem.Text = selected.Count > 1 ? $"Hide Selected ({selected.Count})" : "Hide Selected";
@@ -9003,6 +9054,17 @@ namespace SESpriteLCDLayoutTool
             var editAnimItem  = ctx.Items.Add("Edit Animation…",    null, (s, e) => ShowKeyframeAnimationDialog(editExisting: true));
             var copyAnimItem  = ctx.Items.Add("Copy Animation",      null, (s, e) => CopySelectedAnimation());
             var pasteAnimItem = ctx.Items.Add("Paste Animation",     null, (s, e) => PasteAnimationToSelected());
+            var createGroupItem2 = ctx.Items.Add("Create Animation Group", null, (s, e) => CreateAnimationGroup());
+            var joinGroupMenu2 = new ToolStripMenuItem("Join Animation Group")
+            {
+                BackColor = Color.FromArgb(45, 45, 48),
+                ForeColor = Color.FromArgb(220, 220, 220),
+            };
+            joinGroupMenu2.DropDown.BackColor = Color.FromArgb(45, 45, 48);
+            joinGroupMenu2.DropDown.ForeColor = Color.FromArgb(220, 220, 220);
+            if (joinGroupMenu2.DropDown is ToolStripDropDownMenu jdd2) jdd2.Renderer = new DarkMenuRenderer();
+            ctx.Items.Add(joinGroupMenu2);
+            var leaveGroupItem2 = ctx.Items.Add("Leave Animation Group", null, (s, e) => LeaveAnimationGroup());
 
             ctx.Opening += (s, e) =>
             {
@@ -9042,11 +9104,37 @@ namespace SESpriteLCDLayoutTool
                 showAllItem.Enabled = anyHidden;
 
                 // Edit Animation: visible if sprite has in-memory data OR code has keyframe arrays
-                bool hasAnim = _canvas.SelectedSprite.KeyframeAnimation != null
+                var selSprite = _canvas.SelectedSprite;
+                bool hasAnim = selSprite.KeyframeAnimation != null
                             || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text) != null;
-                editAnimItem.Visible = !multi && hasAnim;
-                copyAnimItem.Visible = !multi && hasAnim;
+                bool inGroup = !string.IsNullOrEmpty(selSprite.AnimationGroupId);
+                editAnimItem.Visible  = !multi && (hasAnim || inGroup);
+                copyAnimItem.Visible  = !multi && (hasAnim || inGroup);
                 pasteAnimItem.Visible = !multi && _copiedAnimation != null;
+
+                // Group items
+                createGroupItem2.Visible = !multi && hasAnim && !inGroup;
+                leaveGroupItem2.Visible  = !multi && inGroup;
+
+                // Build "Join" submenu dynamically
+                joinGroupMenu2.DropDownItems.Clear();
+                if (!multi && !inGroup && _layout != null)
+                {
+                    var groups = _layout.Sprites
+                        .Where(sp => !string.IsNullOrEmpty(sp.AnimationGroupId) && sp.KeyframeAnimation != null)
+                        .GroupBy(sp => sp.AnimationGroupId)
+                        .ToList();
+                    foreach (var g in groups)
+                    {
+                        var ldr = g.First();
+                        int count = GetGroupMembers(g.Key).Count;
+                        joinGroupMenu2.DropDownItems.Add(
+                            $"{ldr.DisplayName} ({count} sprites)",
+                            null,
+                            (s2, e2) => JoinAnimationGroup(g.Key));
+                    }
+                }
+                joinGroupMenu2.Visible = !multi && !inGroup && joinGroupMenu2.DropDownItems.Count > 0;
             };
 
             return ctx;
@@ -9234,6 +9322,40 @@ namespace SESpriteLCDLayoutTool
             string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
             if (string.IsNullOrWhiteSpace(code)) return;
 
+            // PB scripts always call Main() directly — focused animation
+            // would compile twice (ExecuteWithInit + Prepare) for no benefit.
+            // Fall through to the normal Prepare path by clearing focus state
+            // and preparing directly.
+            if (CodeExecutor.DetectScriptType(code) == ScriptType.ProgrammableBlock)
+            {
+                _animFocusCall = null;
+                _animFocusSprites = null;
+                _canvas.HighlightedSprites = null;
+
+                if (_animPlayer != null && _animPlayer.IsPlaying)
+                    return; // already running, nothing to re-focus
+
+                EnsureAnimPlayer();
+                PushUndo();
+                CaptureAnimPositionSnapshot();
+                _rtbConsole?.Clear();
+
+                string pbError = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
+                if (pbError != null)
+                {
+                    MessageBox.Show(pbError, "Animation Error",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    _animPositionSnapshot = null;
+                    UpdateAnimButtonStates();
+                    return;
+                }
+
+                _animPlayer.Play();
+                UpdateAnimButtonStates();
+                SetStatus("Animation playing…");
+                return;
+            }
+
             // Check if this is a virtual method (switch-case)
             DetectedMethodInfo methodInfo = _detectedMethods?.FirstOrDefault(m => m.CallExpression == call);
             bool isVirtual = methodInfo != null && methodInfo.Kind == MethodKind.SwitchCase;
@@ -9401,20 +9523,15 @@ namespace SESpriteLCDLayoutTool
                 string call = _execCallBox.Text.Trim();
                 if (!string.IsNullOrEmpty(call))
                 {
-                    // Keep isolation active - OnAnimFrame will filter sprites using the mapping
-                    StartFocusedAnimation(call);
-                    return;
-                }
-            }
-
-            // If a specific call is selected in the call box, animate
-            // just that method instead of the full scene.
-            {
-                string selectedCall = _execCallBox.Text.Trim();
-                if (!string.IsNullOrEmpty(selectedCall))
-                {
-                    StartFocusedAnimation(selectedCall);
-                    return;
+                    // Skip focused-animation path for PB scripts — same reasoning
+                    // as the non-isolated check below (PB always calls Main directly).
+                    string isoCode = _layout?.OriginalSourceCode ?? _codeBox.Text;
+                    if (CodeExecutor.DetectScriptType(isoCode) != ScriptType.ProgrammableBlock)
+                    {
+                        // Keep isolation active - OnAnimFrame will filter sprites using the mapping
+                        StartFocusedAnimation(call);
+                        return;
+                    }
                 }
             }
 
@@ -9423,9 +9540,31 @@ namespace SESpriteLCDLayoutTool
             _animFocusSprites = null;
             _canvas.HighlightedSprites = null;
 
+            // Clear selection once up-front so OnAnimFrame never triggers
+            // OnSelectionChanged (the null guard in OnAnimFrame is the main
+            // protection, but this avoids even the first-frame cost).
+            if (_canvas.SelectedSprite != null)
+                _canvas.SelectedSprite = null;
+
             // Prepare + play from scratch
             string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
             if (string.IsNullOrWhiteSpace(code)) { SetStatus("No code to animate."); return; }
+
+            // If a specific call is selected in the call box, animate
+            // just that method instead of the full scene.
+            // Skip for PB scripts — BuildPbAnimationSource always calls Main()
+            // directly, so the focused-animation path is unnecessary and can
+            // interfere with PB animation playback (e.g. auto-detected
+            // "Main("", UpdateType.None)" would divert through ExecuteWithInit).
+            {
+                string selectedCall = _execCallBox.Text.Trim();
+                if (!string.IsNullOrEmpty(selectedCall) &&
+                    CodeExecutor.DetectScriptType(code) != ScriptType.ProgrammableBlock)
+                {
+                    StartFocusedAnimation(selectedCall);
+                    return;
+                }
+            }
 
             EnsureAnimPlayer();
             PushUndo();
@@ -9472,9 +9611,15 @@ namespace SESpriteLCDLayoutTool
             // If not yet prepared, prepare first
             if (_animPlayer == null || !_animPlayer.IsPlaying)
             {
+                // Detect script type once — PB scripts always call Main() directly,
+                // so the focused-animation path (extra compile to build focus set) is unnecessary.
+                string stepCode = _layout?.OriginalSourceCode ?? _codeBox.Text;
+                bool isPbStep = !string.IsNullOrWhiteSpace(stepCode)
+                    && CodeExecutor.DetectScriptType(stepCode) == ScriptType.ProgrammableBlock;
+
                 // If a call is currently isolated, carry that into animation
                 // Keep _isolatedCallSprites active so OnAnimFrame can filter frames
-                if (_isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
+                if (!isPbStep && _isolatedCallSprites != null && _isolatedCallSprites.Count > 0)
                 {
                     string isoCall = _execCallBox.Text.Trim();
                     if (!string.IsNullOrEmpty(isoCall))
@@ -9490,17 +9635,23 @@ namespace SESpriteLCDLayoutTool
                 }
 
                 // If a specific call is selected, animate just that method
-                string selectedCall = _execCallBox.Text.Trim();
-                if (!string.IsNullOrEmpty(selectedCall))
+                // Skip for PB scripts — same reasoning as OnAnimPlayClick:
+                // PB always calls Main() directly, focused animation is unnecessary
+                // and causes a double-compile (ExecuteWithInit + Prepare).
+                if (!isPbStep)
                 {
-                    StartFocusedAnimation(selectedCall);
-                    if (_animPlayer != null && _animPlayer.IsPlaying)
-                        _animPlayer.StepForward();
-                    UpdateAnimButtonStates();
-                    return;
+                    string selectedCall = _execCallBox.Text.Trim();
+                    if (!string.IsNullOrEmpty(selectedCall))
+                    {
+                        StartFocusedAnimation(selectedCall);
+                        if (_animPlayer != null && _animPlayer.IsPlaying)
+                            _animPlayer.StepForward();
+                        UpdateAnimButtonStates();
+                        return;
+                    }
                 }
 
-                string code = _layout?.OriginalSourceCode ?? _codeBox.Text;
+                string code = stepCode;
                 if (string.IsNullOrWhiteSpace(code)) { SetStatus("No code to animate."); return; }
 
                 EnsureAnimPlayer();
@@ -9598,7 +9749,8 @@ namespace SESpriteLCDLayoutTool
                 _canvas.HighlightedSprites = highlighted.Count > 0 ? highlighted : null;
             }
 
-            _canvas.SelectedSprite = null;
+            if (_canvas.SelectedSprite != null)
+                _canvas.SelectedSprite = null;
             _canvas.Invalidate();
 
             string typeTag = _animPlayer?.ScriptType == ScriptType.ProgrammableBlock ? "PB"
@@ -9925,8 +10077,14 @@ namespace SESpriteLCDLayoutTool
             var sprite = _canvas.SelectedSprite;
             if (sprite == null) return;
 
-            var src = sprite.KeyframeAnimation
-                   ?? AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
+            // If sprite is a group follower, grab the leader's animation
+            var src = sprite.KeyframeAnimation;
+            if (src == null && !string.IsNullOrEmpty(sprite.AnimationGroupId))
+            {
+                var leader = FindGroupLeader(sprite.AnimationGroupId);
+                src = leader?.KeyframeAnimation;
+            }
+            src = src ?? AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
             if (src == null) { SetStatus("No animation to copy"); return; }
 
             // Deep-clone so edits to the copy don't mutate the original
@@ -9986,6 +10144,237 @@ namespace SESpriteLCDLayoutTool
             };
 
             SetStatus($"Pasted animation ({sprite.KeyframeAnimation.Keyframes.Count} keyframes) to '{sprite.DisplayName}'");
+
+            // Auto-generate animation code so canvas playback works immediately
+            MergeAnimationCodeIntoPanel(sprite);
+        }
+
+        // ── Animation groups ─────────────────────────────────────────────────────
+
+        /// <summary>Finds the group leader (sprite with KeyframeAnimation) for a given group ID.</summary>
+        private SpriteEntry FindGroupLeader(string groupId)
+        {
+            if (string.IsNullOrEmpty(groupId) || _layout == null) return null;
+            return _layout.Sprites.FirstOrDefault(s => s.AnimationGroupId == groupId && s.KeyframeAnimation != null);
+        }
+
+        /// <summary>Gets all sprites in a group (including leader).</summary>
+        private List<SpriteEntry> GetGroupMembers(string groupId)
+        {
+            if (string.IsNullOrEmpty(groupId) || _layout == null) return new List<SpriteEntry>();
+            return _layout.Sprites.Where(s => s.AnimationGroupId == groupId).ToList();
+        }
+
+        /// <summary>Gets follower sprites in a group (excluding leader).</summary>
+        private List<SpriteEntry> GetGroupFollowers(string groupId)
+        {
+            if (string.IsNullOrEmpty(groupId) || _layout == null) return new List<SpriteEntry>();
+            return _layout.Sprites.Where(s => s.AnimationGroupId == groupId && s.KeyframeAnimation == null).ToList();
+        }
+
+        private void CreateAnimationGroup()
+        {
+            var sprite = _canvas.SelectedSprite;
+            if (sprite == null) return;
+
+            // Need animation data to be a leader
+            var anim = sprite.KeyframeAnimation
+                    ?? AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
+            if (anim == null) { SetStatus("Sprite has no keyframe animation to share"); return; }
+
+            PushUndo();
+            sprite.KeyframeAnimation = anim;
+            sprite.AnimationGroupId = Guid.NewGuid().ToString("N").Substring(0, 8);
+
+            RefreshLayerList();
+            SetStatus($"Created animation group '{sprite.AnimationGroupId}' — right-click other sprites to join");
+        }
+
+        private void JoinAnimationGroup(string groupId)
+        {
+            var sprite = _canvas.SelectedSprite;
+            if (sprite == null || string.IsNullOrEmpty(groupId)) return;
+
+            PushUndo();
+            sprite.AnimationGroupId = groupId;
+            // Followers don't own animation data — they reference the leader's
+            sprite.KeyframeAnimation = null;
+
+            var leader = FindGroupLeader(groupId);
+            int memberCount = GetGroupMembers(groupId).Count;
+            RefreshLayerList();
+            SetStatus($"Joined animation group '{groupId}' ({memberCount} sprites, leader: {leader?.DisplayName ?? "?"})");
+
+            // Regenerate animation code to include the new follower
+            if (leader != null)
+                MergeAnimationCodeIntoPanel(leader);
+        }
+
+        private void LeaveAnimationGroup()
+        {
+            var sprite = _canvas.SelectedSprite;
+            if (sprite == null || string.IsNullOrEmpty(sprite.AnimationGroupId)) return;
+
+            PushUndo();
+            string oldGroup = sprite.AnimationGroupId;
+
+            // If this sprite is the leader, promote a follower before leaving
+            if (sprite.KeyframeAnimation != null)
+                PromoteGroupFollowerIfNeeded(sprite);
+
+            sprite.AnimationGroupId = null;
+
+            // If only one member remains, dissolve the group
+            var remaining = GetGroupMembers(oldGroup);
+            if (remaining.Count == 1)
+            {
+                var lastMember = remaining[0];
+                lastMember.AnimationGroupId = null;
+                SetStatus("Animation group dissolved (last member removed)");
+                // Regenerate solo animation code for the last remaining member
+                if (lastMember.KeyframeAnimation != null)
+                    MergeAnimationCodeIntoPanel(lastMember);
+            }
+            else if (remaining.Count > 0)
+            {
+                SetStatus($"Left animation group ({remaining.Count} remaining)");
+                // Regenerate group code without the departed member
+                var newLeader = FindGroupLeader(oldGroup);
+                if (newLeader != null)
+                    MergeAnimationCodeIntoPanel(newLeader);
+            }
+            else
+            {
+                SetStatus("Left animation group");
+            }
+
+            RefreshLayerList();
+        }
+
+        /// <summary>
+        /// When a leader leaves, this preserves the animation on the group by
+        /// promoting a follower to leader with a cloned copy of the animation.
+        /// Must be called BEFORE clearing the leader's group ID.
+        /// </summary>
+        private void PromoteGroupFollowerIfNeeded(SpriteEntry departingLeader)
+        {
+            if (departingLeader?.KeyframeAnimation == null) return;
+            string gid = departingLeader.AnimationGroupId;
+            if (string.IsNullOrEmpty(gid)) return;
+
+            var followers = GetGroupFollowers(gid);
+            if (followers.Count == 0) return;
+
+            // Deep-clone animation to the first follower
+            var src = departingLeader.KeyframeAnimation;
+            followers[0].KeyframeAnimation = new KeyframeAnimationParams
+            {
+                ListVarName  = src.ListVarName,
+                Loop         = src.Loop,
+                TargetScript = src.TargetScript,
+                Keyframes    = src.Keyframes.Select(k => new Keyframe
+                {
+                    Tick         = k.Tick,
+                    X            = k.X,
+                    Y            = k.Y,
+                    Width        = k.Width,
+                    Height       = k.Height,
+                    ColorR       = k.ColorR,
+                    ColorG       = k.ColorG,
+                    ColorB       = k.ColorB,
+                    ColorA       = k.ColorA,
+                    Rotation     = k.Rotation,
+                    Scale        = k.Scale,
+                    EasingToNext = k.EasingToNext,
+                }).ToList(),
+            };
+        }
+
+        /// <summary>
+        /// Generates animation code for the given sprite (or its group) and merges
+        /// it into the code panel using a 3-tier strategy: block replace → array merge → append.
+        /// </summary>
+        private void MergeAnimationCodeIntoPanel(SpriteEntry sprite)
+        {
+            if (_codeBox == null || sprite?.KeyframeAnimation == null) return;
+
+            var kp = sprite.KeyframeAnimation;
+            string groupId = sprite.AnimationGroupId;
+
+            // Generate snippet code (for merging into existing code)
+            string snippetCode;
+            // Generate COMPLETE compilable program (for standalone / Tier 3)
+            string completeCode;
+
+            if (!string.IsNullOrEmpty(groupId))
+            {
+                var followers = GetGroupFollowers(groupId);
+                if (followers.Count > 0)
+                {
+                    snippetCode = AnimationSnippetGenerator.GenerateKeyframedGroup(sprite, kp, followers);
+                    completeCode = AnimationSnippetGenerator.GenerateKeyframedGroupComplete(sprite, kp, followers);
+                }
+                else
+                {
+                    snippetCode = AnimationSnippetGenerator.GenerateKeyframed(sprite, kp);
+                    completeCode = AnimationSnippetGenerator.GenerateKeyframedComplete(sprite, kp);
+                }
+            }
+            else
+            {
+                snippetCode = AnimationSnippetGenerator.GenerateKeyframed(sprite, kp);
+                completeCode = AnimationSnippetGenerator.GenerateKeyframedComplete(sprite, kp);
+            }
+
+            if (string.IsNullOrEmpty(snippetCode)) return;
+
+            string existing = _codeBox.Text;
+
+            // Suppress TextChanged events while we programmatically update the code box.
+            // Without this, the handler sets _codeBoxDirty = true and shows "Apply Code"
+            // button, which we immediately undo — but the brief event can trigger
+            // RefreshDetectedCalls indirectly through auto-complete handlers.
+            _suppressCodeBoxEvents = true;
+            try
+            {
+                // Tier 1: Exact block replace (handles both snippet-only and complete program blocks)
+                if (AnimationSnippetGenerator.FindKeyframedBlockRange(existing,
+                        out int blockStart, out int blockLength))
+                {
+                    // If the existing block has a footer marker, replace with complete program;
+                    // otherwise replace with snippet (preserving surrounding code structure)
+                    string replacement = existing.Substring(blockStart, blockLength)
+                        .Contains(AnimationSnippetGenerator.FooterMarker)
+                        ? completeCode
+                        : snippetCode;
+                    _codeBox.Text = existing.Substring(0, blockStart)
+                                  + replacement
+                                  + existing.Substring(blockStart + blockLength);
+                }
+                // Tier 2: Smart array-level merge (existing code has kfTick arrays)
+                else
+                {
+                    string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
+                    if (merged != null)
+                    {
+                        _codeBox.Text = merged;
+                    }
+                    else
+                    {
+                        // Tier 3: No existing animation code — use complete compilable program
+                        _codeBox.Text = completeCode;
+                    }
+                }
+            }
+            finally
+            {
+                _suppressCodeBoxEvents = false;
+                _codeBoxDirty = false;
+            }
+
+            // Sync OriginalSourceCode so the Play button uses the updated code
+            if (_layout != null)
+                _layout.OriginalSourceCode = _codeBox.Text;
         }
 
         // ── Keyframe animation dialog ──────────────────────────────────────────
@@ -9995,13 +10384,25 @@ namespace SESpriteLCDLayoutTool
             var sprite = _canvas.SelectedSprite;
             if (sprite == null) { SetStatus("Select a sprite first"); return; }
 
+            // If this sprite is a group follower, redirect to the leader
+            SpriteEntry editTarget = sprite;
+            if (editExisting && !string.IsNullOrEmpty(sprite.AnimationGroupId) && sprite.KeyframeAnimation == null)
+            {
+                var leader = FindGroupLeader(sprite.AnimationGroupId);
+                if (leader != null)
+                {
+                    editTarget = leader;
+                    SetStatus($"Editing group leader '{leader.DisplayName}' animation");
+                }
+            }
+
             // If editing existing but no in-memory data, try parsing from the code panel
-            if (editExisting && sprite.KeyframeAnimation == null)
+            if (editExisting && editTarget.KeyframeAnimation == null)
             {
                 var parsed = AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
                 if (parsed != null)
                 {
-                    sprite.KeyframeAnimation = parsed;
+                    editTarget.KeyframeAnimation = parsed;
                     SetStatus("Recovered keyframe data from code");
                 }
                 else
@@ -10023,44 +10424,17 @@ namespace SESpriteLCDLayoutTool
             var target = MapCodeStyleToTarget();
 
             // Open the visual keyframe editor (pass existing params if editing)
-            var dlg = new KeyframeEditorDialog(sprite, target,
-                editExisting ? sprite.KeyframeAnimation : null, _textureCache);
+            var dlg = new KeyframeEditorDialog(editTarget, target,
+                editExisting ? editTarget.KeyframeAnimation : null, _textureCache);
             _snippetDialog = dlg;
+
+            var capturedTarget = editTarget;
+
             dlg.CodeUpdateRequested += newCode =>
             {
                 if (_codeBox == null || string.IsNullOrEmpty(newCode)) return;
-
-                string existing = _codeBox.Text;
-
-                // Tier 1: Exact block replace (works when code was generated by us)
-                if (AnimationSnippetGenerator.FindKeyframedBlockRange(existing,
-                        out int blockStart, out int blockLength))
-                {
-                    string updated = existing.Substring(0, blockStart)
-                                   + newCode
-                                   + existing.Substring(blockStart + blockLength);
-                    _codeBox.Text = updated;
-                    _codeBoxDirty = false;
-                    SetStatus("✅ Animation code updated in code panel");
-                }
-                // Tier 2: Smart array-level merge (works for hand-written PB scripts)
-                else
-                {
-                    string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, newCode);
-                    if (merged != null)
-                    {
-                        _codeBox.Text = merged;
-                        _codeBoxDirty = false;
-                        SetStatus("✅ Animation arrays merged into code");
-                    }
-                    else
-                    {
-                        // Tier 3: Append fallback
-                        _codeBox.AppendText(Environment.NewLine + newCode);
-                        _codeBoxDirty = false;
-                        SetStatus("✅ Animation code appended to code panel");
-                    }
-                }
+                MergeAnimationCodeIntoPanel(capturedTarget);
+                SetStatus("✅ Animation code updated in code panel");
             };
             dlg.FormClosed += (s2, e2) =>
             {

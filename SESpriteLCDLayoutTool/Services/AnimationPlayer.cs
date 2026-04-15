@@ -129,6 +129,23 @@ namespace SESpriteLCDLayoutTool.Services
             return null;
         }
 
+        /// <summary>
+        /// Adopts a pre-compiled and already-initialised <see cref="CodeExecutor.AnimationContext"/>
+        /// so the player can inspect fields and run additional frames without a second compilation.
+        /// The player takes ownership of the context and will dispose it on <see cref="Stop"/>.
+        /// </summary>
+        public void AdoptContext(CodeExecutor.AnimationContext ctx)
+        {
+            Stop();
+            _tickHistory.Clear();
+            _spriteHistory.Clear();
+
+            _ctx = ctx;
+            ScriptType = ctx.ScriptType;
+            CurrentTick = 0;
+            UpdateTimerInterval();
+        }
+
         /// <summary>Starts or resumes playback.</summary>
         public void Play()
         {

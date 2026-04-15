@@ -216,6 +216,14 @@ namespace SESpriteLCDLayoutTool.Models
         [XmlIgnore] public KeyframeAnimationParams KeyframeAnimation { get; set; }
 
         /// <summary>
+        /// Animation group identifier. Sprites sharing the same non-null group ID
+        /// animate together using the leader's keyframe data with per-sprite offsets.
+        /// The "leader" is the sprite that owns the KeyframeAnimation; followers reference
+        /// the same group ID but have KeyframeAnimation == null.
+        /// </summary>
+        [XmlIgnore] public string AnimationGroupId { get; set; }
+
+        /// <summary>
         /// All Color literals found in the source context surrounding this sprite's definition.
         /// Populated when the sprite has source tracking (SourceStart/SourceEnd &gt;= 0).
         /// </summary>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using SESpriteLCDLayoutTool.Models;
+using SESpriteLCDLayoutTool.Services;
 
 namespace SESpriteLCDLayoutTool.Services
 {
@@ -91,6 +92,8 @@ namespace SESpriteLCDLayoutTool.Services
                 SourceEnd         = s.SourceEnd,
                 ImportBaseline    = s.ImportBaseline,
                 SourceLineNumber  = s.SourceLineNumber,
+                AnimationGroupId  = s.AnimationGroupId,
+                KeyframeAnimation = CloneAnimation(s.KeyframeAnimation),
             }).ToList();
 
             return new LayoutSnapshot
@@ -129,9 +132,38 @@ namespace SESpriteLCDLayoutTool.Services
                     SourceEnd         = snap.SourceEnd,
                     ImportBaseline    = snap.ImportBaseline,
                     SourceLineNumber  = snap.SourceLineNumber,
+                    AnimationGroupId  = snap.AnimationGroupId,
+                    KeyframeAnimation = CloneAnimation(snap.KeyframeAnimation),
                 });
             }
             layout.OriginalSourceCode = snapshot.OriginalSourceCode;
+        }
+
+        /// <summary>Deep-clones KeyframeAnimationParams for snapshot isolation.</summary>
+        private static KeyframeAnimationParams CloneAnimation(KeyframeAnimationParams src)
+        {
+            if (src == null) return null;
+            return new KeyframeAnimationParams
+            {
+                ListVarName  = src.ListVarName,
+                Loop         = src.Loop,
+                TargetScript = src.TargetScript,
+                Keyframes    = src.Keyframes?.Select(k => new Keyframe
+                {
+                    Tick         = k.Tick,
+                    X            = k.X,
+                    Y            = k.Y,
+                    Width        = k.Width,
+                    Height       = k.Height,
+                    ColorR       = k.ColorR,
+                    ColorG       = k.ColorG,
+                    ColorB       = k.ColorB,
+                    ColorA       = k.ColorA,
+                    Rotation     = k.Rotation,
+                    Scale        = k.Scale,
+                    EasingToNext = k.EasingToNext,
+                }).ToList() ?? new List<Keyframe>(),
+            };
         }
 
         /// <summary>Full layout snapshot including sprites and code state.</summary>
@@ -160,6 +192,8 @@ namespace SESpriteLCDLayoutTool.Services
             public int SourceEnd;
             public SpriteEntry ImportBaseline;
             public int SourceLineNumber;
+            public string AnimationGroupId;
+            public KeyframeAnimationParams KeyframeAnimation;
         }
     }
 }

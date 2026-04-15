@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.8.2) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.0) |
 
 ---
 
@@ -782,6 +782,18 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.9.0
+- **Animation Groups** — link multiple sprites into an animation group so they animate together using a single leader's keyframe data with automatic per-sprite offsets
+  - **Create Animation Group** — right-click a sprite that has a keyframe animation → **Create Animation Group** to designate it as the group leader
+  - **Join Animation Group** — right-click any other sprite → **Join Animation Group** to pick an existing group; the sprite becomes a follower that mirrors the leader's animation with position/size offsets computed from the current canvas layout
+  - **Leave Animation Group** — right-click a group member → **Leave Animation Group** to detach it
+  - **Layer list group indicators** — group leaders show 🎬 and followers show 🎭 prefixes for easy identification
+  - **Group-aware code generation** — `AnimationSnippetGenerator.GenerateGroupSnippet()` produces a single set of shared keyframe arrays with per-sprite delta offsets, generating compact PB/Mod/Plugin/Pulsar code for coordinated multi-sprite animations
+- **Group animation undo/redo** — `UndoManager` now deep-clones `AnimationGroupId` and `KeyframeAnimation` data in snapshots, so group membership and animation parameters survive full undo/redo cycles
+- **Reusable compilation context** — `CodeExecutor.ExecuteWithInit()` now optionally keeps the compiled `AnimationContext` alive so callers can inspect script fields (Variables panel) without a second Roslyn compilation pass; `AnimationPlayer.AdoptContext()` takes ownership of a pre-compiled context for seamless field inspection after execution
+- **Pre-computed call detection** — `GetDetectedMethodsWithMetadata()` accepts an optional pre-computed call list, skipping the expensive `DetectAllCallExpressions` pass when calls are already known
+- **RoslynCodeMerger: always emit Alignment & RotationOrScale** — texture sprites now always include `Alignment` and `RotationOrScale` in generated code, preventing data loss when sprites are later animated or round-tripped through code merge
 
 ### v2.8.3
 - **Copy/Paste Animation** — right-click a sprite with a keyframe animation → **Copy Animation**, then right-click any other sprite → **Paste Animation** to apply the same keyframe set (deep-cloned, with undo support). Available in both canvas and layer list context menus.
