@@ -80,6 +80,13 @@ namespace SESpriteLCDLayoutTool
         private Dictionary<string, double> _lastHeatmapTimings;
         private bool _heatmapEnabled = true;
 
+        // ── Syntax highlighting ───────────────────────────────────────────────
+        private System.Windows.Forms.Timer _syntaxTimer;
+        private string _lastHighlightedCode;
+        private bool _highlightInProgress;
+        private const int LiveHighlightMaxChars = 14000;
+        private const int InitialHighlightMaxChars = 120000;
+
         // ── Timeline scrubber ─────────────────────────────────────────────────
         private Panel    _timelineBar;
         private TrackBar _timelineScrubber;
@@ -2806,6 +2813,32 @@ namespace SESpriteLCDLayoutTool
                 HideSelection = false,
                 AcceptsTab    = true,
             };
+            // ── Syntax-highlight debounce timer ───────────────────────────────
+            _syntaxTimer = new System.Windows.Forms.Timer { Interval = 900 };
+            _syntaxTimer.Tick += (s, e) =>
+            {
+                _syntaxTimer.Stop();
+                if (_highlightInProgress || _codeBox == null) return;
+
+                // Full RichTextBox token colouring is expensive on very large scripts.
+                // Keep auto-highlight for normal code size and skip oversized buffers.
+                if (_codeBox.TextLength > LiveHighlightMaxChars) return;
+
+                string current = _codeBox.Text;
+                if (string.Equals(_lastHighlightedCode, current, StringComparison.Ordinal)) return;
+
+                try
+                {
+                    _highlightInProgress = true;
+                    SyntaxHighlighter.Highlight(_codeBox);
+                    _lastHighlightedCode = _codeBox.Text;
+                }
+                finally
+                {
+                    _highlightInProgress = false;
+                }
+            };
+
             _codeBox.TextChanged += (s, e) =>
             {
                 if (_suppressCodeBoxEvents) return;
@@ -2814,6 +2847,9 @@ namespace SESpriteLCDLayoutTool
                 _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);
                 if (_btnApplyCode != null) _btnApplyCode.Visible = true;
                 _autoComplete?.OnTextChanged();
+                // Restart the debounce so we only highlight after typing pauses
+                _syntaxTimer.Stop();
+                _syntaxTimer.Start();
             };
             _codeBox.LostFocus += (s, e) => _autoComplete?.Hide();
 
@@ -5327,7 +5363,15 @@ namespace SESpriteLCDLayoutTool
             string normNew  = text.Replace("\r\n", "\n").Replace("\r", "\n");
             string normCur  = _codeBox.Text.Replace("\r\n", "\n").Replace("\r", "\n");
             if (normCur != normNew)
+            {
                 _codeBox.Text = text;
+                _lastHighlightedCode = null;
+                if (_codeBox.TextLength <= InitialHighlightMaxChars)
+                {
+                    SyntaxHighlighter.Highlight(_codeBox);
+                    _lastHighlightedCode = _codeBox.Text;
+                }
+            }
             _suppressCodeBoxEvents = false;
         }
 
