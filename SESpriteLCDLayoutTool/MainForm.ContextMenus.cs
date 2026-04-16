@@ -155,6 +155,13 @@ namespace SESpriteLCDLayoutTool
                     SetStatus(_canvas.SnapToGrid ? "Snap to grid enabled" : "Snap to grid disabled");
                     return true;
 
+                // Select all
+                case Keys.Control | Keys.A:
+                    _canvas.SelectAll();
+                    RefreshLayerList();
+                    SetStatus($"Selected all {_canvas.SelectedSprites.Count} sprites");
+                    return true;
+
                 // Zoom
                 case Keys.Control | Keys.Oemplus:
                     _canvas.Zoom *= 1.25f;
@@ -307,6 +314,18 @@ namespace SESpriteLCDLayoutTool
             SetStatus("Stretched to surface");
         }
 
+        private void AlignSelected(AlignMode mode)
+        {
+            var sel = GetSelectedSprites();
+            if (sel.Count < 2) { SetStatus("Select 2 or more sprites to align."); return; }
+            PushUndo();
+            _canvas.AlignSelection(mode);
+            ClearCodeDirty();
+            RefreshCode();
+            string label = mode.ToString();
+            SetStatus($"Aligned {sel.Count} sprites: {label}");
+        }
+
         // ── Canvas context menu ───────────────────────────────────────────────────
         private ContextMenuStrip BuildCanvasContextMenu()
         {
@@ -318,6 +337,28 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add(new ToolStripSeparator());
             ctx.Items.Add("Center on Surface",        null, (s, e) => CenterSelectedOnSurface());
             ctx.Items.Add("Stretch to Surface",       null, (s, e) => StretchToSurface());
+
+            // ── Align submenu ──
+            var alignMenu = new ToolStripMenuItem("Align / Distribute")
+            {
+                BackColor = Color.FromArgb(45, 45, 48),
+                ForeColor = Color.FromArgb(220, 220, 220),
+            };
+            alignMenu.DropDown.BackColor = Color.FromArgb(45, 45, 48);
+            alignMenu.DropDown.ForeColor = Color.FromArgb(220, 220, 220);
+            if (alignMenu.DropDown is ToolStripDropDownMenu alignDd) alignDd.Renderer = new DarkMenuRenderer();
+            alignMenu.DropDownItems.Add("Align Left Edges",      null, (s, e) => AlignSelected(AlignMode.Left));
+            alignMenu.DropDownItems.Add("Align Right Edges",     null, (s, e) => AlignSelected(AlignMode.Right));
+            alignMenu.DropDownItems.Add("Align Top Edges",       null, (s, e) => AlignSelected(AlignMode.Top));
+            alignMenu.DropDownItems.Add("Align Bottom Edges",    null, (s, e) => AlignSelected(AlignMode.Bottom));
+            alignMenu.DropDownItems.Add(new ToolStripSeparator());
+            alignMenu.DropDownItems.Add("Center Horizontally",   null, (s, e) => AlignSelected(AlignMode.CenterH));
+            alignMenu.DropDownItems.Add("Center Vertically",     null, (s, e) => AlignSelected(AlignMode.CenterV));
+            alignMenu.DropDownItems.Add(new ToolStripSeparator());
+            alignMenu.DropDownItems.Add("Space Evenly (H)",      null, (s, e) => AlignSelected(AlignMode.SpaceH));
+            alignMenu.DropDownItems.Add("Space Evenly (V)",      null, (s, e) => AlignSelected(AlignMode.SpaceV));
+            ctx.Items.Add(alignMenu);
+
             ctx.Items.Add(new ToolStripSeparator());
 
             // Hide Selected (works with Shift+click multi-select)
@@ -407,6 +448,10 @@ namespace SESpriteLCDLayoutTool
                 var selected = GetSelectedSprites();
                 hideItem.Text = selected.Count > 1 ? $"Hide Selected ({selected.Count})" : "Hide Selected";
                 hideItem.Enabled = selected.Count > 0;
+
+                // Align menu: only useful with 2+ sprites selected
+                alignMenu.Enabled = selected.Count >= 2;
+                alignMenu.Text = selected.Count >= 2 ? $"Align / Distribute ({selected.Count})" : "Align / Distribute";
             };
 
             return ctx;

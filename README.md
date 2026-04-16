@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.6) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.7) |
 
 ---
 
@@ -782,6 +782,19 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.9.7
+- **Multi-select + group move + align tools** — canvas now supports selecting multiple sprites at once:
+  - **Box-select (rubber band)**: drag on empty canvas area to draw a selection rectangle; all sprites that intersect it are selected (blue dashed overlay while dragging)
+  - **Shift+click**: toggle individual sprites in/out of the selection (existing behaviour preserved)
+  - **Ctrl+A**: select all visible sprites
+  - **Group drag**: drag any sprite in a multi-selection to move all selected sprites together, preserving their relative positions
+  - **Group nudge**: arrow keys / Shift+arrow move all selected sprites simultaneously
+  - **Align / Distribute** context-menu submenu (appears when 2+ sprites are selected, shows count in label):
+    - Align Left / Right / Top / Bottom edges
+    - Center Horizontally / Center Vertically (align centres along an axis)
+    - Space Evenly (H) / Space Evenly (V) — distribute 3+ sprites with equal gaps
+  - Drag fast-path cache correctly excludes all selected sprites when multi-selecting
 
 ### v2.9.6
 - **Rotation precision fix** — rotation fields in both the keyframe editor and the main properties panel now support 4 decimal places (0.0001 increment, range −100 to 100):

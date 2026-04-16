@@ -9,6 +9,14 @@ using SESpriteLCDLayoutTool.Services;
 
 namespace SESpriteLCDLayoutTool.Controls
 {
+    /// <summary>Alignment operations available for multi-sprite selections.</summary>
+    public enum AlignMode
+    {
+        Left, Right, Top, Bottom,
+        CenterH, CenterV,
+        SpaceH, SpaceV,
+    }
+
     /// <summary>Debug overlay modes for the LCD canvas.</summary>
     public enum DebugOverlayMode
     {
@@ -51,6 +59,14 @@ namespace SESpriteLCDLayoutTool.Controls
         private DragMode _dragMode = DragMode.None;
         private PointF _dragStart;
         private float _dragOrigX, _dragOrigY, _dragOrigW, _dragOrigH;
+
+        // Multi-sprite drag: original positions keyed by sprite Id
+        private Dictionary<string, PointF> _multiDragOrigPositions = new Dictionary<string, PointF>();
+
+        // Box-select (rubber band)
+        private bool _isBoxSelecting;
+        private PointF _boxSelectStart;
+        private RectangleF _boxSelectRect;
 
         // Zoom & pan
         private float _zoom = 1f;
@@ -242,14 +258,22 @@ namespace SESpriteLCDLayoutTool.Controls
 
             var g = e.Graphics;
 
-            // Fast path: during drag, blit the cached background and draw only the active sprite
+            // Fast path: during drag, blit the cached background and draw only the active sprites
             if (_dragMode != DragMode.None && _selectedSprite != null && _dragCache != null)
             {
                 g.DrawImageUnscaled(_dragCache, 0, 0);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
                 ComputeTransform(out float s, out PointF o);
-                DrawSprite(g, _selectedSprite, true, s, o);
+                if (_selectedSprites.Count > 1)
+                {
+                    foreach (var sp in _selectedSprites)
+                        DrawSprite(g, sp, true, s, o);
+                }
+                else
+                {
+                    DrawSprite(g, _selectedSprite, true, s, o);
+                }
                 return;
             }
 
@@ -344,11 +368,20 @@ namespace SESpriteLCDLayoutTool.Controls
                 using (var lb = new SolidBrush(Color.FromArgb(80, 160, 160)))
                     g.DrawString($"{_layout.SurfaceWidth} × {_layout.SurfaceHeight}{zoomLabel}", lf, lb,
                         origin.X + 3, origin.Y + dh + 3);
+
+            // Rubber-band box-select overlay
+            if (_isBoxSelecting && (_boxSelectRect.Width > 1 || _boxSelectRect.Height > 1))
+            {
+                using (var fillBrush = new SolidBrush(Color.FromArgb(40, 80, 180, 255)))
+                    g.FillRectangle(fillBrush, _boxSelectRect);
+                using (var borderPen = new Pen(Color.FromArgb(200, 80, 180, 255), 1f) { DashStyle = DashStyle.Dash })
+                    g.DrawRectangle(borderPen, _boxSelectRect.X, _boxSelectRect.Y, _boxSelectRect.Width, _boxSelectRect.Height);
+            }
             }
 
             /// <summary>
-            /// Renders everything except the selected sprite into <see cref="_dragCache"/>
-            /// so that OnPaint only needs to blit this bitmap + draw the one active sprite.
+            /// Renders everything except the selected sprite(s) into <see cref="_dragCache"/>
+            /// so that OnPaint only needs to blit this bitmap + draw the active sprites.
             /// </summary>
             private void BuildDragCache()
             {
@@ -362,7 +395,31 @@ namespace SESpriteLCDLayoutTool.Controls
                     g.Clear(BackColor);
                     g.SmoothingMode = SmoothingMode.AntiAlias;
                     g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-                    PaintScene(g, _selectedSprite, false);
+
+                    // When multi-selecting, exclude ALL selected sprites from the cache
+                    if (_selectedSprites.Count > 1)
+                    {
+                        ComputeTransform(out float scale, out PointF origin);
+                        float dw = _layout.SurfaceWidth  * scale;
+                        float dh = _layout.SurfaceHeight * scale;
+
+                        // Draw the scene manually so we can skip the whole selectedSprites set
+                        using (var bg = new SolidBrush(Color.FromArgb(12, 18, 30)))
+                            g.FillRectangle(bg, origin.X, origin.Y, dw, dh);
+                        using (var border = new Pen(Color.FromArgb(55, 120, 210), 1.5f))
+                            g.DrawRectangle(border, origin.X, origin.Y, dw, dh);
+
+                        foreach (var sp in _layout.Sprites)
+                        {
+                            if (sp.IsHidden) continue;
+                            if (_selectedSprites.Contains(sp)) continue;
+                            DrawSprite(g, sp, false, scale, origin);
+                        }
+                    }
+                    else
+                    {
+                        PaintScene(g, _selectedSprite, false);
+                    }
                 }
             }
 
@@ -849,8 +906,12 @@ namespace SESpriteLCDLayoutTool.Controls
                     }
                     else
                     {
-                        // Normal click: single-select and begin drag
-                        SelectedSprite = clickedSprite;
+                        // Normal click on a sprite already in multi-select: start group drag
+                        // Normal click on a different sprite: single-select and drag
+                        if (!_selectedSprites.Contains(clickedSprite))
+                            SelectedSprite = clickedSprite;
+                        else
+                            _selectedSprite = clickedSprite; // keep multi-select, update primary
                         BeginDrag(DragMode.Move, pt, _selectedSprite);
                     }
                     return;
@@ -859,8 +920,18 @@ namespace SESpriteLCDLayoutTool.Controls
 
             System.Diagnostics.Debug.WriteLine($"[LcdCanvas.OnMouseDown] ✗ No sprite hit — tested={testedCount}, skippedHidden={skippedHidden}, skippedHighlight={skippedHighlight}");
 
-            // Clicked empty — deselect
-            SelectedSprite = null;
+            // Clicked empty — start rubber-band box-select (not an immediate deselect)
+            if (!shiftHeld)
+            {
+                _selectedSprites.Clear();
+                _selectedSprite = null;
+                SelectionChanged?.Invoke(this, EventArgs.Empty);
+            }
+            _isBoxSelecting = true;
+            _boxSelectStart = pt;
+            _boxSelectRect  = new RectangleF(pt.X, pt.Y, 0, 0);
+            Capture = true;
+            Invalidate();
         }
 
         private void BeginDrag(DragMode mode, PointF screenPt, SpriteEntry sprite)
@@ -872,6 +943,12 @@ namespace SESpriteLCDLayoutTool.Controls
             _dragOrigY = sprite.Y;
             _dragOrigW = sprite.Width;
             _dragOrigH = sprite.Height;
+
+            // Capture original positions of all selected sprites for group move
+            _multiDragOrigPositions.Clear();
+            foreach (var s in _selectedSprites)
+                _multiDragOrigPositions[s.Id] = new PointF(s.X, s.Y);
+
             Capture = true;
             BuildDragCache();
         }
@@ -894,6 +971,18 @@ namespace SESpriteLCDLayoutTool.Controls
             ComputeTransform(out float scale, out PointF origin);
             var pt = new PointF(e.X, e.Y);
 
+            // Box-select rubber-band update
+            if (_isBoxSelecting)
+            {
+                float rx = Math.Min(_boxSelectStart.X, pt.X);
+                float ry = Math.Min(_boxSelectStart.Y, pt.Y);
+                float rw = Math.Abs(pt.X - _boxSelectStart.X);
+                float rh = Math.Abs(pt.Y - _boxSelectStart.Y);
+                _boxSelectRect = new RectangleF(rx, ry, rw, rh);
+                Invalidate();
+                return;
+            }
+
             if (_dragMode == DragMode.None || _selectedSprite == null)
             {
                 UpdateCursor(pt, scale, origin);
@@ -907,12 +996,32 @@ namespace SESpriteLCDLayoutTool.Controls
             switch (_dragMode)
             {
                 case DragMode.Move:
-                    s.X = Snap(_dragOrigX + dx);
-                    s.Y = Snap(_dragOrigY + dy);
-                    if (ConstrainToSurface && _layout != null)
+                    // Move all selected sprites by the same delta
+                    if (_selectedSprites.Count > 1)
                     {
-                        s.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  s.X));
-                        s.Y = Math.Max(0f, Math.Min(_layout.SurfaceHeight, s.Y));
+                        foreach (var sp in _selectedSprites)
+                        {
+                            if (_multiDragOrigPositions.TryGetValue(sp.Id, out PointF orig))
+                            {
+                                sp.X = Snap(orig.X + dx);
+                                sp.Y = Snap(orig.Y + dy);
+                                if (ConstrainToSurface && _layout != null)
+                                {
+                                    sp.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  sp.X));
+                                    sp.Y = Math.Max(0f, Math.Min(_layout.SurfaceHeight, sp.Y));
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        s.X = Snap(_dragOrigX + dx);
+                        s.Y = Snap(_dragOrigY + dy);
+                        if (ConstrainToSurface && _layout != null)
+                        {
+                            s.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  s.X));
+                            s.Y = Math.Max(0f, Math.Min(_layout.SurfaceHeight, s.Y));
+                        }
                     }
                     break;
                 case DragMode.ResizeNW:
@@ -958,6 +1067,39 @@ namespace SESpriteLCDLayoutTool.Controls
                 _isPanning = false;
                 Capture = false;
                 Cursor = Cursors.Default;
+                return;
+            }
+
+            // Finalize rubber-band box-select
+            if (_isBoxSelecting)
+            {
+                _isBoxSelecting = false;
+                Capture = false;
+
+                // Only run hit-test if the user actually dragged a meaningful rectangle
+                if (_boxSelectRect.Width > 4 || _boxSelectRect.Height > 4)
+                {
+                    ComputeTransform(out float scale, out PointF origin);
+                    bool shiftHeld = (Control.ModifierKeys & Keys.Shift) != 0;
+                    if (!shiftHeld) _selectedSprites.Clear();
+
+                    SpriteEntry last = null;
+                    foreach (var sp in _layout?.Sprites ?? new System.Collections.Generic.List<SpriteEntry>())
+                    {
+                        if (sp.IsHidden) continue;
+                        var sr = GetSpriteScreenRect(sp, scale, origin);
+                        if (_boxSelectRect.IntersectsWith(sr))
+                        {
+                            _selectedSprites.Add(sp);
+                            last = sp;
+                        }
+                    }
+                    if (last != null) _selectedSprite = last;
+                    SelectionChanged?.Invoke(this, EventArgs.Empty);
+                }
+
+                _boxSelectRect = RectangleF.Empty;
+                Invalidate();
                 return;
             }
 
@@ -1057,14 +1199,30 @@ namespace SESpriteLCDLayoutTool.Controls
 
         public void NudgeSelected(float dx, float dy)
         {
-            if (_selectedSprite == null) return;
-            _selectedSprite.X = Snap(_selectedSprite.X + dx);
-            _selectedSprite.Y = Snap(_selectedSprite.Y + dy);
-            if (ConstrainToSurface && _layout != null)
+            if (_selectedSprites.Count > 1)
             {
-                _selectedSprite.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  _selectedSprite.X));
-                _selectedSprite.Y = Math.Max(0f, Math.Min(_layout.SurfaceHeight, _selectedSprite.Y));
+                foreach (var s in _selectedSprites)
+                {
+                    s.X = Snap(s.X + dx);
+                    s.Y = Snap(s.Y + dy);
+                    if (ConstrainToSurface && _layout != null)
+                    {
+                        s.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  s.X));
+                        s.Y = Math.Max(0f, Math.Min(_layout.SurfaceHeight, s.Y));
+                    }
+                }
             }
+            else if (_selectedSprite != null)
+            {
+                _selectedSprite.X = Snap(_selectedSprite.X + dx);
+                _selectedSprite.Y = Snap(_selectedSprite.Y + dy);
+                if (ConstrainToSurface && _layout != null)
+                {
+                    _selectedSprite.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  _selectedSprite.X));
+                    _selectedSprite.Y = Math.Max(0f, Math.Min(_layout.SurfaceHeight, _selectedSprite.Y));
+                }
+            }
+            else return;
             SpriteModified?.Invoke(this, EventArgs.Empty);
             Invalidate();
         }
@@ -1074,6 +1232,141 @@ namespace SESpriteLCDLayoutTool.Controls
             if (_selectedSprite == null || _layout == null) return;
             _selectedSprite.X = _layout.SurfaceWidth  / 2f;
             _selectedSprite.Y = _layout.SurfaceHeight / 2f;
+            SpriteModified?.Invoke(this, EventArgs.Empty);
+            Invalidate();
+        }
+
+        /// <summary>Selects all visible sprites on the canvas.</summary>
+        public void SelectAll()
+        {
+            if (_layout == null) return;
+            _selectedSprites.Clear();
+            SpriteEntry last = null;
+            foreach (var sp in _layout.Sprites)
+            {
+                if (!sp.IsHidden) { _selectedSprites.Add(sp); last = sp; }
+            }
+            _selectedSprite = last;
+            Invalidate();
+            SelectionChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>
+        /// Aligns or distributes all sprites in <see cref="SelectedSprites"/>
+        /// according to <paramref name="mode"/>.
+        /// </summary>
+        public void AlignSelection(AlignMode mode)
+        {
+            if (_selectedSprites.Count < 2) return;
+            var sprites = new List<SpriteEntry>(_selectedSprites);
+
+            // Helper: get axis-aligned bounding rect of a sprite in surface coords
+            RectangleF SR(SpriteEntry s)
+            {
+                float w = Math.Abs(s.Width), h = Math.Abs(s.Height);
+                if (s.Type == SpriteEntryType.Text)
+                {
+                    switch (s.Alignment)
+                    {
+                        case SpriteTextAlignment.Right:  return new RectangleF(s.X - w, s.Y, w, h);
+                        case SpriteTextAlignment.Center: return new RectangleF(s.X - w / 2f, s.Y, w, h);
+                        default:                         return new RectangleF(s.X, s.Y, w, h);
+                    }
+                }
+                return new RectangleF(s.X - w / 2f, s.Y - h / 2f, w, h);
+            }
+
+            // Compute union bounds
+            float minL = float.MaxValue, minT = float.MaxValue;
+            float maxR = float.MinValue, maxB = float.MinValue;
+            foreach (var s in sprites)
+            {
+                var r = SR(s);
+                if (r.Left   < minL) minL = r.Left;
+                if (r.Top    < minT) minT = r.Top;
+                if (r.Right  > maxR) maxR = r.Right;
+                if (r.Bottom > maxB) maxB = r.Bottom;
+            }
+
+            switch (mode)
+            {
+                case AlignMode.Left:
+                    foreach (var s in sprites)
+                    {
+                        var r = SR(s); float delta = minL - r.Left;
+                        if (s.Type == SpriteEntryType.Texture) s.X += delta;
+                        else s.X += delta;
+                    }
+                    break;
+                case AlignMode.Right:
+                    foreach (var s in sprites)
+                    {
+                        var r = SR(s); float delta = maxR - r.Right;
+                        s.X += delta;
+                    }
+                    break;
+                case AlignMode.Top:
+                    foreach (var s in sprites)
+                    {
+                        var r = SR(s); float delta = minT - r.Top;
+                        s.Y += delta;
+                    }
+                    break;
+                case AlignMode.Bottom:
+                    foreach (var s in sprites)
+                    {
+                        var r = SR(s); float delta = maxB - r.Bottom;
+                        s.Y += delta;
+                    }
+                    break;
+                case AlignMode.CenterH:
+                    float midH = (minT + maxB) / 2f;
+                    foreach (var s in sprites)
+                    {
+                        var r = SR(s);
+                        s.Y += midH - (r.Top + r.Height / 2f);
+                    }
+                    break;
+                case AlignMode.CenterV:
+                    float midV = (minL + maxR) / 2f;
+                    foreach (var s in sprites)
+                    {
+                        var r = SR(s);
+                        s.X += midV - (r.Left + r.Width / 2f);
+                    }
+                    break;
+                case AlignMode.SpaceH:
+                    if (sprites.Count < 3) break;
+                    sprites.Sort((a, b) => SR(a).Left.CompareTo(SR(b).Left));
+                    float totalW = 0f;
+                    foreach (var s in sprites) totalW += SR(s).Width;
+                    float gapH = (maxR - minL - totalW) / (sprites.Count - 1);
+                    float curX = minL;
+                    foreach (var s in sprites)
+                    {
+                        var r = SR(s);
+                        float delta = curX - r.Left;
+                        s.X += delta;
+                        curX += r.Width + gapH;
+                    }
+                    break;
+                case AlignMode.SpaceV:
+                    if (sprites.Count < 3) break;
+                    sprites.Sort((a, b) => SR(a).Top.CompareTo(SR(b).Top));
+                    float totalH = 0f;
+                    foreach (var s in sprites) totalH += SR(s).Height;
+                    float gapV = (maxB - minT - totalH) / (sprites.Count - 1);
+                    float curY = minT;
+                    foreach (var s in sprites)
+                    {
+                        var r = SR(s);
+                        float delta = curY - r.Top;
+                        s.Y += delta;
+                        curY += r.Height + gapV;
+                    }
+                    break;
+            }
+
             SpriteModified?.Invoke(this, EventArgs.Empty);
             Invalidate();
         }
