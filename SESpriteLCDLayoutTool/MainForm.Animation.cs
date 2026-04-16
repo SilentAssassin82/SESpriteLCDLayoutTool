@@ -1071,6 +1071,9 @@ namespace SESpriteLCDLayoutTool
             SetCodeText(newCode);
             _codeBoxDirty = false;
 
+            // Update the in-app diff panel so the Diff tab reflects what changed.
+            ShowPatchDiff(existing, newCode);
+
             // Sync OriginalSourceCode so the Play button uses the updated code
             if (_layout != null)
                 _layout.OriginalSourceCode = _codeBox.Text;
