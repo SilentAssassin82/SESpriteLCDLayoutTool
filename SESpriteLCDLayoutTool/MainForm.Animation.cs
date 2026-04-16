@@ -1041,52 +1041,43 @@ namespace SESpriteLCDLayoutTool
             if (string.IsNullOrEmpty(snippetCode)) return;
 
             string existing = _codeBox.Text;
+            string newCode = null;
 
-            // Suppress TextChanged events while we programmatically update the code box.
-            // Without this, the handler sets _codeBoxDirty = true and shows "Apply Code"
-            // button, which we immediately undo — but the brief event can trigger
-            // RefreshDetectedCalls indirectly through auto-complete handlers.
-            _suppressCodeBoxEvents = true;
-            try
+            // Tier 1: Exact block replace (handles both snippet-only and complete program blocks)
+            if (AnimationSnippetGenerator.FindKeyframedBlockRange(existing,
+                    out int blockStart, out int blockLength))
             {
-                // Tier 1: Exact block replace (handles both snippet-only and complete program blocks)
-                if (AnimationSnippetGenerator.FindKeyframedBlockRange(existing,
-                        out int blockStart, out int blockLength))
-                {
-                    // If the existing block has a footer marker, replace with complete program;
-                    // otherwise replace with snippet (preserving surrounding code structure)
-                    string replacement = existing.Substring(blockStart, blockLength)
-                        .Contains(AnimationSnippetGenerator.FooterMarker)
-                        ? completeCode
-                        : snippetCode;
-                    _codeBox.Text = existing.Substring(0, blockStart)
-                                  + replacement
-                                  + existing.Substring(blockStart + blockLength);
-                }
+                // If the existing block has a footer marker, replace with complete program;
+                // otherwise replace with snippet (preserving surrounding code structure)
+                string replacement = existing.Substring(blockStart, blockLength)
+                    .Contains(AnimationSnippetGenerator.FooterMarker)
+                    ? completeCode
+                    : snippetCode;
+                newCode = existing.Substring(0, blockStart)
+                        + replacement
+                        + existing.Substring(blockStart + blockLength);
+            }
+            else
+            {
                 // Tier 2: Smart array-level merge (existing code has kfTick arrays)
-                else
-                {
-                    string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
-                    if (merged != null)
-                    {
-                        _codeBox.Text = merged;
-                    }
-                    else
-                    {
-                        // Tier 3: No existing animation code — use complete compilable program
-                        _codeBox.Text = completeCode;
-                    }
-                }
+                string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
+                // Tier 3: No existing animation code — use complete compilable program
+                newCode = merged ?? completeCode;
             }
-            finally
-            {
-                _suppressCodeBoxEvents = false;
-                _codeBoxDirty = false;
-            }
+
+            // SetCodeText handles suppression, highlighting, and dirty-flag reset
+            // in one place — avoids the grey-text bug caused by bypassing the
+            // TextChanged handler while _suppressCodeBoxEvents is true.
+            SetCodeText(newCode);
+            _codeBoxDirty = false;
 
             // Sync OriginalSourceCode so the Play button uses the updated code
             if (_layout != null)
                 _layout.OriginalSourceCode = _codeBox.Text;
+
+            // Write the updated code back to the watched file (script sync) so
+            // the external diff/editor sees the change immediately.
+            WriteBackToWatchedFile(_codeBox.Text);
         }
 
         // ── Keyframe animation dialog ──────────────────────────────────────────
