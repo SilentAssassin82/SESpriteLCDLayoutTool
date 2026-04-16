@@ -87,12 +87,13 @@ namespace SESpriteLCDLayoutTool.Services
                 Alignment  = s.Alignment,
                 Scale      = s.Scale,
                 IsReferenceLayout = s.IsReferenceLayout,
-                ImportLabel       = s.ImportLabel,
-                SourceStart       = s.SourceStart,
-                SourceEnd         = s.SourceEnd,
-                ImportBaseline    = s.ImportBaseline,
-                SourceLineNumber  = s.SourceLineNumber,
-                AnimationGroupId  = s.AnimationGroupId,
+                IsLocked         = s.IsLocked,
+                ImportLabel      = s.ImportLabel,
+                SourceStart      = s.SourceStart,
+                SourceEnd        = s.SourceEnd,
+                ImportBaseline   = s.ImportBaseline,
+                SourceLineNumber = s.SourceLineNumber,
+                AnimationGroupId = s.AnimationGroupId,
                 KeyframeAnimation = CloneAnimation(s.KeyframeAnimation),
             }).ToList();
 
@@ -127,10 +128,11 @@ namespace SESpriteLCDLayoutTool.Services
                     Alignment  = snap.Alignment,
                     Scale      = snap.Scale,
                     IsReferenceLayout = snap.IsReferenceLayout,
-                    ImportLabel       = snap.ImportLabel,
-                    SourceStart       = snap.SourceStart,
-                    SourceEnd         = snap.SourceEnd,
-                    ImportBaseline    = snap.ImportBaseline,
+                    IsLocked         = snap.IsLocked,
+                    ImportLabel      = snap.ImportLabel,
+                    SourceStart      = snap.SourceStart,
+                    SourceEnd        = snap.SourceEnd,
+                    ImportBaseline   = snap.ImportBaseline,
                     SourceLineNumber  = snap.SourceLineNumber,
                     AnimationGroupId  = snap.AnimationGroupId,
                     KeyframeAnimation = CloneAnimation(snap.KeyframeAnimation),
@@ -187,6 +189,7 @@ namespace SESpriteLCDLayoutTool.Services
             public SpriteTextAlignment Alignment;
             public float Scale;
             public bool IsReferenceLayout;
+            public bool IsLocked;
             public string ImportLabel;
             public int SourceStart;
             public int SourceEnd;

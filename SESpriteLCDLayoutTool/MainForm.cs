@@ -1131,9 +1131,6 @@ namespace SESpriteLCDLayoutTool
                     }
                 }
 
-                // Update the swatch
-                swatch.BackColor = ec.Color;
-
                 // Re-execute the code to get updated sprite values on the canvas
                 TryReExecuteCode();
             }
@@ -1445,6 +1442,10 @@ namespace SESpriteLCDLayoutTool
                         : s.IsSnapshotData ? "\u26A0 "
                         : s.SourceStart < 0 ? "· "
                         : "";
+
+                    // Lock indicator
+                    if (s.IsLocked)
+                        prefix += "🔒 ";
 
                     // Animation group indicator
                     if (!string.IsNullOrEmpty(s.AnimationGroupId))
@@ -2015,6 +2016,33 @@ namespace SESpriteLCDLayoutTool
                     for (int k = 0; k < depth; k++) sb.Append(unit);
                 }
                 sb.Append(content);
+
+                // Preserve trailing \r if original line had it
+                if (line.EndsWith("\r"))
+                    sb.Append('\r');
+
+                // Count braces in content to adjust depth for NEXT line
+                // (skip the leading brace we already handled)
+                int startIdx = (content.StartsWith("}") || content.StartsWith(")")) ? 1 : 0;
+                bool lineInString = false;
+                bool lineInChar = false;
+                bool lineInComment = false;
+                for (int ci = startIdx; ci < content.Length; ci++)
+                {
+                    char c = content[ci];
+                    char cnext = (ci + 1 < content.Length) ? content[ci + 1] : '\0';
+                    char cprev = (ci > 0) ? content[ci - 1] : '\0';
+
+                    if (lineInComment) continue; // rest of line is comment
+                    if (c == '/' && cnext == '/') { lineInComment = true; continue; }
+
+                    if (!lineInChar && c == '"' && cprev != '\\') lineInString = !lineInString;
+                    if (!lineInString && c == '\'' && cprev != '\\') lineInChar = !lineInChar;
+                    if (lineInString || lineInChar) continue;
+
+                    if (c == '{') depth++;
+                    else if (c == '}') depth = Math.Max(0, depth - 1);
+                }
             }
 
             int pos = _codeBox.SelectionStart;
@@ -2139,10 +2167,9 @@ namespace SESpriteLCDLayoutTool
                 }
             }
 
-            string result = sb.ToString();
-            _codeBox.SelectedText = result;
-            _codeBox.SelectionStart = lineStart;
-            _codeBox.SelectionLength = result.Length;
+            int pos = _codeBox.SelectionStart;
+            _codeBox.Text = sb.ToString();
+            _codeBox.SelectionStart = Math.Min(pos, _codeBox.TextLength);
             SetStatus($"Auto-indented {lines.Length} line(s)");
         }
 
@@ -2446,7 +2473,9 @@ namespace SESpriteLCDLayoutTool
                     if (idx < 0) break;
                     idx += "CreateText(\"".Length;
                     int end = src.IndexOf('"', idx);
-                    if (end > idx) codeLiterals.Add(src.Substring(idx, end - idx));
+                    if (end < idx) break;
+                    string val = src.Substring(idx, end - idx);
+                    if (val.Length > 0) codeLiterals.Add(val);
                     p = (end > idx) ? end + 1 : idx + 1;
                 }
 

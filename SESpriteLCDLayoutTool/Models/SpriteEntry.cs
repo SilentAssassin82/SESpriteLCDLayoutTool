@@ -212,6 +212,9 @@ namespace SESpriteLCDLayoutTool.Models
         /// <summary>When true, this sprite is temporarily hidden from the canvas and hit-testing.</summary>
         [XmlIgnore] public bool IsHidden { get; set; }
 
+        /// <summary>When true, this sprite is visible but cannot be clicked/selected on the canvas.</summary>
+        [XmlIgnore] public bool IsLocked { get; set; }
+
         /// <summary>Stored keyframe animation data for re-editing. Null if no animation has been created.</summary>
         [XmlIgnore] public KeyframeAnimationParams KeyframeAnimation { get; set; }
 

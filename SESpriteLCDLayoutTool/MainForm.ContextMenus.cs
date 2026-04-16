@@ -366,6 +366,12 @@ namespace SESpriteLCDLayoutTool
             ctx.Items.Add("Show All Layers",  null, (s, e) => ShowAllLayers());
             ctx.Items.Add(new ToolStripSeparator());
 
+            var lockItem = ctx.Items.Add("Lock Selected", null, (s, e) => ToggleSelectedLayerLock(true));
+            var unlockItem = ctx.Items.Add("Unlock Selected", null, (s, e) => ToggleSelectedLayerLock(false));
+            ctx.Items.Add(new ToolStripSeparator());
+
+
+
             // ── Add Animation submenu ──
             var animMenu = new ToolStripMenuItem("Add Animation…")
             {
@@ -449,6 +455,13 @@ namespace SESpriteLCDLayoutTool
                 hideItem.Text = selected.Count > 1 ? $"Hide Selected ({selected.Count})" : "Hide Selected";
                 hideItem.Enabled = selected.Count > 0;
 
+                // Lock/Unlock items
+                bool locked = _canvas.SelectedSprite.IsLocked;
+                lockItem.Text    = selected.Count > 1 ? $"Lock Selected ({selected.Count})" : "Lock Selected";
+                unlockItem.Text  = selected.Count > 1 ? $"Unlock Selected ({selected.Count})" : "Unlock Selected";
+                lockItem.Visible = !locked || selected.Count > 1;
+                unlockItem.Visible = locked || selected.Count > 1;
+
                 // Align menu: only useful with 2+ sprites selected
                 alignMenu.Enabled = selected.Count >= 2;
                 alignMenu.Text = selected.Count >= 2 ? $"Align / Distribute ({selected.Count})" : "Align / Distribute";
@@ -473,6 +486,9 @@ namespace SESpriteLCDLayoutTool
             var showItem      = ctx.Items.Add("Show Layer",         null, (s, e) => ToggleSelectedLayerVisibility(false));
             var hideAboveItem = ctx.Items.Add("Hide Layers Above",  null, (s, e) => HideLayersAbove());
             var showAllItem   = ctx.Items.Add("Show All Layers",    null, (s, e) => ShowAllLayers());
+            ctx.Items.Add(new ToolStripSeparator());
+            var lockItem      = ctx.Items.Add("Lock Layer",         null, (s, e) => ToggleSelectedLayerLock(true));
+            var unlockItem    = ctx.Items.Add("Unlock Layer",       null, (s, e) => ToggleSelectedLayerLock(false));
             ctx.Items.Add(new ToolStripSeparator());
             var editAnimItem  = ctx.Items.Add("Edit Animation…",    null, (s, e) => ShowKeyframeAnimationDialog(editExisting: true));
             var copyAnimItem  = ctx.Items.Add("Copy Animation",      null, (s, e) => CopySelectedAnimation());
@@ -514,6 +530,13 @@ namespace SESpriteLCDLayoutTool
                 showItem.Text    = multi ? $"Show Layers ({selCount} selected)" : "Show Layer";
                 hideItem.Visible = !hidden || multi;
                 showItem.Visible = hidden  || multi;
+
+                // Lock/Unlock items
+                bool locked = _canvas.SelectedSprite.IsLocked;
+                lockItem.Text    = multi ? $"Lock Layers ({selCount} selected)" : "Lock Layer";
+                unlockItem.Text  = multi ? $"Unlock Layers ({selCount} selected)" : "Unlock Layer";
+                lockItem.Visible = !locked || multi;
+                unlockItem.Visible = locked || multi;
 
                 // Hide Layers Above: only enabled when there are visible layers above
                 bool hasVisibleAbove = false;

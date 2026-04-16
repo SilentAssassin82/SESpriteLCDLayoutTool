@@ -452,7 +452,7 @@ namespace SESpriteLCDLayoutTool
         /// <summary>
         /// Called when all streaming sources have stopped.  Restores the canvas to
         /// code-tracked sprites so editing and click-to-jump work correctly.
-        /// If the user paused before stopping the code sprites are already on canvas —
+        /// If the user paused before stopping, the code sprites are already on canvas —
         /// the last live frame is merged to finalise positions.
         /// If the user stopped without pausing, code sprites are restored from the
         /// pre-stream snapshot and merged with the last live frame.  Loop-generated
@@ -1461,9 +1461,6 @@ namespace SESpriteLCDLayoutTool
             }
         }
 
-        // Duplicate removed - using implementation at line 2073
-
-
         /// <summary>Hides or shows the selected sprite layer(s).</summary>
         private void ToggleSelectedLayerVisibility(bool hide)
         {
@@ -1484,6 +1481,27 @@ namespace SESpriteLCDLayoutTool
             SetStatus(hide
                 ? (selected.Count == 1 ? $"Layer hidden: {selected[0].DisplayName}" : $"{selected.Count} layers hidden")
                 : (selected.Count == 1 ? $"Layer shown: {selected[0].DisplayName}" : $"{selected.Count} layers shown"));
+        }
+
+        /// <summary>Locks or unlocks the selected sprite layer(s).</summary>
+        private void ToggleSelectedLayerLock(bool lockIt)
+        {
+            var selected = GetSelectedSprites();
+            if (selected.Count == 0)
+            {
+                var sel = _canvas.SelectedSprite;
+                if (sel != null) selected.Add(sel);
+            }
+            if (selected.Count == 0 || _layout == null) return;
+
+            PushUndo();
+            foreach (var sp in selected)
+                sp.IsLocked = lockIt;
+            _canvas.Invalidate();
+            RefreshLayerList();
+            SetStatus(lockIt
+                ? (selected.Count == 1 ? $"Layer locked: {selected[0].DisplayName}" : $"{selected.Count} layers locked")
+                : (selected.Count == 1 ? $"Layer unlocked: {selected[0].DisplayName}" : $"{selected.Count} layers unlocked"));
         }
 
         /// <summary>Shows all hidden layers, restoring full visibility.</summary>
