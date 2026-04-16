@@ -164,6 +164,7 @@
     <Compile Include="Services\KeyframedCodeGenerator.cs" />
     <Compile Include="Services\CodeGenerator.cs" />
     <Compile Include="Services\CodeNavigationService.cs" />
+    <Compile Include="Services\SimpleAnimationCodeGenerator.cs" />
     <Compile Include="Services\SyntaxHighlighter.cs" />
     <Compile Include="Services\CodeParser.cs" />
     <Compile Include="Services\DdsLoader.cs" />

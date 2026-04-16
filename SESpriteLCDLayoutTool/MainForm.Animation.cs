@@ -1243,6 +1243,20 @@ namespace SESpriteLCDLayoutTool
             bool isPbOrPlugin = target != TargetScriptType.LcdHelper;
             if (isPbOrPlugin) p.ListVarName = "frame";
 
+            // ── If the code panel already has a matching simple animation block,
+            //    parse it back and pre-populate p so the user sees their current settings ──
+            if (_codeBox != null && !string.IsNullOrEmpty(_codeBox.Text))
+            {
+                AnimationType parsedType;
+                var parsedParams = AnimationSnippetGenerator.TryParseSimpleAnim(_codeBox.Text, out parsedType);
+                if (parsedParams != null && parsedType == animType)
+                {
+                    p = parsedParams;
+                    // Keep target in sync with dropdown (user may have changed it)
+                    p.TargetScript = target;
+                }
+            }
+
             string targetLabel = target == TargetScriptType.LcdHelper ? "LCD Helper"
                 : target == TargetScriptType.ProgrammableBlock ? "PB"
                 : target == TargetScriptType.Mod ? "Mod"
@@ -1388,41 +1402,53 @@ namespace SESpriteLCDLayoutTool
                 SetStatus("Animation snippet copied to clipboard");
             };
 
-            // Auto-find: check whether we can locate the sprite's block in the code editor
-            int autoStart, autoLen;
-            bool canReplace = TryFindSpriteBlockInCodeBox(sprite, out autoStart, out autoLen);
-
-            var btnInsert = DarkButton(
-                canReplace ? "📥 Replace in Code" : "📥 Insert at Cursor",
-                Color.FromArgb(0, 130, 80));
-            btnInsert.Width = canReplace ? 170 : 160;
-            btnInsert.Click += (s, e) =>
+            var btnApply = DarkButton("▶ Apply to Code", Color.FromArgb(0, 130, 80));
+            btnApply.Width = 150;
+            btnApply.Click += (s, e) =>
             {
                 if (_codeBox == null) return;
 
-                _codeBox.Focus();
+                string snippetCode  = txtCode.Text;
+                string completeCode = AnimationSnippetGenerator.GenerateSimpleComplete(sprite, animType, p);
+                string existing     = _codeBox.Text;
+                string newCode;
 
-                // Try auto-selecting the sprite's existing code block
-                int bs, bl;
-                if (TryFindSpriteBlockInCodeBox(sprite, out bs, out bl))
+                // Tier 1: existing block found (has our header) — replace it wholesale
+                if (AnimationSnippetGenerator.FindSimpleAnimBlockRange(existing,
+                        out int blockStart, out int blockLen))
                 {
-                    _codeBox.SelectionStart = bs;
-                    _codeBox.SelectionLength = bl;
+                    string oldBlock = existing.Substring(blockStart, blockLen);
+                    string replacement = oldBlock.Contains(AnimationSnippetGenerator.SimpleFooterMarker)
+                        ? completeCode
+                        : snippetCode;
+                    newCode = existing.Substring(0, blockStart)
+                            + replacement
+                            + existing.Substring(blockStart + blockLen);
+                }
+                else
+                {
+                    // Tier 2: same animation variable in existing code — merge in-place
+                    string merged = AnimationSnippetGenerator.MergeSimpleAnimIntoCode(existing, snippetCode);
+                    // Tier 3: no existing animation code — use complete compilable program
+                    newCode = merged ?? completeCode;
                 }
 
-                // Replace the selection (or insert at cursor if nothing was selected)
-                _suppressCodeBoxEvents = true;
-                try { _codeBox.SelectedText = txtCode.Text; }
-                finally { _suppressCodeBoxEvents = false; }
+                SetCodeText(newCode);
+                _codeBoxDirty = false;
+                ShowPatchDiff(existing, newCode);
 
-                SetStatus(bl > 0
-                    ? "Animation snippet replaced sprite code"
-                    : "Animation snippet inserted at cursor");
+                if (_layout != null)
+                    _layout.OriginalSourceCode = _codeBox.Text;
+
+                WriteBackToWatchedFile(_codeBox.Text);
+
+                SetStatus("Animation applied to code");
+                dlg.Close();
             };
 
             toolbar.Controls.Add(btnClose);
             toolbar.Controls.Add(btnCopy);
-            toolbar.Controls.Add(btnInsert);
+            toolbar.Controls.Add(btnApply);
 
             // ── Separator label ──
             var lblCodeHeader = new Label

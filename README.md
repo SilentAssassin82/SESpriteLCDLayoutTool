@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.4) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.5) |
 
 ---
 
@@ -782,6 +782,16 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.9.5
+- **Simple animation generator upgraded to round-trip apply** — Rotate, Oscillate, Pulse, Fade, Blink, ColorCycle now work identically to the keyframe generator:
+  - New `SimpleAnimationCodeGenerator.cs` partial with `GenerateSimpleComplete()`, `FindSimpleAnimBlockRange()`, `MergeSimpleAnimIntoCode()`, `TryParseSimpleAnim()`
+  - **Tier 1**: if code panel already has a simple animation block (matching `// ─── Animation:` header), the block is replaced wholesale
+  - **Tier 2**: if the same animation variable (`oscOffset`, `pulseScale`, `fadeAlpha`, etc.) is found, values are merged in-place leaving surrounding code untouched
+  - **Tier 3**: no existing animation code — generates a complete compilable program (full PB script or LCD Helper render method) with `// ─── End Simple Animation ───` footer marker for future detection
+  - Dialog pre-populates with existing animation settings when reopened on code that already has a simple animation block
+  - “📥 Insert at Cursor” / “Replace in Code” button replaced by “▶ Apply to Code” — closes dialog on apply
+  - Apply path calls `SetCodeText()` + `ShowPatchDiff()` + `WriteBackToWatchedFile()` so highlighting, Diff tab, and script sync all update correctly
 
 ### v2.9.4
 - **Syntax highlighting fix** — everything after `#if TORCH` (and other preprocessor conditionals) now highlights correctly:
