@@ -4,7 +4,6 @@ using System.Windows.Forms;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Text;
 
 namespace SESpriteLCDLayoutTool.Services
 {
@@ -17,28 +16,35 @@ namespace SESpriteLCDLayoutTool.Services
     internal static class SyntaxHighlighter
     {
         // ── Colour palette (VS Dark / VS Code-inspired) ───────────────────────
-        private static readonly Color ColDefault     = Color.FromArgb(212, 212, 212); // light grey
-        private static readonly Color ColKeyword     = Color.FromArgb(86,  156, 214); // blue
-        private static readonly Color ColControl     = Color.FromArgb(197, 134, 192); // pink-purple (control-flow)
-        private static readonly Color ColType        = Color.FromArgb(78,  201, 176); // teal
-        private static readonly Color ColString      = Color.FromArgb(206, 145, 120); // orange-brown
-        private static readonly Color ColComment     = Color.FromArgb(106, 153,  85); // green
-        private static readonly Color ColNumber      = Color.FromArgb(181, 206, 168); // light green
-        private static readonly Color ColPunctuation = Color.FromArgb(212, 212, 212); // same as default
-        private static readonly Color ColPreproc     = Color.FromArgb(155, 155, 155); // grey
+        private static readonly Color ColDefault  = Color.FromArgb(212, 212, 212); // light grey
+        private static readonly Color ColKeyword  = Color.FromArgb(86,  156, 214); // blue
+        private static readonly Color ColControl  = Color.FromArgb(197, 134, 192); // pink-purple (control-flow)
+        private static readonly Color ColType     = Color.FromArgb(78,  201, 176); // teal
+        private static readonly Color ColString   = Color.FromArgb(206, 145, 120); // orange-brown
+        private static readonly Color ColComment  = Color.FromArgb(106, 153,  85); // green
+        private static readonly Color ColNumber   = Color.FromArgb(181, 206, 168); // light green
+        private static readonly Color ColPreproc  = Color.FromArgb(155, 155, 155); // grey
+        private static readonly Color ColDisabled = Color.FromArgb(100, 100, 100); // dark grey (inactive #if branch)
+
+        // Preprocessor symbols defined when parsing — covers all SE plugin variants.
+        // Using Regular mode so Roslyn tokenises class/namespace code correctly.
+        // TORCH is listed first so #if TORCH blocks are treated as the active branch.
+        private static readonly CSharpParseOptions _parseOptions = new CSharpParseOptions(
+            kind: SourceCodeKind.Regular,
+            preprocessorSymbols: new[] { "TORCH", "STABLE", "DEBUG", "RELEASE" });
 
         // Control-flow keywords get a distinct colour so they stand out.
         private static readonly System.Collections.Generic.HashSet<SyntaxKind> _controlFlow =
             new System.Collections.Generic.HashSet<SyntaxKind>
             {
-                SyntaxKind.IfKeyword,    SyntaxKind.ElseKeyword,
-                SyntaxKind.ForKeyword,   SyntaxKind.ForEachKeyword,
-                SyntaxKind.WhileKeyword, SyntaxKind.DoKeyword,
-                SyntaxKind.SwitchKeyword,SyntaxKind.CaseKeyword,
+                SyntaxKind.IfKeyword,     SyntaxKind.ElseKeyword,
+                SyntaxKind.ForKeyword,    SyntaxKind.ForEachKeyword,
+                SyntaxKind.WhileKeyword,  SyntaxKind.DoKeyword,
+                SyntaxKind.SwitchKeyword, SyntaxKind.CaseKeyword,
                 SyntaxKind.DefaultKeyword,
-                SyntaxKind.BreakKeyword, SyntaxKind.ContinueKeyword,
-                SyntaxKind.ReturnKeyword,SyntaxKind.ThrowKeyword,
-                SyntaxKind.TryKeyword,   SyntaxKind.CatchKeyword,
+                SyntaxKind.BreakKeyword,  SyntaxKind.ContinueKeyword,
+                SyntaxKind.ReturnKeyword, SyntaxKind.ThrowKeyword,
+                SyntaxKind.TryKeyword,    SyntaxKind.CatchKeyword,
                 SyntaxKind.FinallyKeyword,
                 SyntaxKind.GotoKeyword,
             };
@@ -56,31 +62,30 @@ namespace SESpriteLCDLayoutTool.Services
             string source = rtb.Text;
             if (string.IsNullOrEmpty(source)) return;
 
-            // Parse tokens only — no full compilation needed.
-            SyntaxTree tree = CSharpSyntaxTree.ParseText(source,
-                CSharpParseOptions.Default.WithKind(SourceCodeKind.Script));
+            // Parse as Regular (not Script) so class/namespace structure is valid.
+            // Preprocessor symbols are defined so all #if branches are included in
+            // the token stream — #if TORCH blocks are never dropped as disabled trivia.
+            SyntaxTree tree = CSharpSyntaxTree.ParseText(source, _parseOptions);
 
-            // Save state
             int selStart  = rtb.SelectionStart;
             int selLength = rtb.SelectionLength;
 
             rtb.SuspendLayout();
-            rtb.BeginUpdate(); // suppress WM_PAINT during bulk colour changes
+            rtb.BeginUpdate();
 
             try
             {
-                // Reset all foreground colour to default in one pass
+                // Reset all text to the default colour in one pass.
                 rtb.SelectAll();
                 rtb.SelectionColor = ColDefault;
 
-                // Walk tokens and colourise
-                foreach (SyntaxToken token in tree.GetRoot().DescendantTokens())
+                // Walk every token in document order, colouring leading trivia,
+                // the token itself, then trailing trivia.
+                foreach (SyntaxToken token in tree.GetRoot().DescendantTokens(descendIntoTrivia: true))
                 {
-                    // ── Leading trivia (comments, directives, whitespace) ─────
                     foreach (SyntaxTrivia trivia in token.LeadingTrivia)
                         ApplyTrivia(rtb, trivia);
 
-                    // ── Token itself ──────────────────────────────────────────
                     int start = token.SpanStart;
                     int len   = token.Span.Length;
                     if (len > 0)
@@ -93,7 +98,6 @@ namespace SESpriteLCDLayoutTool.Services
                         }
                     }
 
-                    // ── Trailing trivia ───────────────────────────────────────
                     foreach (SyntaxTrivia trivia in token.TrailingTrivia)
                         ApplyTrivia(rtb, trivia);
                 }
@@ -103,7 +107,6 @@ namespace SESpriteLCDLayoutTool.Services
                 rtb.EndUpdate();
                 rtb.ResumeLayout();
 
-                // Restore cursor / selection
                 if (selStart >= 0 && selStart <= rtb.TextLength)
                     rtb.Select(selStart, selLength);
             }
@@ -113,8 +116,8 @@ namespace SESpriteLCDLayoutTool.Services
 
         private static void ApplyTrivia(RichTextBox rtb, SyntaxTrivia trivia)
         {
-            int  start = trivia.SpanStart;
-            int  len   = trivia.Span.Length;
+            int start = trivia.SpanStart;
+            int len   = trivia.Span.Length;
             if (len == 0) return;
 
             Color? col = ClassifyTrivia(trivia);
@@ -129,9 +132,9 @@ namespace SESpriteLCDLayoutTool.Services
         {
             SyntaxKind kind = token.Kind();
 
-            // ── String / character / interpolated literals ────────────────────
             switch (kind)
             {
+                // ── String / character / interpolated literals ────────────────
                 case SyntaxKind.StringLiteralToken:
                 case SyntaxKind.InterpolatedStringStartToken:
                 case SyntaxKind.InterpolatedStringEndToken:
@@ -147,30 +150,26 @@ namespace SESpriteLCDLayoutTool.Services
                 case SyntaxKind.NumericLiteralToken:
                     return ColNumber;
 
-                // ── Identifiers: colour known built-in types ──────────────────
+                // ── Identifiers: colour type-position names ───────────────────
                 case SyntaxKind.IdentifierToken:
                     return ColourIdentifier(token);
             }
 
             // ── Keywords ──────────────────────────────────────────────────────
             if (SyntaxFacts.IsKeywordKind(kind))
-            {
-                if (_controlFlow.Contains(kind)) return ColControl;
-                return ColKeyword;
-            }
+                return _controlFlow.Contains(kind) ? ColControl : ColKeyword;
 
             return ColDefault;
         }
 
         private static Color ColourIdentifier(SyntaxToken token)
         {
-            // Colour identifiers that are type names in declarations / usages.
             SyntaxNode parent = token.Parent;
             if (parent == null) return ColDefault;
 
             switch (parent.Kind())
             {
-                // class Foo, struct Foo, enum Foo, interface IFoo, delegate Foo
+                // Type declaration names: class Foo, struct Foo, enum Foo, etc.
                 case SyntaxKind.ClassDeclaration:
                 case SyntaxKind.StructDeclaration:
                 case SyntaxKind.EnumDeclaration:
@@ -181,9 +180,9 @@ namespace SESpriteLCDLayoutTool.Services
                     if (decl != null && decl.Identifier == token) return ColType;
                     break;
 
-                // variable / field type: Foo x = …   or parameter type
+                // Identifiers used as type names in variable declarations,
+                // parameters, generics, casts, inheritance lists, etc.
                 case SyntaxKind.IdentifierName:
-                    // When the grandparent is a type context, colour as a type
                     SyntaxNode gp = parent.Parent;
                     if (gp == null) break;
                     switch (gp.Kind())
@@ -205,14 +204,6 @@ namespace SESpriteLCDLayoutTool.Services
                             return ColType;
                     }
                     break;
-
-                // method / constructor name
-                case SyntaxKind.MethodDeclaration:
-                {
-                    var md = parent as MethodDeclarationSyntax;
-                    if (md != null && md.Identifier == token) return ColDefault; // keep default
-                    break;
-                }
             }
 
             return ColDefault;
@@ -222,6 +213,7 @@ namespace SESpriteLCDLayoutTool.Services
         {
             switch (trivia.Kind())
             {
+                // ── Comments ──────────────────────────────────────────────────
                 case SyntaxKind.SingleLineCommentTrivia:
                 case SyntaxKind.MultiLineCommentTrivia:
                 case SyntaxKind.SingleLineDocumentationCommentTrivia:
@@ -230,18 +222,24 @@ namespace SESpriteLCDLayoutTool.Services
                 case SyntaxKind.XmlComment:
                     return ColComment;
 
-                case SyntaxKind.RegionDirectiveTrivia:
-                case SyntaxKind.EndRegionDirectiveTrivia:
+                // ── Preprocessor directives ───────────────────────────────────
                 case SyntaxKind.IfDirectiveTrivia:
                 case SyntaxKind.ElseDirectiveTrivia:
+                case SyntaxKind.ElifDirectiveTrivia:
                 case SyntaxKind.EndIfDirectiveTrivia:
+                case SyntaxKind.RegionDirectiveTrivia:
+                case SyntaxKind.EndRegionDirectiveTrivia:
+                case SyntaxKind.DefineDirectiveTrivia:
+                case SyntaxKind.UndefDirectiveTrivia:
                 case SyntaxKind.PragmaWarningDirectiveTrivia:
                 case SyntaxKind.PragmaChecksumDirectiveTrivia:
                 case SyntaxKind.ReferenceDirectiveTrivia:
                 case SyntaxKind.LoadDirectiveTrivia:
-                case SyntaxKind.DefineDirectiveTrivia:
-                case SyntaxKind.UndefDirectiveTrivia:
                     return ColPreproc;
+
+                // ── Inactive #if branch (e.g. #else block when #if TORCH is active)
+                case SyntaxKind.DisabledTextTrivia:
+                    return ColDisabled;
 
                 default:
                     return null;

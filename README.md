@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.3) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.4) |
 
 ---
 
@@ -782,6 +782,14 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.9.4
+- **Syntax highlighting fix** — everything after `#if TORCH` (and other preprocessor conditionals) now highlights correctly:
+  - Root cause: was parsing with `SourceCodeKind.Script` which treats undefined preprocessor symbols as false, dropping entire `#if` blocks as disabled trivia with no token traversal
+  - Fixed: switched to `SourceCodeKind.Regular` with `TORCH`, `STABLE`, `DEBUG`, and `RELEASE` defined as preprocessor symbols — all conditional branches are now fully tokenised
+  - Inactive `#else` branches now render in dark grey (`ColDisabled`) instead of plain default, clearly distinguishing inactive code from active code
+  - Added `ElifDirectiveTrivia` to the preprocessor colour list (was missing)
+  - Removed unused `ColPunctuation` and `Microsoft.CodeAnalysis.Text` import
 
 ### v2.9.3
 - **Services layer partial class refactor** — split large service files for maintainability:
