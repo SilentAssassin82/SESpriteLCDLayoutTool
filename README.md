@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.5) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.6) |
 
 ---
 
@@ -782,6 +782,13 @@ MIT License
 ---
 
 ## 📝 Changelog
+
+### v2.9.6
+- **Rotation precision fix** — rotation fields in both the keyframe editor and the main properties panel now support 4 decimal places (0.0001 increment, range −100 to 100):
+  - Exact 2π (6.2832) is now enterable, eliminating the loop-restart hitch caused by rounding to 6.2 or 6.3
+  - Range expanded from −7/7 to −100/100 to support multi-revolution keyframe sequences
+  - `AddPropFloat` in `KeyframeEditorDialog` gained optional `decimals`/`increment`/`min`/`max` parameters with backward-compatible defaults so all other float fields are unaffected
+  - `_numRotScale` in `MainForm.UIBuilder` updated to match (4dp, 0.0001M increment)
 
 ### v2.9.5
 - **Simple animation generator upgraded to round-trip apply** — Rotate, Oscillate, Pulse, Fade, Blink, ColorCycle now work identically to the keyframe generator:

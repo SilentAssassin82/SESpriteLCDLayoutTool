@@ -477,10 +477,10 @@ namespace SESpriteLCDLayoutTool
             {
                 Width         = 230,
                 Height        = 24,
-                Minimum       = -7,
-                Maximum       = 7,
-                DecimalPlaces = 3,
-                Increment     = 0.05M,
+                Minimum       = -100,
+                Maximum       = 100,
+                DecimalPlaces = 4,
+                Increment     = 0.0001M,
                 BackColor     = Color.FromArgb(30, 30, 30),
                 ForeColor     = Color.White,
             };

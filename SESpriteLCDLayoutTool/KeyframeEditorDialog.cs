@@ -763,7 +763,8 @@ namespace SESpriteLCDLayoutTool
             if (_isText)
                 AddPropFloat("Scale:", kf.Scale ?? _sprite.Scale, v => { kf.Scale = v; OnKeyframePropChanged(); }, ref row);
             else
-                AddPropFloat("Rotation:", kf.Rotation ?? _sprite.Rotation, v => { kf.Rotation = v; OnKeyframePropChanged(); }, ref row);
+                AddPropFloat("Rotation:", kf.Rotation ?? _sprite.Rotation, v => { kf.Rotation = v; OnKeyframePropChanged(); }, ref row,
+                    decimals: 4, increment: 0.0001m, min: -100m, max: 100m);
         }
 
         private void OnKeyframePropChanged()
@@ -1079,7 +1080,8 @@ namespace SESpriteLCDLayoutTool
 
         // ── Property editor helpers ─────────────────────────────────────────────
 
-        private void AddPropFloat(string label, float initial, Action<float> onChange, ref int row)
+        private void AddPropFloat(string label, float initial, Action<float> onChange, ref int row,
+            int decimals = 1, decimal increment = 1m, decimal min = -9999m, decimal max = 9999m)
         {
             var lbl = new Label
             {
@@ -1090,14 +1092,15 @@ namespace SESpriteLCDLayoutTool
                 Font = new Font("Segoe UI", 8.5f),
             };
 
+            decimal safeVal = (decimal)Math.Max((float)min, Math.Min((float)max, initial));
             var nud = new NumericUpDown
             {
                 Dock = DockStyle.Fill,
-                Minimum = -9999,
-                Maximum = 9999,
-                DecimalPlaces = 1,
-                Increment = 1,
-                Value = (decimal)Math.Max(-9999, Math.Min(9999, initial)),
+                Minimum = min,
+                Maximum = max,
+                DecimalPlaces = decimals,
+                Increment = increment,
+                Value = safeVal,
                 BackColor = Color.FromArgb(40, 42, 48),
                 ForeColor = Color.FromArgb(220, 220, 220),
             };
