@@ -92,14 +92,61 @@ namespace SESpriteLCDLayoutTool
             _workSplit = workSplit;
             _topSplit  = topSplit;
 
-            // Canvas
+            // Canvas + rulers container
             _canvas = new LcdCanvas { Dock = DockStyle.Fill };
             _canvas.SelectionChanged += OnSelectionChanged;
             _canvas.SpriteModified   += OnSpriteModified;
             _canvas.DragStarting     += (ss, ee) => PushUndo();
             _canvas.DragCompleted    += OnDragCompleted;
             _canvas.ContextMenuStrip  = BuildCanvasContextMenu();
-            topSplit.Panel1.Controls.Add(_canvas);
+
+            // Rulers
+            _rulerH = new CanvasRuler(CanvasRuler.Orientation.Horizontal);
+            _rulerV = new CanvasRuler(CanvasRuler.Orientation.Vertical);
+            _rulerCorner = new Panel
+            {
+                Width     = CanvasRuler.Thickness,
+                Height    = CanvasRuler.Thickness,
+                Dock      = DockStyle.None,
+                BackColor = Color.FromArgb(32, 32, 36),
+            };
+
+            // Panel that hosts canvas + rulers using TableLayoutPanel
+            var canvasTable = new TableLayoutPanel
+            {
+                Dock        = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount    = 2,
+                Padding     = new Padding(0),
+                Margin      = new Padding(0),
+                BackColor   = Color.FromArgb(28, 28, 28),
+            };
+            canvasTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, CanvasRuler.Thickness));
+            canvasTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            canvasTable.RowStyles.Add(new RowStyle(SizeType.Absolute, CanvasRuler.Thickness));
+            canvasTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            canvasTable.Controls.Add(_rulerCorner, 0, 0);
+            canvasTable.Controls.Add(_rulerH, 1, 0);
+            canvasTable.Controls.Add(_rulerV, 0, 1);
+            canvasTable.Controls.Add(_canvas, 1, 1);
+
+            // Wire ruler updates: mouse move fires hairline tracking + transform sync
+            _canvas.SurfaceMouseMoved += (mx, my) =>
+            {
+                _rulerH.SetCursorPos(mx);
+                _rulerV.SetCursorPos(my);
+            };
+
+            // Sync transform to rulers after every repaint (zoom/pan/resize)
+            _canvas.Paint += (ss, ee) =>
+            {
+                if (_canvas.CanvasLayout == null) return;
+                _canvas.GetCurrentTransform(out float sc, out PointF orig);
+                _rulerH.SetTransform(sc, orig, _canvas.CanvasLayout.SurfaceWidth);
+                _rulerV.SetTransform(sc, orig, _canvas.CanvasLayout.SurfaceHeight);
+            };
+
+            topSplit.Panel1.Controls.Add(canvasTable);
 
             topSplit.Panel2.Controls.Add(BuildPropertiesPanel());
 
@@ -172,6 +219,24 @@ namespace SESpriteLCDLayoutTool
             var snapItem = new ToolStripMenuItem("Snap to Grid\tCtrl+G") { CheckOnClick = true };
             snapItem.CheckedChanged += (s, e) => { _canvas.SnapToGrid = snapItem.Checked; SetStatus(snapItem.Checked ? "Snap to grid enabled" : "Snap to grid disabled"); };
             view.DropDownItems.Add(snapItem);
+
+            var snapSpriteItem = new ToolStripMenuItem("Snap to Sprite Edges\tCtrl+Shift+G") { CheckOnClick = true };
+            snapSpriteItem.CheckedChanged += (s, e) =>
+            {
+                _canvas.SnapToSprite = snapSpriteItem.Checked;
+                SetStatus(snapSpriteItem.Checked ? "Snap to sprite edges enabled" : "Snap to sprite edges disabled");
+            };
+            view.DropDownItems.Add(snapSpriteItem);
+
+            var rulersItem = new ToolStripMenuItem("Show Rulers") { CheckOnClick = true, Checked = true };
+            rulersItem.CheckedChanged += (s, e) =>
+            {
+                bool show = rulersItem.Checked;
+                if (_rulerH != null) _rulerH.Visible = show;
+                if (_rulerV != null) _rulerV.Visible = show;
+                if (_rulerCorner != null) _rulerCorner.Visible = show;
+            };
+            view.DropDownItems.Add(rulersItem);
 
             var constrainItem = new ToolStripMenuItem("Constrain Sprites to Surface") { CheckOnClick = true };
             constrainItem.CheckedChanged += (s, e) =>

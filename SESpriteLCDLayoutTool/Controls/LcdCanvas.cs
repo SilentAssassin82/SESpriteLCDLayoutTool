@@ -79,6 +79,13 @@ namespace SESpriteLCDLayoutTool.Controls
         private bool _snapToGrid;
         private int _gridSize = 16;
 
+        // Snap-to-sprite
+        private bool _snapToSprite;
+        private const float SnapSpriteThreshold = 8f;  // screen pixels
+        // Active snap guide lines (surface coords, NaN = none)
+        private float _snapGuideX = float.NaN;
+        private float _snapGuideY = float.NaN;
+
         // Drag-performance: cached bitmap of everything except the dragged sprite
         private Bitmap _dragCache;
 
@@ -89,6 +96,11 @@ namespace SESpriteLCDLayoutTool.Controls
         public event EventHandler DragStarting;
         /// <summary>Fired once when a drag operation ends.</summary>
         public event EventHandler DragCompleted;
+        /// <summary>
+        /// Fired on every mouse move over the canvas surface.
+        /// Args are the mouse position in surface coordinates (may be outside 0…surfaceSize when panned).
+        /// </summary>
+        public event Action<float, float> SurfaceMouseMoved;
 
         // ── Properties ───────────────────────────────────────────────────────────
         public LcdLayout CanvasLayout
@@ -132,6 +144,12 @@ namespace SESpriteLCDLayoutTool.Controls
         {
             get => _snapToGrid;
             set { _snapToGrid = value; Invalidate(); }
+        }
+
+        public bool SnapToSprite
+        {
+            get => _snapToSprite;
+            set { _snapToSprite = value; Invalidate(); }
         }
 
         public int GridSize
@@ -195,6 +213,11 @@ namespace SESpriteLCDLayoutTool.Controls
             TabStop = true;
         }
 
+        // ── Public transform accessor (used by rulers) ────────────────────────────
+        /// <summary>Returns the current canvas-to-screen scale and surface origin.</summary>
+        public void GetCurrentTransform(out float scale, out PointF origin)
+            => ComputeTransform(out scale, out origin);
+
         // ── Coordinate helpers ────────────────────────────────────────────────────
         private void ComputeTransform(out float scale, out PointF origin)
         {
@@ -217,6 +240,82 @@ namespace SESpriteLCDLayoutTool.Controls
         {
             if (!_snapToGrid || _gridSize <= 0) return v;
             return (float)Math.Round(v / _gridSize) * _gridSize;
+        }
+
+        /// <summary>
+        /// Checks all other sprites' edges and centres and snaps the dragged sprite
+        /// to the nearest within <see cref="SnapSpriteThreshold"/> screen pixels.
+        /// Sets <see cref="_snapGuideX"/> / <see cref="_snapGuideY"/> for guide-line rendering.
+        /// </summary>
+        private void ApplySnapToSprite(SpriteEntry dragged, ref float newX, ref float newY, float scale)
+        {
+            _snapGuideX = float.NaN;
+            _snapGuideY = float.NaN;
+            if (_layout == null) return;
+
+            float hw = Math.Abs(dragged.Width)  / 2f;
+            float hh = Math.Abs(dragged.Height) / 2f;
+            float thresh = SnapSpriteThreshold / scale;
+
+            // Candidate snap values: dragged sprite's own edges and centre
+            // vs target sprite's edges and centre (in surface coords)
+            float bestDx = thresh + 1f;
+            float bestDy = thresh + 1f;
+            float snapX  = float.NaN;
+            float snapY  = float.NaN;
+
+            foreach (var other in _layout.Sprites)
+            {
+                if (other == dragged || other.IsHidden) continue;
+
+                float ow = Math.Abs(other.Width)  / 2f;
+                float oh = Math.Abs(other.Height) / 2f;
+
+                // X snap: left-to-left, right-to-right, left-to-right, right-to-left, centre-to-centre
+                float[] selfX  = { newX - hw, newX, newX + hw };
+                float[] otherX = { other.X - ow, other.X, other.X + ow };
+                foreach (float sx in selfX)
+                {
+                    foreach (float ox in otherX)
+                    {
+                        float d = Math.Abs(sx - ox);
+                        if (d < bestDx) { bestDx = d; snapX = ox - (sx - newX); }
+                    }
+                }
+
+                // Y snap: top, centre, bottom
+                float[] selfY  = { newY - hh, newY, newY + hh };
+                float[] otherY = { other.Y - oh, other.Y, other.Y + oh };
+                foreach (float sy in selfY)
+                {
+                    foreach (float oy in otherY)
+                    {
+                        float d = Math.Abs(sy - oy);
+                        if (d < bestDy) { bestDy = d; snapY = oy - (sy - newY); }
+                    }
+                }
+            }
+
+            if (!float.IsNaN(snapX) && bestDx <= thresh) { newX = snapX; _snapGuideX = snapX - (newX - snapX) == 0 ? newX : newX; _snapGuideX = newX; }
+            if (!float.IsNaN(snapY) && bestDy <= thresh) { newY = snapY; _snapGuideY = newY; }
+        }
+
+        /// <summary>Draws magenta snap guide lines when snap-to-sprite is active during drag.</summary>
+        private void DrawSnapGuides(Graphics g, float scale, PointF origin, float dh, float dw)
+        {
+            using (var guidePen = new Pen(Color.FromArgb(220, 255, 60, 200), 1f) { DashStyle = DashStyle.Dash })
+            {
+                if (!float.IsNaN(_snapGuideX))
+                {
+                    float sx = origin.X + _snapGuideX * scale;
+                    g.DrawLine(guidePen, sx, origin.Y, sx, origin.Y + dh);
+                }
+                if (!float.IsNaN(_snapGuideY))
+                {
+                    float sy = origin.Y + _snapGuideY * scale;
+                    g.DrawLine(guidePen, origin.X, sy, origin.X + dw, sy);
+                }
+            }
         }
 
         private RectangleF GetSpriteScreenRect(SpriteEntry sprite, float scale, PointF origin)
@@ -273,6 +372,13 @@ namespace SESpriteLCDLayoutTool.Controls
                 else
                 {
                     DrawSprite(g, _selectedSprite, true, s, o);
+                }
+                // Draw snap guides on top during drag
+                if (_snapToSprite && _dragMode == DragMode.Move && _layout != null)
+                {
+                    float dw = _layout.SurfaceWidth  * s;
+                    float dh = _layout.SurfaceHeight * s;
+                    DrawSnapGuides(g, s, o, dh, dw);
                 }
                 return;
             }
@@ -377,6 +483,10 @@ namespace SESpriteLCDLayoutTool.Controls
                 using (var borderPen = new Pen(Color.FromArgb(200, 80, 180, 255), 1f) { DashStyle = DashStyle.Dash })
                     g.DrawRectangle(borderPen, _boxSelectRect.X, _boxSelectRect.Y, _boxSelectRect.Width, _boxSelectRect.Height);
             }
+
+            // Snap-to-sprite guide lines
+            if (_snapToSprite && (_dragMode == DragMode.Move))
+                DrawSnapGuides(g, scale, origin, dh, dw);
             }
 
             /// <summary>
@@ -965,11 +1075,19 @@ namespace SESpriteLCDLayoutTool.Controls
                     _panOrigOffset.X + e.X - _panStart.X,
                     _panOrigOffset.Y + e.Y - _panStart.Y);
                 Invalidate();
+                // Fire ruler update even while panning
+                ComputeTransform(out float ps, out PointF po);
+                SurfaceMouseMoved?.Invoke((e.X - po.X) / ps, (e.Y - po.Y) / ps);
                 return;
             }
 
             ComputeTransform(out float scale, out PointF origin);
             var pt = new PointF(e.X, e.Y);
+
+            // Fire surface position for ruler hairline tracking
+            float surfX = (pt.X - origin.X) / scale;
+            float surfY = (pt.Y - origin.Y) / scale;
+            SurfaceMouseMoved?.Invoke(surfX, surfY);
 
             // Box-select rubber-band update
             if (_isBoxSelecting)
@@ -999,6 +1117,8 @@ namespace SESpriteLCDLayoutTool.Controls
                     // Move all selected sprites by the same delta
                     if (_selectedSprites.Count > 1)
                     {
+                        _snapGuideX = float.NaN;
+                        _snapGuideY = float.NaN;
                         foreach (var sp in _selectedSprites)
                         {
                             if (_multiDragOrigPositions.TryGetValue(sp.Id, out PointF orig))
@@ -1015,8 +1135,16 @@ namespace SESpriteLCDLayoutTool.Controls
                     }
                     else
                     {
-                        s.X = Snap(_dragOrigX + dx);
-                        s.Y = Snap(_dragOrigY + dy);
+                        float newX = Snap(_dragOrigX + dx);
+                        float newY = Snap(_dragOrigY + dy);
+
+                        // Snap-to-sprite: find nearest edge/centre on any other sprite
+                        if (_snapToSprite)
+                            ApplySnapToSprite(s, ref newX, ref newY, scale);
+                        else { _snapGuideX = float.NaN; _snapGuideY = float.NaN; }
+
+                        s.X = newX;
+                        s.Y = newY;
                         if (ConstrainToSurface && _layout != null)
                         {
                             s.X = Math.Max(0f, Math.Min(_layout.SurfaceWidth,  s.X));
@@ -1105,6 +1233,8 @@ namespace SESpriteLCDLayoutTool.Controls
 
             if (_dragMode != DragMode.None)
             {
+                _snapGuideX = float.NaN;
+                _snapGuideY = float.NaN;
                 InvalidateDragCache();
                 DragCompleted?.Invoke(this, EventArgs.Empty);
             }
@@ -1405,6 +1535,12 @@ namespace SESpriteLCDLayoutTool.Controls
         }
 
         protected override void OnResize(EventArgs e) { base.OnResize(e); InvalidateDragCache(); Invalidate(); }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            SurfaceMouseMoved?.Invoke(-1f, -1f);
+        }
 
         // ── Debug overlay rendering ──────────────────────────────────────────────
 

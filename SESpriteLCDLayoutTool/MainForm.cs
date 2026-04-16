@@ -22,7 +22,10 @@ namespace SESpriteLCDLayoutTool
         private Button   _btnAddText;
 
         // ── Centre ────────────────────────────────────────────────────────────────
-        private LcdCanvas _canvas;
+        private LcdCanvas    _canvas;
+        private CanvasRuler  _rulerH;   // horizontal ruler along top of canvas
+        private CanvasRuler  _rulerV;   // vertical ruler along left of canvas
+        private Panel        _rulerCorner; // 20×20 dead corner where rulers meet
 
         // ── Properties panel ──────────────────────────────────────────────────────
         private NumericUpDown _numX, _numY, _numW, _numH;

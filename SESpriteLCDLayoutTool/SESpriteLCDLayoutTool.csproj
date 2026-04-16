@@ -97,6 +97,9 @@
     <Reference Include="System.Drawing" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Controls\CanvasRuler.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Controls\KeyframeTimeline.cs">
       <SubType>Component</SubType>
     </Compile>
