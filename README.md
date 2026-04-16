@@ -1,4 +1,4 @@
-# SE Sprite LCD Layout Tool
+﻿# SE Sprite LCD Layout Tool
 
 A powerful **WYSIWYG visual editor** for designing custom LCD sprite layouts in **[Space Engineers](https://store.steampowered.com/app/244850/Space_Engineers/)**.
 
@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.0) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.2) |
 
 ---
 
@@ -783,6 +783,20 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.9.2
+- **MainForm partial class refactor** — split the 11,174-line MainForm.cs into 7 focused partial files for maintainability:
+  - MainForm.Streaming.cs — live LCD stream, named pipe listener, file/clipboard watcher (~1,778 lines)
+  - MainForm.Animation.cs — animation playback handlers, keyframe/snippet/group dialogs (~1,569 lines)
+  - MainForm.FileIO.cs — file open/save, sprite import, paste layout, apply snapshot (~1,018 lines)
+  - MainForm.ContextMenus.cs — keyboard shortcuts, canvas/layer/sprite-tree context menus (~690 lines)
+  - MainForm.Watch.cs — watch expressions, conditional breakpoints (~358 lines)
+  - MainForm.DebugTools.cs — debug panel, VRAM budget dialog, pop-out code editor (~273 lines)
+  - MainForm.DarkTheme.cs — dark menu renderer and color table (~32 lines)
+  - MainForm.cs reduced from 11,174 → 5,573 lines
+- **UTF-8 BOM encoding fix** — all partial files written with correct UTF-8 BOM to preserve Unicode characters (▶, ⏸, ⏹, ─, ×) in button labels
+
+### v2.9.1
+- **Syntax highlighting** — code panel now highlights C# keywords, types, strings, comments, and numbers using a custom SyntaxHighlighter service with incremental repaint support
 ### v2.9.0
 - **Animation Groups** — link multiple sprites into an animation group so they animate together using a single leader's keyframe data with automatic per-sprite offsets
   - **Create Animation Group** — right-click a sprite that has a keyframe animation → **Create Animation Group** to designate it as the group leader
