@@ -46,8 +46,9 @@ namespace SESpriteLCDLayoutTool.Services
             // Only insert sprites that are:
             // 1. Not tracked in source (SourceStart < 0)
             // 2. NOT from execution (those already exist in the code as runtime-generated)
+            // 3. Visible (hidden sprites are intentionally excluded from code generation)
             var spritesToInsert = newSprites?
-                .Where(s => s.SourceStart < 0 && !s.IsFromExecution)
+                .Where(s => s.SourceStart < 0 && !s.IsFromExecution && !s.IsHidden)
                 .ToList();
 
             if (spritesToInsert == null || spritesToInsert.Count == 0)
@@ -365,7 +366,7 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.Append(", ");
                 sb.Append(sprite.ColorA);
             }
-            sb.AppendLine("),");
+            sb.AppendLine(",");
 
             // RotationOrScale (text uses scale, texture uses rotation)
             if (sprite.Type == SpriteEntryType.Text)

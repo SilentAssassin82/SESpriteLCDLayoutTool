@@ -1437,11 +1437,14 @@ namespace SESpriteLCDLayoutTool
                     if (highlighted != null && !highlighted.Contains(s))
                         continue;
 
-                    string prefix = s.IsHidden ? "⊘ "
-                        : s.IsReferenceLayout ? "[REF] "
-                        : s.IsSnapshotData ? "\u26A0 "
-                        : s.SourceStart < 0 ? "· "
-                        : "";
+                    string prefix = s.IsHidden ? "\u29B8 " : "\u25CE ";
+
+                    if (s.IsReferenceLayout)
+                        prefix += "[REF] ";
+                    else if (s.IsSnapshotData)
+                        prefix += "\u26A0 ";
+                    else if (s.SourceStart < 0)
+                        prefix += "\u00B7 ";
 
                     // Lock indicator
                     if (s.IsLocked)

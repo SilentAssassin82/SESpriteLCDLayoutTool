@@ -486,17 +486,38 @@ namespace SESpriteLCDLayoutTool
             };
             var layerTooltip = new ToolTip();
             layerTooltip.SetToolTip(_lstLayers,
-                "Layer order (bottom → top)\n" +
-                "⊘ = hidden  |  [REF] = reference layout  |  ⚠ = game data  |  · = untracked\n" +
+                "Layer order (bottom \u2192 top)\n" +
+                "\u25CE = visible  |  \u29B8 = hidden  |  [REF] = reference layout  |  \u26A0 = game data  |  \u00B7 = untracked\n" +
+                "Left-click left edge to toggle visibility\n" +
                 "// variable = code variable name\n" +
                 "Double-click to jump to code definition");
             _lstLayers.SelectedIndexChanged += OnLayerListSelectionChanged;
             _lstLayers.MouseDoubleClick  += OnLayerListDoubleClick;
             _lstLayers.MouseDown += (s, e) =>
             {
+                int idx = _lstLayers.IndexFromPoint(e.Location);
+
+                // Left-click on icon gutter toggles visibility for that row
+                if (e.Button == MouseButtons.Left && idx >= 0 && e.X <= 22)
+                {
+                    var sprite = SpriteFromLayerIndex(idx);
+                    if (sprite != null)
+                    {
+                        PushUndo();
+                        sprite.IsHidden = !sprite.IsHidden;
+                        if (sprite.IsHidden && _canvas.SelectedSprite == sprite)
+                            _canvas.SelectedSprite = null;
+                        _canvas.Invalidate();
+                        RefreshLayerList();
+                        SetStatus(sprite.IsHidden
+                            ? $"Layer hidden: {sprite.DisplayName}"
+                            : $"Layer shown: {sprite.DisplayName}");
+                    }
+                    return;
+                }
+
                 if (e.Button == MouseButtons.Right)
                 {
-                    int idx = _lstLayers.IndexFromPoint(e.Location);
                     if (idx >= 0 && !_lstLayers.SelectedIndices.Contains(idx))
                     {
                         // Right-clicked on an unselected item — select only that one

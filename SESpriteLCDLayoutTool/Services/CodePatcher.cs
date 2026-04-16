@@ -560,7 +560,7 @@ namespace SESpriteLCDLayoutTool.Services
             for (int i = 0; i < layout.Sprites.Count; i++)
             {
                 var sp = layout.Sprites[i];
-                if (sp.IsReferenceLayout) continue;
+                if (sp.IsReferenceLayout || sp.IsHidden) continue;
 
                 if (actualCount > 0) sb.AppendLine();
 
