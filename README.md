@@ -22,7 +22,7 @@ Design your screens with drag & drop, preview real in-game textures, then export
 | [⌨️ Keyboard Shortcuts](#️-keyboard-shortcuts) | All hotkeys and mouse controls |
 | [Contributing](#contributing) | Bug reports, feature requests, PRs |
 | [License](#license) | MIT |
-| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.2) |
+| [📝 Changelog](#-changelog) | Version history (v1.0.0 → v2.9.3) |
 
 ---
 
@@ -783,6 +783,15 @@ MIT License
 
 ## 📝 Changelog
 
+### v2.9.3
+- **Services layer partial class refactor** — split large service files for maintainability:
+  - CodeExecutor.cs (4,446 → 3,301 lines) + SEStubs.cs (1,149 lines) — SE API type stubs (VRageMath, Sandbox, VRage stubs compiled with user code) extracted into a dedicated partial
+  - CodeGenerator.cs (2,029 → 857 lines) + CodePatcher.cs (1,184 lines) — per-sprite dynamic round-trip patching, offset-targeted literal replacement, and expression extraction split out
+  - AnimationSnippetGenerator.cs (1,828 → 340 lines) + KeyframedCodeGenerator.cs (1,502 lines) — all keyframed/group animation code generation, round-trip parsing, and smart merge logic split out
+- **MainForm further split** — two additional partial files:
+  - MainForm.UIBuilder.cs (~1,069 lines) — UI construction: menu bar, left panel, properties panel, code output panel wiring
+  - MainForm.Variables.cs (~2,037 lines) — variable inspector, sparkline owner-draw, sprite-to-variable linking, runtime variable editing
+  - MainForm.cs reduced from 5,573 → 2,515 lines
 ### v2.9.2
 - **MainForm partial class refactor** — split the 11,174-line MainForm.cs into 7 focused partial files for maintainability:
   - MainForm.Streaming.cs — live LCD stream, named pipe listener, file/clipboard watcher (~1,778 lines)
