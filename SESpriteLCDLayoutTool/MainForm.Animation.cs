@@ -796,7 +796,7 @@ namespace SESpriteLCDLayoutTool
                 var leader = FindGroupLeader(sprite.AnimationGroupId);
                 src = leader?.KeyframeAnimation;
             }
-            src = src ?? AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
+            src = src ?? AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text, sprite.AnimationIndex);
             if (src == null) { SetStatus("No animation to copy"); return; }
 
             // Deep-clone so edits to the copy don't mutate the original
@@ -891,7 +891,7 @@ namespace SESpriteLCDLayoutTool
 
             // Need animation data to be a leader
             var anim = sprite.KeyframeAnimation
-                    ?? AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
+                    ?? AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text, sprite.AnimationIndex);
             if (anim == null) { SetStatus("Sprite has no keyframe animation to share"); return; }
 
             PushUndo();
@@ -1029,23 +1029,111 @@ namespace SESpriteLCDLayoutTool
         /// </summary>
         private int DetectSpriteAnimationIndex(string code, SpriteEntry sprite)
         {
-            if (string.IsNullOrEmpty(code) || sprite.SourceStart < 0) return 0;
+            if (string.IsNullOrEmpty(code)) return 0;
 
-            int end = sprite.SourceEnd > sprite.SourceStart ? sprite.SourceEnd : code.Length;
-            if (sprite.SourceStart >= code.Length) return 0;
-            end = Math.Min(end, code.Length);
+            string block = null;
 
-            string block = code.Substring(sprite.SourceStart, end - sprite.SourceStart);
+            if (sprite.SourceStart >= 0 && sprite.SourceStart < code.Length)
+            {
+                int end = sprite.SourceEnd > sprite.SourceStart ? sprite.SourceEnd : code.Length;
+                end = Math.Min(end, code.Length);
+                block = code.Substring(sprite.SourceStart, end - sprite.SourceStart);
+            }
+            else
+            {
+                // PB/runtime sprites have SourceStart = -1.
+                // Fall back: find the frame.Add block whose Data matches this sprite's name/text.
+                string dataName = sprite.Type == SpriteEntryType.Text ? sprite.Text : sprite.SpriteName;
+                if (!string.IsNullOrEmpty(dataName))
+                {
+                    // Find all frame.Add(new MySprite blocks and match by Data = "..."
+                    var addRx = new System.Text.RegularExpressions.Regex(
+                        @"frame\w*\.Add\(new\s+MySprite\s*\{[^}]*\}", System.Text.RegularExpressions.RegexOptions.Singleline);
+                    foreach (System.Text.RegularExpressions.Match addMatch in addRx.Matches(code))
+                    {
+                        string addBlock = addMatch.Value;
+                        // Check if Data = "dataName" appears in this block
+                        if (addBlock.Contains("\"" + dataName + "\""))
+                        {
+                            block = addBlock;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (block == null) return 0;
 
             // Look for interpolation variables: arot, ax, ay, aw, ah, ascl, ar, ag, ab, aa
             // Unsuffixed = index 1. Suffixed (arot2, ax3, etc.) = that number.
-            var rx = new System.Text.RegularExpressions.Regex(@"\b(?:arot|ax|ay|aw|ah|ascl|ar|ag|ab|aa)(\d*)\b");
+            var rx = new System.Text.RegularExpressions.Regex(@"\b(?:arot|ax|ay|aw|ah|ascl|ar|ag|ab|aa)(\d*)(?:_interp)?\b");
             foreach (System.Text.RegularExpressions.Match m in rx.Matches(block))
             {
                 string suffix = m.Groups[1].Value;
                 return string.IsNullOrEmpty(suffix) ? 1 : int.Parse(suffix);
             }
             return 0;
+        }
+
+        /// <summary>
+        /// After code execution, auto-labels duplicate sprites (e.g. "SemiCircle #1", "SemiCircle #2")
+        /// and assigns AnimationIndex by matching each sprite to its ordinal frame.Add block in the code.
+        /// Unique sprite names get no label suffix. Only sets UserLabel if it's currently empty.
+        /// </summary>
+        private void AutoLabelAndDetectAnimationIndices(string code)
+        {
+            if (string.IsNullOrEmpty(code) || _layout?.Sprites == null) return;
+
+            // Group sprites by their display key (SpriteName for textures, Text for text sprites)
+            var groups = new Dictionary<string, List<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var sp in _layout.Sprites)
+            {
+                string key = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
+                if (string.IsNullOrEmpty(key)) continue;
+                if (!groups.ContainsKey(key)) groups[key] = new List<SpriteEntry>();
+                groups[key].Add(sp);
+            }
+
+            // For each group, find matching frame.Add blocks in code order and assign labels + animation indices
+            var addRx = new System.Text.RegularExpressions.Regex(
+                @"frame\w*\.Add\(new\s+MySprite\s*\{[^}]*\}",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            var interpRx = new System.Text.RegularExpressions.Regex(@"\b(?:arot|ax|ay|aw|ah|ascl|ar|ag|ab|aa)(\d*)(?:_interp)?\b");
+
+            foreach (var kvp in groups)
+            {
+                string dataName = kvp.Key;
+                var sprites = kvp.Value;
+                bool hasDuplicates = sprites.Count > 1;
+
+                // Find all frame.Add blocks matching this sprite name, in code order
+                var matchingBlocks = new List<string>();
+                foreach (System.Text.RegularExpressions.Match addMatch in addRx.Matches(code))
+                {
+                    if (addMatch.Value.Contains("\"" + dataName + "\""))
+                        matchingBlocks.Add(addMatch.Value);
+                }
+
+                for (int i = 0; i < sprites.Count; i++)
+                {
+                    var sp = sprites[i];
+
+                    // Auto-label duplicates: "SemiCircle #1", "SemiCircle #2"
+                    if (string.IsNullOrEmpty(sp.UserLabel) && hasDuplicates)
+                        sp.UserLabel = $"{dataName} #{i + 1}";
+
+                    // Detect animation index from the matching code block (by ordinal)
+                    if (sp.AnimationIndex == 0 && i < matchingBlocks.Count)
+                    {
+                        foreach (System.Text.RegularExpressions.Match m in interpRx.Matches(matchingBlocks[i]))
+                        {
+                            string suffix = m.Groups[1].Value;
+                            sp.AnimationIndex = string.IsNullOrEmpty(suffix) ? 1 : int.Parse(suffix);
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -1103,14 +1191,11 @@ namespace SESpriteLCDLayoutTool
 
             string existing = _codeBox.Text;
 
-            // Collect all animated sprites
-            var animatedSprites = _layout?.Sprites
-                .Where(sp => sp.AnimationEffects != null && sp.AnimationEffects.Count > 0)
-                .ToList()
-                ?? new List<SpriteEntry>();
+            // Pass all sprites so ordinal matching works for duplicates
+            var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
 
             // Try Roslyn injection
-            var injResult = RoslynAnimationInjector.InjectAnimations(existing, animatedSprites);
+            var injResult = RoslynAnimationInjector.InjectAnimations(existing, allSprites);
             if (injResult.Success && injResult.Code != existing)
             {
                 SetCodeText(injResult.Code);
@@ -1542,7 +1627,14 @@ namespace SESpriteLCDLayoutTool
             // If editing existing but no in-memory data, try parsing from the code panel
             if (editExisting && editTarget.KeyframeAnimation == null)
             {
-                var parsed = AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text);
+                // Detect animation index from code if not yet known
+                if (editTarget.AnimationIndex == 0 && !string.IsNullOrEmpty(_codeBox?.Text))
+                {
+                    int detected = DetectSpriteAnimationIndex(_codeBox.Text, editTarget);
+                    if (detected > 0)
+                        editTarget.AnimationIndex = detected;
+                }
+                var parsed = AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text, editTarget.AnimationIndex);
                 if (parsed != null)
                 {
                     editTarget.KeyframeAnimation = parsed;
@@ -1900,11 +1992,8 @@ namespace SESpriteLCDLayoutTool
                 // Add or replace this effect type on the sprite
                 AddOrReplaceEffect(sprite, effect);
 
-                // Collect all animated sprites from the layout
-                var animatedSprites = _layout?.Sprites
-                    .Where(sp => sp.AnimationEffects != null && sp.AnimationEffects.Count > 0)
-                    .ToList()
-                    ?? new List<SpriteEntry>();
+                // Pass all sprites so ordinal matching works for duplicates
+                var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
 
                 // If the code panel is empty, generate a complete program first
                 string codeToInject = existing;
@@ -1914,7 +2003,7 @@ namespace SESpriteLCDLayoutTool
                 }
 
                 // Inject all animations via Roslyn
-                var result = RoslynAnimationInjector.InjectAnimations(codeToInject, animatedSprites);
+                var result = RoslynAnimationInjector.InjectAnimations(codeToInject, allSprites);
                 string newCode;
 
                 if (result.Success)

@@ -41,6 +41,7 @@ namespace SESpriteLCDLayoutTool
         private TextBox       _txtText;
         private ComboBox      _cmbFont;
         private ComboBox      _cmbAlignment;
+        private TextBox       _txtLabel;
         private Label         _lblRuntimeData;
         private ListBox       _lstLayers;
         private List<SpriteEntry> _layerListSprites = new List<SpriteEntry>();
@@ -184,6 +185,7 @@ namespace SESpriteLCDLayoutTool
         private Label _lblCodeMode;
         private Button _btnApplyCode;
         private CodeAutoComplete _autoComplete;
+        private Controls.CodeFindReplaceBar _findReplaceBar;
 
         // ── Pop-out code editor ──────────────────────────────────────────────
         private Panel  _codePanel;
@@ -847,6 +849,7 @@ namespace SESpriteLCDLayoutTool
 
                 if (sp != null)
                 {
+                    _txtLabel.Text = sp.UserLabel ?? "";
                     _numX.Value = (decimal)Math.Round(ClampF(sp.X,      -8192f, 8192f), 1);
                     _numY.Value = (decimal)Math.Round(ClampF(sp.Y,      -8192f, 8192f), 1);
                     _numW.Value = (decimal)Math.Round(ClampF(sp.Width,      1f, 8192f), 1);
@@ -980,6 +983,7 @@ namespace SESpriteLCDLayoutTool
             PushUndo();
             var sp = _canvas.SelectedSprite;
 
+            sp.UserLabel = string.IsNullOrWhiteSpace(_txtLabel.Text) ? null : _txtLabel.Text.Trim();
             sp.X = (float)_numX.Value;
             sp.Y = (float)_numY.Value;
             sp.Width  = (float)_numW.Value;

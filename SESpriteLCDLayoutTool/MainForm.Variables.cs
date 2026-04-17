@@ -1281,7 +1281,9 @@ namespace SESpriteLCDLayoutTool
             _codeBox.ContextMenuStrip = ctxCode;
 
             var lineGutter = new Controls.LineNumberGutter(_codeBox);
+            _findReplaceBar = new Controls.CodeFindReplaceBar(_codeBox);
             panel.Controls.Add(_codeBox);
+            panel.Controls.Add(_findReplaceBar);
             panel.Controls.Add(lineGutter);
             panel.Controls.Add(toolbar);
             _autoComplete = new CodeAutoComplete(_codeBox);

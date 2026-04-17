@@ -767,33 +767,42 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
-        /// Attempts to parse keyframe animation data from generated code.
+        /// Attempts to parse keyframe animation data from generated code (first/unsuffixed animation).
         /// Returns a populated <see cref="KeyframeAnimationParams"/> or null if the code
         /// does not contain recognizable keyframe arrays.
         /// </summary>
         public static KeyframeAnimationParams TryParseKeyframed(string code)
+            => TryParseKeyframed(code, 0);
+
+        /// <summary>
+        /// Attempts to parse keyframe animation data for a specific animation index.
+        /// Index 0 or 1 = unsuffixed (kfTick), 2+ = suffixed (kfTick2, kfTick3, etc.).
+        /// </summary>
+        public static KeyframeAnimationParams TryParseKeyframed(string code, int animationIndex)
         {
             if (string.IsNullOrEmpty(code)) return null;
 
+            string sfx = (animationIndex <= 1) ? "" : animationIndex.ToString();
+
             // ── Must have kfTick and kfEase arrays at minimum ──
-            int[] ticks  = ParseIntArray(code, "kfTick");
-            int[] easings = ParseIntArray(code, "kfEase");
+            int[] ticks  = ParseIntArray(code, "kfTick" + sfx);
+            int[] easings = ParseIntArray(code, "kfEase" + sfx);
             if (ticks == null || easings == null || ticks.Length < 2) return null;
             if (ticks.Length != easings.Length) return null;
 
             int count = ticks.Length;
 
             // ── Optional property arrays ──
-            float[] xs   = ParseFloatArray(code, "kfX");
-            float[] ys   = ParseFloatArray(code, "kfY");
-            float[] ws   = ParseFloatArray(code, "kfW");
-            float[] hs   = ParseFloatArray(code, "kfH");
-            int[]   rs   = ParseIntArray(code, "kfR");
-            int[]   gs   = ParseIntArray(code, "kfG");
-            int[]   bs   = ParseIntArray(code, "kfB");
-            int[]   als  = ParseIntArray(code, "kfA");
-            float[] rots = ParseFloatArray(code, "kfRot");
-            float[] scls = ParseFloatArray(code, "kfScl");
+            float[] xs   = ParseFloatArray(code, "kfX" + sfx);
+            float[] ys   = ParseFloatArray(code, "kfY" + sfx);
+            float[] ws   = ParseFloatArray(code, "kfW" + sfx);
+            float[] hs   = ParseFloatArray(code, "kfH" + sfx);
+            int[]   rs   = ParseIntArray(code, "kfR" + sfx);
+            int[]   gs   = ParseIntArray(code, "kfG" + sfx);
+            int[]   bs   = ParseIntArray(code, "kfB" + sfx);
+            int[]   als  = ParseIntArray(code, "kfA" + sfx);
+            float[] rots = ParseFloatArray(code, "kfRot" + sfx);
+            float[] scls = ParseFloatArray(code, "kfScl" + sfx);
 
             // ── Build keyframes ──
             var keyframes = new List<Keyframe>(count);

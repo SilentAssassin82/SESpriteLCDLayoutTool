@@ -95,6 +95,7 @@ namespace SESpriteLCDLayoutTool.Services
                 SourceLineNumber = s.SourceLineNumber,
                 AnimationGroupId = s.AnimationGroupId,
                 KeyframeAnimation = CloneAnimation(s.KeyframeAnimation),
+                UserLabel = s.UserLabel,
             }).ToList();
 
             return new LayoutSnapshot
@@ -136,6 +137,7 @@ namespace SESpriteLCDLayoutTool.Services
                     SourceLineNumber  = snap.SourceLineNumber,
                     AnimationGroupId  = snap.AnimationGroupId,
                     KeyframeAnimation = CloneAnimation(snap.KeyframeAnimation),
+                    UserLabel         = snap.UserLabel,
                 });
             }
             layout.OriginalSourceCode = snapshot.OriginalSourceCode;
@@ -197,6 +199,7 @@ namespace SESpriteLCDLayoutTool.Services
             public int SourceLineNumber;
             public string AnimationGroupId;
             public KeyframeAnimationParams KeyframeAnimation;
+            public string UserLabel;
         }
     }
 }

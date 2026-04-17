@@ -123,6 +123,18 @@ namespace SESpriteLCDLayoutTool
                         }
                         return true;
                     }
+
+                    // Find / Find+Replace in code editor
+                    if (keyCode == Keys.F && modifiers == Keys.Control)
+                    {
+                        _findReplaceBar?.ShowFind();
+                        return true;
+                    }
+                    if (keyCode == Keys.H && modifiers == Keys.Control)
+                    {
+                        _findReplaceBar?.ShowFindReplace();
+                        return true;
+                    }
                 }
 
                 switch (keyData)
@@ -457,9 +469,15 @@ namespace SESpriteLCDLayoutTool
             {
                 var sel = _canvas.SelectedSprite;
                 animMenu.Enabled = sel != null;
+                // Detect animation index from code if not yet known
+                if (sel != null && sel.AnimationIndex == 0 && !string.IsNullOrEmpty(_codeBox?.Text))
+                {
+                    int detected = DetectSpriteAnimationIndex(_codeBox.Text, sel);
+                    if (detected > 0) sel.AnimationIndex = detected;
+                }
                 // Show "Edit Animation" if sprite has in-memory data OR code panel has keyframe arrays
                 bool hasAnim = sel?.KeyframeAnimation != null
-                            || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text) != null;
+                            || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text, sel?.AnimationIndex ?? 0) != null;
                 // Also check if sprite is in a group (follower can edit via leader)
                 bool inGroup = !string.IsNullOrEmpty(sel?.AnimationGroupId);
                 bool isLeader = inGroup && sel?.KeyframeAnimation != null;
@@ -592,8 +610,14 @@ namespace SESpriteLCDLayoutTool
 
                 // Edit Animation: visible if sprite has in-memory data OR code has keyframe arrays
                 var selSprite = _canvas.SelectedSprite;
+                // Detect animation index from code if not yet known
+                if (selSprite != null && selSprite.AnimationIndex == 0 && !string.IsNullOrEmpty(_codeBox?.Text))
+                {
+                    int detected = DetectSpriteAnimationIndex(_codeBox.Text, selSprite);
+                    if (detected > 0) selSprite.AnimationIndex = detected;
+                }
                 bool hasAnim = selSprite.KeyframeAnimation != null
-                            || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text) != null;
+                            || AnimationSnippetGenerator.TryParseKeyframed(_codeBox?.Text, selSprite.AnimationIndex) != null;
                 bool inGroup = !string.IsNullOrEmpty(selSprite.AnimationGroupId);
                 editAnimItem.Visible  = !multi && (hasAnim || inGroup);
                 copyAnimItem.Visible  = !multi && (hasAnim || inGroup);

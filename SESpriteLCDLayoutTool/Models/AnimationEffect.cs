@@ -99,7 +99,7 @@ namespace SESpriteLCDLayoutTool.Models
             string dir = Clockwise ? "" : "-";
             return new Dictionary<string, string>
             {
-                { "RotationOrScale", $"{dir}_tick{suffix} * {Speed}f" }
+                { "RotationOrScale", $"{dir}_tick * {Speed}f" }
             };
         }
     }
@@ -122,7 +122,7 @@ namespace SESpriteLCDLayoutTool.Models
         {
             return new List<string>
             {
-                $"float oscOffset{suffix} = (float)Math.Sin(_tick{suffix} * {Speed}f) * {Amplitude}f;"
+                $"float oscOffset{suffix} = (float)Math.Sin(_tick * {Speed}f) * {Amplitude}f;"
             };
         }
 
@@ -166,7 +166,7 @@ namespace SESpriteLCDLayoutTool.Models
         {
             return new List<string>
             {
-                $"float pulseScale{suffix} = 1f + (float)Math.Sin(_tick{suffix} * {Speed}f) * {Amplitude}f;"
+                $"float pulseScale{suffix} = 1f + (float)Math.Sin(_tick * {Speed}f) * {Amplitude}f;"
             };
         }
 
@@ -196,7 +196,7 @@ namespace SESpriteLCDLayoutTool.Models
             int range = MaxAlpha - MinAlpha;
             return new List<string>
             {
-                $"int fadeAlpha{suffix} = {MinAlpha} + (int)(((float)Math.Sin(_tick{suffix} * {Speed}f) + 1f) / 2f * {range});"
+                $"int fadeAlpha{suffix} = {MinAlpha} + (int)(((float)Math.Sin(_tick * {Speed}f) + 1f) / 2f * {range});"
             };
         }
 
@@ -225,7 +225,7 @@ namespace SESpriteLCDLayoutTool.Models
             int period = OnTicks + OffTicks;
             return new List<string>
             {
-                $"bool blinkVisible{suffix} = (_tick{suffix} % {period}) < {OnTicks};"
+                $"bool blinkVisible{suffix} = (_tick % {period}) < {OnTicks};"
             };
         }
 
@@ -255,7 +255,7 @@ namespace SESpriteLCDLayoutTool.Models
             // HSV→RGB conversion emitted as compute lines
             return new List<string>
             {
-                $"float hue{suffix} = (_tick{suffix} * {Speed}f) % 360f;",
+                $"float hue{suffix} = (_tick * {Speed}f) % 360f;",
                 $"float br{suffix} = {Brightness}f;",
                 $"float hSec{suffix} = hue{suffix} / 60f;",
                 $"int hi{suffix} = (int)Math.Floor(hSec{suffix}) % 6;",
@@ -342,7 +342,7 @@ namespace SESpriteLCDLayoutTool.Models
             var lines = new List<string>();
 
             // Tick and segment finding
-            lines.Add($"int t{suffix} = _tick{suffix} % {totalTicks};");
+            lines.Add($"int t{suffix} = _tick % {totalTicks};");
             lines.Add($"int seg{suffix} = 0;");
             lines.Add($"for (int i = 1; i < {count}; i++)");
             lines.Add($"    if (t{suffix} >= kfTick{suffix}[i]) seg{suffix} = i;");

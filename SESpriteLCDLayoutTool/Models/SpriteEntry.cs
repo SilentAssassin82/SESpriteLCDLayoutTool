@@ -267,10 +267,14 @@ namespace SESpriteLCDLayoutTool.Models
             set { ColorR = value.R; ColorG = value.G; ColorB = value.B; ColorA = value.A; }
         }
 
+        /// <summary>Optional user-assigned label shown in the layer list and code comments.</summary>
+        public string UserLabel { get; set; }
+
         public string DisplayName
         {
             get
             {
+                if (!string.IsNullOrEmpty(UserLabel)) return UserLabel;
                 if (ImportLabel != null) return ImportLabel;
                 if (Type == SpriteEntryType.Text)
                     return $"TEXT \"{(Text != null && Text.Length > 12 ? Text.Substring(0, 9) + "..." : Text)}\"";

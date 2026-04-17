@@ -29,6 +29,8 @@ namespace SESpriteLCDLayoutTool.Services
         private const string ComputeEnd   = "// ──▶ END ANIM:";  // followed by sprite name + " ◀──"
         private const string EaseStart    = "// ──▶ ANIM-EASE ◀──";
         private const string EaseEnd      = "// ──▶ END ANIM-EASE ◀──";
+        private const string BlinkTag     = "// ──▶ BLINK:";      // followed by sprite name + " ◀──"
+        private const string BlinkEnd     = "// ──▶ END BLINK:";  // followed by sprite name + " ◀──"
 
         // ── Result ───────────────────────────────────────────────────────────
 
@@ -69,9 +71,12 @@ namespace SESpriteLCDLayoutTool.Services
                 return result;
             }
 
+            // Materialize full sprite list for ordinal lookups
+            var allSpritesList = allSprites.ToList();
+
             // Collect sprites with effects
             var animated = new List<SpriteEntry>();
-            foreach (var sp in allSprites)
+            foreach (var sp in allSpritesList)
             {
                 if (sp.AnimationEffects != null && sp.AnimationEffects.Count > 0)
                     animated.Add(sp);
@@ -93,11 +98,33 @@ namespace SESpriteLCDLayoutTool.Services
                 var tree = CSharpSyntaxTree.ParseText(code);
                 var root = tree.GetRoot();
 
+                // Step 1b: Insert missing sprite Add blocks so every animated
+                //          sprite has a code anchor for the injector to target.
+                code = EnsureAllSpritesHaveAddBlocks(code, animated, allSpritesList);
+                tree = CSharpSyntaxTree.ParseText(code);
+                root = tree.GetRoot();
+
                 // Step 2: Find each animated sprite's Add block
                 var spriteLocations = new List<SpriteLocation>();
                 int suffixCounter = 0;
                 bool needsEase = false;
                 bool needsTick = false;
+
+                // Build a map: sprite instance → ordinal among ALL sprites with same name.
+                // This ensures SemiCircle #2 gets ordinal 1 even if #1 isn't animated.
+                var spriteOrdinalMap = new Dictionary<SpriteEntry, int>();
+                {
+                    var nameCounters = new Dictionary<string, int>();
+                    foreach (var sp in allSprites)
+                    {
+                        string key = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
+                        if (string.IsNullOrEmpty(key)) continue;
+                        if (!nameCounters.TryGetValue(key, out int cnt))
+                            cnt = 0;
+                        spriteOrdinalMap[sp] = cnt;
+                        nameCounters[key] = cnt + 1;
+                    }
+                }
 
                 foreach (var sp in animated)
                 {
@@ -105,7 +132,9 @@ namespace SESpriteLCDLayoutTool.Services
                         ? sp.Text : sp.SpriteName;
                     if (string.IsNullOrEmpty(spriteName)) continue;
 
-                    var addNode = FindSpriteAddNode(root, spriteName);
+                    int ord = spriteOrdinalMap.TryGetValue(sp, out int o) ? o : 0;
+
+                    var addNode = FindSpriteAddNode(root, spriteName, ord);
                     if (addNode == null)
                     {
                         System.Diagnostics.Debug.WriteLine(
@@ -126,6 +155,7 @@ namespace SESpriteLCDLayoutTool.Services
                     {
                         Sprite = sp,
                         SpriteName = spriteName,
+                        Ordinal = ord,
                         AddNode = addNode,
                         Suffix = suffix,
                     });
@@ -235,8 +265,9 @@ namespace SESpriteLCDLayoutTool.Services
         /// Finds the <c>ExpressionStatementSyntax</c> for a sprite's
         /// <c>frame.Add(new MySprite { Data = "spriteName" })</c> call.
         /// </summary>
+        /// <param name="ordinal">0-based occurrence index when multiple sprites share the same Data name.</param>
         private static ExpressionStatementSyntax FindSpriteAddNode(
-            SyntaxNode root, string spriteName)
+            SyntaxNode root, string spriteName, int ordinal = 0)
         {
             // Find all *.Add(new MySprite { ... }) statements
             var addStatements = root.DescendantNodes()
@@ -246,6 +277,7 @@ namespace SESpriteLCDLayoutTool.Services
                     inv.Expression is MemberAccessExpressionSyntax ma &&
                     ma.Name.Identifier.Text == "Add");
 
+            int matchIndex = 0;
             foreach (var stmt in addStatements)
             {
                 var inv = (InvocationExpressionSyntax)stmt.Expression;
@@ -266,7 +298,11 @@ namespace SESpriteLCDLayoutTool.Services
                     {
                         string dataValue = assign.Right.ToString().Trim('"');
                         if (string.Equals(dataValue, spriteName, StringComparison.Ordinal))
-                            return stmt;
+                        {
+                            if (matchIndex == ordinal)
+                                return stmt;
+                            matchIndex++;
+                        }
                     }
                 }
             }
@@ -282,6 +318,7 @@ namespace SESpriteLCDLayoutTool.Services
         {
             public SpriteEntry Sprite;
             public string SpriteName;
+            public int Ordinal;  // 0-based occurrence index for duplicate Data names
             public ExpressionStatementSyntax AddNode;
             public string Suffix;
         }
@@ -295,7 +332,7 @@ namespace SESpriteLCDLayoutTool.Services
             // Re-parse to get fresh positions (previous injections shifted offsets)
             var tree = CSharpSyntaxTree.ParseText(code);
             var root = tree.GetRoot();
-            var addNode = FindSpriteAddNode(root, loc.SpriteName);
+            var addNode = FindSpriteAddNode(root, loc.SpriteName, loc.Ordinal);
             if (addNode == null) return code;
 
             // ── Collect all effects' compute lines and property overrides ──
@@ -349,7 +386,7 @@ namespace SESpriteLCDLayoutTool.Services
                             // Re-parse after each replacement to keep positions valid
                             tree = CSharpSyntaxTree.ParseText(result);
                             root = tree.GetRoot();
-                            addNode = FindSpriteAddNode(root, loc.SpriteName);
+                            addNode = FindSpriteAddNode(root, loc.SpriteName, loc.Ordinal);
                             if (addNode == null) return result;
                             creation = addNode.DescendantNodes()
                                 .OfType<ObjectCreationExpressionSyntax>()
@@ -365,7 +402,7 @@ namespace SESpriteLCDLayoutTool.Services
                 // Re-parse to get fresh position
                 tree = CSharpSyntaxTree.ParseText(result);
                 root = tree.GetRoot();
-                addNode = FindSpriteAddNode(root, loc.SpriteName);
+                addNode = FindSpriteAddNode(root, loc.SpriteName, loc.Ordinal);
                 if (addNode == null) return result;
 
                 string indent = GetIndent(result, addNode.SpanStart);
@@ -389,15 +426,17 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 tree = CSharpSyntaxTree.ParseText(result);
                 root = tree.GetRoot();
-                addNode = FindSpriteAddNode(root, loc.SpriteName);
+                addNode = FindSpriteAddNode(root, loc.SpriteName, loc.Ordinal);
                 if (addNode != null)
                 {
                     string indent = GetIndent(result, addNode.SpanStart);
-                    string addText = addNode.ToFullString();
+                    // Use Span (not FullSpan) to avoid capturing leading trivia like END ANIM comments
+                    string addText = result.Substring(addNode.SpanStart, addNode.Span.Length);
 
                     // Re-indent the Add block inside the if
                     string[] addLines = addText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
                     var wrapped = new StringBuilder();
+                    wrapped.AppendLine($"{indent}{BlinkTag}{loc.SpriteName} ◀──");
                     wrapped.AppendLine($"{indent}if ({blinkGuard})");
                     wrapped.AppendLine($"{indent}{{");
                     foreach (string line in addLines)
@@ -407,10 +446,11 @@ namespace SESpriteLCDLayoutTool.Services
                         else
                             wrapped.AppendLine("    " + line);
                     }
-                    wrapped.Append($"{indent}}}");
+                    wrapped.AppendLine($"{indent}}}");
+                    wrapped.Append($"{indent}{BlinkEnd}{loc.SpriteName} ◀──");
 
-                    int stmtStart = addNode.FullSpan.Start;
-                    int stmtEnd = addNode.FullSpan.End;
+                    int stmtStart = addNode.SpanStart;
+                    int stmtEnd = addNode.Span.End;
                     result = result.Substring(0, stmtStart)
                            + wrapped.ToString()
                            + result.Substring(stmtEnd);
@@ -575,6 +615,10 @@ namespace SESpriteLCDLayoutTool.Services
             // Remove ANIM-EASE block
             code = StripMarkerBlock(code, EaseStart, EaseEnd);
 
+            // Unwrap BLINK guard wrappers FIRST (before compute strip),
+            // so the ANIM compute regex doesn't cross into blink blocks
+            code = UnwrapBlinkGuards(code);
+
             // Remove all ANIM:SpriteName compute blocks
             var computeRx = new Regex(
                 @"[ \t]*" + Regex.Escape(ComputeTag) + @"[^\n]*\n" +
@@ -606,6 +650,41 @@ namespace SESpriteLCDLayoutTool.Services
             if (lineEnd < code.Length && code[lineEnd] == '\n') lineEnd++;
 
             return code.Substring(0, lineStart) + code.Substring(lineEnd);
+        }
+
+        /// <summary>
+        /// Unwraps blink guard wrappers injected around Add blocks.
+        /// Keeps the inner Add block content, removes the BLINK markers, if(), and braces.
+        /// </summary>
+        private static string UnwrapBlinkGuards(string code)
+        {
+            // Match: BLINK:name marker, if line, opening brace, inner content, closing brace, END BLINK:name marker
+            var blinkRx = new Regex(
+                @"(?<indent>[ \t]*)" + Regex.Escape(BlinkTag) + @"[^\n]*\n" +       // BLINK marker
+                @"[ \t]*if\s*\([^)]*\)\s*\n" +                                       // if (blinkVisible)
+                @"[ \t]*\{\s*\n" +                                                    // {
+                @"(?<inner>(.*?\n)*?)" +                                               // inner content (Add block)
+                @"[ \t]*\}\s*\n" +                                                    // }
+                @"[ \t]*" + Regex.Escape(BlinkEnd) + @"[^\n]*\n?",                    // END BLINK marker
+                RegexOptions.Compiled);
+
+            return blinkRx.Replace(code, m =>
+            {
+                // Dedent the inner content by 4 spaces (the blink guard indentation)
+                string inner = m.Groups["inner"].Value;
+                var lines = inner.Split(new[] { "\n" }, StringSplitOptions.None);
+                var sb = new StringBuilder();
+                foreach (string line in lines)
+                {
+                    if (line.TrimEnd('\r').Length == 0)
+                        sb.Append(line.EndsWith("\n") ? "\n" : "");
+                    else if (line.StartsWith("    "))
+                        sb.Append(line.Substring(4));
+                    else
+                        sb.Append(line);
+                }
+                return sb.ToString();
+            });
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -669,6 +748,111 @@ namespace SESpriteLCDLayoutTool.Services
                 else
                     break;
             }
+            return sb.ToString();
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        //  Missing sprite Add-block insertion
+        // ═════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Ensures every animated sprite has a <c>frame.Add(new MySprite { … });</c>
+        /// block in the source code.  When applying a simple animation to a second
+        /// sprite and the code panel only contains the first sprite's block, this
+        /// inserts a static Add block for the missing sprite so the injector can
+        /// find it and apply property overrides.
+        /// </summary>
+        private static string EnsureAllSpritesHaveAddBlocks(
+            string code, List<SpriteEntry> animated, List<SpriteEntry> allSprites)
+        {
+            var tree = CSharpSyntaxTree.ParseText(code);
+            var root = tree.GetRoot();
+
+            // Build ordinal map: each sprite's position among all sprites with same name
+            var ordinalMap = new Dictionary<SpriteEntry, int>();
+            var nameCounters = new Dictionary<string, int>();
+            foreach (var sp in allSprites)
+            {
+                string key = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
+                if (string.IsNullOrEmpty(key)) continue;
+                if (!nameCounters.TryGetValue(key, out int cnt)) cnt = 0;
+                ordinalMap[sp] = cnt;
+                nameCounters[key] = cnt + 1;
+            }
+
+            // Find animated sprites whose ordinal Add block is missing
+            var missing = new List<SpriteEntry>();
+            foreach (var sp in animated)
+            {
+                string name = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
+                if (string.IsNullOrEmpty(name)) continue;
+                int ord = ordinalMap.TryGetValue(sp, out int o) ? o : 0;
+                if (FindSpriteAddNode(root, name, ord) == null)
+                    missing.Add(sp);
+            }
+
+            if (missing.Count == 0) return code;
+
+            // Find insertion point: before frame.Dispose(), or before the last } in Main()
+            int insertPos = -1;
+            string indent = "    ";
+
+            // Try frame.Dispose()
+            int disposeIdx = code.IndexOf("frame.Dispose()", StringComparison.Ordinal);
+            if (disposeIdx >= 0)
+            {
+                insertPos = LineStartOf(code, disposeIdx);
+                indent = GetIndent(code, disposeIdx);
+            }
+            else
+            {
+                // Try end of Main() body
+                var mainMethod = root.DescendantNodes()
+                    .OfType<MethodDeclarationSyntax>()
+                    .FirstOrDefault(m => m.Identifier.Text == "Main");
+                if (mainMethod?.Body != null)
+                {
+                    // Insert before the closing brace
+                    int closeBrace = mainMethod.Body.CloseBraceToken.SpanStart;
+                    insertPos = LineStartOf(code, closeBrace);
+                    indent = GetIndent(code, closeBrace) + "    ";
+                }
+            }
+
+            if (insertPos < 0) return code;
+
+            // Generate static Add blocks for all missing sprites
+            var sb = new StringBuilder();
+            foreach (var sp in missing)
+            {
+                sb.AppendLine();
+                sb.Append(GenerateStaticAddBlock(sp, indent));
+            }
+
+            return code.Insert(insertPos, sb.ToString());
+        }
+
+        /// <summary>
+        /// Generates a static <c>frame.Add(new MySprite { … });</c> block for a sprite,
+        /// using the sprite's current property values.
+        /// </summary>
+        private static string GenerateStaticAddBlock(SpriteEntry sp, string indent)
+        {
+            var sb = new StringBuilder();
+            bool isText = sp.Type == SpriteEntryType.Text;
+            string dataValue = isText ? sp.Text : sp.SpriteName;
+
+            sb.AppendLine($"{indent}frame.Add(new MySprite");
+            sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}    Type            = SpriteType.{(isText ? "TEXT" : "TEXTURE")},");
+            sb.AppendLine($"{indent}    Data            = \"{dataValue}\",");
+            sb.AppendLine($"{indent}    Position        = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
+            sb.AppendLine($"{indent}    Size            = new Vector2({sp.Width:F1}f, {sp.Height:F1}f),");
+            sb.AppendLine($"{indent}    Color           = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+            sb.AppendLine($"{indent}    Alignment       = TextAlignment.CENTER,");
+            sb.AppendLine($"{indent}    RotationOrScale = {sp.Rotation:F4}f,");
+            sb.AppendLine($"{indent}}});");
+
             return sb.ToString();
         }
     }

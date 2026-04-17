@@ -546,6 +546,19 @@ namespace SESpriteLCDLayoutTool
                 Padding       = new Padding(2),
             };
 
+            // ── Label ─────────────────────────────────────────────────────────
+            flow.Controls.Add(SectionLabel("LABEL", 230));
+            _txtLabel = new TextBox
+            {
+                Width       = 230,
+                Height      = 22,
+                BackColor   = Color.FromArgb(30, 30, 30),
+                ForeColor   = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+            };
+            _txtLabel.TextChanged += OnPropChanged;
+            flow.Controls.Add(_txtLabel);
+
             // ── Position ──────────────────────────────────────────────────────────
             flow.Controls.Add(SectionLabel("POSITION", 230));
             var posRow = MakeLabeledNumRow("X", out _numX, "Y", out _numY, 230, -8192, 8192, 0);
@@ -951,6 +964,9 @@ namespace SESpriteLCDLayoutTool
                 _layout.OriginalSourceCode = null;
                 _layout.IsPulsarOrModLayout = false;
             }
+
+            // Auto-label duplicate sprites and detect animation indices from code
+            AutoLabelAndDetectAnimationIndices(code);
 
             // ══════════════════════════════════════════════════════════════════════════
             // ESTABLISH SOURCE TRACKING: Execution sprites have runtime values but no
