@@ -100,6 +100,9 @@
     <Compile Include="Controls\CanvasRuler.cs">
       <SubType>Component</SubType>
     </Compile>
+    <Compile Include="Controls\MultiSpriteTimeline.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Controls\KeyframeTimeline.cs">
       <SubType>Component</SubType>
     </Compile>
@@ -114,6 +117,9 @@
     <Compile Include="Data\GlyphCatalog.cs" />
     <Compile Include="Data\UserSpriteCatalog.cs" />
     <Compile Include="KeyframeEditorDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="MultiSpriteTimelineDialog.cs">
       <SubType>Form</SubType>
     </Compile>
     <Compile Include="MainForm.DarkTheme.cs">
@@ -162,6 +168,7 @@
     <Compile Include="Services\AnimationSnippetGenerator.cs" />
     <Compile Include="Services\CodeAutoComplete.cs" />
     <Compile Include="Services\CodeExecutor.cs" />
+    <Compile Include="Services\MultiAnimationRegistry.cs" />
     <Compile Include="Services\SEStubs.cs" />
     <Compile Include="Services\CodePatcher.cs" />
     <Compile Include="Services\KeyframedCodeGenerator.cs" />
@@ -193,6 +200,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
+    <None Include="TEST_KEYFRAME_MERGE.md" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="MainForm.resx">

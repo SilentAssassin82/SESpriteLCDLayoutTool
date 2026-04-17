@@ -1004,6 +1004,35 @@ namespace SESpriteLCDLayoutTool
 
         /// <summary>
         /// Generates animation code for the given sprite (or its group) and merges
+        /// <summary>
+        /// Detects which animation index (1, 2, 3, ...) a sprite uses by scanning its
+        /// frame.Add block in the existing code for interpolation variable references
+        /// (e.g. 'arot' → index 1, 'arot2' → index 2).
+        /// Returns 0 if no animation reference is found (sprite is not yet animated in code).
+        /// </summary>
+        private int DetectSpriteAnimationIndex(string code, SpriteEntry sprite)
+        {
+            if (string.IsNullOrEmpty(code) || sprite.SourceStart < 0) return 0;
+
+            int end = sprite.SourceEnd > sprite.SourceStart ? sprite.SourceEnd : code.Length;
+            if (sprite.SourceStart >= code.Length) return 0;
+            end = Math.Min(end, code.Length);
+
+            string block = code.Substring(sprite.SourceStart, end - sprite.SourceStart);
+
+            // Look for interpolation variables: arot, ax, ay, aw, ah, ascl, ar, ag, ab, aa
+            // Unsuffixed = index 1. Suffixed (arot2, ax3, etc.) = that number.
+            var rx = new System.Text.RegularExpressions.Regex(@"\b(?:arot|ax|ay|aw|ah|ascl|ar|ag|ab|aa)(\d*)\b");
+            foreach (System.Text.RegularExpressions.Match m in rx.Matches(block))
+            {
+                string suffix = m.Groups[1].Value;
+                return string.IsNullOrEmpty(suffix) ? 1 : int.Parse(suffix);
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// Generates a keyframed animation snippet for the given sprite and merges
         /// it into the code panel using a 3-tier strategy: block replace → array merge → append.
         /// </summary>
         private void MergeAnimationCodeIntoPanel(SpriteEntry sprite)
@@ -1013,9 +1042,49 @@ namespace SESpriteLCDLayoutTool
             var kp = sprite.KeyframeAnimation;
             string groupId = sprite.AnimationGroupId;
 
+            // Compute SourceLineNumber from SourceStart if missing
+            // (PB execution sprites have SourceStart but not SourceLineNumber)
+            if (sprite.SourceLineNumber <= 0 && sprite.SourceStart >= 0 && _codeBox?.Text != null)
+            {
+                string src = _codeBox.Text;
+                int line = 1;
+                for (int ci = 0; ci < sprite.SourceStart && ci < src.Length; ci++)
+                    if (src[ci] == '\n') line++;
+                sprite.SourceLineNumber = line;
+            }
+
+            // ── Determine correct animation index for this sprite ──
+            MultiAnimationRegistry.Reset();
+            string existingCode = _codeBox.Text ?? "";
+
+            if (sprite.AnimationIndex > 0 && sprite.SourceLineNumber > 0)
+            {
+                // Sprite already has a stored index from a prior edit — reuse it.
+                MultiAnimationRegistry.ReserveExistingIndices(existingCode);
+                MultiAnimationRegistry.RegisterAnimationIndex(sprite.SourceLineNumber, sprite.AnimationIndex);
+            }
+            else if (sprite.SourceLineNumber > 0)
+            {
+                // First edit: detect which animation (if any) this sprite already uses in code.
+                // Check if the sprite's frame.Add block references an interpolation variable
+                // tied to an existing kfTick declaration (e.g. 'arot', 'arot2').
+                int detectedIndex = DetectSpriteAnimationIndex(existingCode, sprite);
+                if (detectedIndex > 0)
+                {
+                    MultiAnimationRegistry.ReserveExistingIndices(existingCode);
+                    MultiAnimationRegistry.RegisterAnimationIndex(sprite.SourceLineNumber, detectedIndex);
+                    sprite.AnimationIndex = detectedIndex;
+                }
+                else
+                {
+                    // New animation — reserve existing indices so we get the next available suffix.
+                    MultiAnimationRegistry.ReserveExistingIndices(existingCode);
+                }
+            }
+
             // Generate snippet code (for merging into existing code)
-            string snippetCode;
             // Generate COMPLETE compilable program (for standalone / Tier 3)
+            string snippetCode;
             string completeCode;
 
             if (!string.IsNullOrEmpty(groupId))
@@ -1040,29 +1109,227 @@ namespace SESpriteLCDLayoutTool
 
             if (string.IsNullOrEmpty(snippetCode)) return;
 
+            // Store the animation index on the sprite for future re-edits
+            if (sprite.SourceLineNumber > 0)
+                sprite.AnimationIndex = MultiAnimationRegistry.GetAnimationIndex(sprite.SourceLineNumber);
+
             string existing = _codeBox.Text;
             string newCode = null;
 
-            // Tier 1: Exact block replace (handles both snippet-only and complete program blocks)
-            if (AnimationSnippetGenerator.FindKeyframedBlockRange(existing,
-                    out int blockStart, out int blockLength))
+            System.Diagnostics.Debug.WriteLine($"[MergeAnim] START sprite={sprite.SpriteName}, sourceLine={sprite.SourceLineNumber}, existingLen={existing?.Length ?? 0}, snippetLen={snippetCode?.Length ?? 0}, completeLen={completeCode?.Length ?? 0}");
+
+            // Tier 1: targeted block replace (prefer SourceLine marker; optional unique name fallback)
+            string targetName = sprite.Type == SpriteEntryType.Text ? sprite.Text : sprite.SpriteName;
+            int sourceLine = sprite.SourceLineNumber > 0 ? sprite.SourceLineNumber : -1;
+
+            bool found = false;
+            int blockStart = 0;
+            int blockLength = 0;
+
+            // Preferred: exact SourceLine marker inside a keyframed block.
+            if (sourceLine > 0)
             {
-                // If the existing block has a footer marker, replace with complete program;
-                // otherwise replace with snippet (preserving surrounding code structure)
-                string replacement = existing.Substring(blockStart, blockLength)
-                    .Contains(AnimationSnippetGenerator.FooterMarker)
-                    ? completeCode
-                    : snippetCode;
-                newCode = existing.Substring(0, blockStart)
-                        + replacement
-                        + existing.Substring(blockStart + blockLength);
+                string marker = "// SourceLine: " + sourceLine;
+                int markerIdx = existing.IndexOf(marker, StringComparison.Ordinal);
+                if (markerIdx >= 0)
+                {
+                    int h1 = existing.LastIndexOf("// ─── Keyframe Animation:", markerIdx, StringComparison.Ordinal);
+                    int h2 = existing.LastIndexOf("// ─── Animation Group:", markerIdx, StringComparison.Ordinal);
+                    int headerIdx = Math.Max(h1, h2);
+                    if (headerIdx >= 0)
+                    {
+                        int lineStart = headerIdx;
+                        while (lineStart > 0 && existing[lineStart - 1] != '\n') lineStart--;
+
+                        int footerIdx = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, markerIdx, StringComparison.Ordinal);
+                        if (footerIdx >= 0)
+                        {
+                            int endIdx = footerIdx + AnimationSnippetGenerator.FooterMarker.Length;
+                            if (endIdx < existing.Length && existing[endIdx] == '\r') endIdx++;
+                            if (endIdx < existing.Length && existing[endIdx] == '\n') endIdx++;
+                            blockStart = lineStart;
+                            blockLength = endIdx - lineStart;
+                            found = blockLength > 0;
+                        }
+                    }
+                }
+            }
+
+            // Optional fallback: unique header-name match (only when exactly one match exists).
+            if (!found && !string.IsNullOrEmpty(targetName))
+            {
+                string escName = Regex.Escape(targetName);
+                var rx = new Regex("//\\s*─+\\s*(?:Keyframe Animation|Animation Group):\\s*\"" + escName + "\"", RegexOptions.CultureInvariant);
+                var matches = rx.Matches(existing);
+                if (matches.Count == 1)
+                {
+                    int headerIdx = matches[0].Index;
+                    int lineStart = headerIdx;
+                    while (lineStart > 0 && existing[lineStart - 1] != '\n') lineStart--;
+
+                    int footerIdx = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, headerIdx, StringComparison.Ordinal);
+                    if (footerIdx >= 0)
+                    {
+                        int endIdx = footerIdx + AnimationSnippetGenerator.FooterMarker.Length;
+                        if (endIdx < existing.Length && existing[endIdx] == '\r') endIdx++;
+                        if (endIdx < existing.Length && existing[endIdx] == '\n') endIdx++;
+                        blockStart = lineStart;
+                        blockLength = endIdx - lineStart;
+                        found = blockLength > 0;
+                    }
+                }
+            }
+
+            System.Diagnostics.Debug.WriteLine($"[MergeAnim] Tier1 found={found}, blockStart={blockStart}, blockLen={blockLength}");
+            if (found)
+            {
+                string blockContent = existing.Substring(blockStart, blockLength);
+                bool hasFooter = blockContent.Contains(AnimationSnippetGenerator.FooterMarker);
+
+                // If this is a complete program with multiple independent animations
+                // (e.g. kfTick AND kfTick2), a full block replace would wipe the other
+                // animations. Skip Tier 1 and let Case B (array-value merge) handle it.
+                bool hasMultipleAnimations = false;
+                if (hasFooter)
+                {
+                    var rxSuffixes = System.Text.RegularExpressions.Regex.Matches(
+                        blockContent, @"(?:int\[\]|int\s*\[\s*\])\s+kfTick(\d*)\s*=");
+                    if (rxSuffixes.Count > 1)
+                    {
+                        hasMultipleAnimations = true;
+                        found = false; // Reset so the else block (Case B/C) executes
+                        System.Diagnostics.Debug.WriteLine($"[MergeAnim] Tier1 SKIPPED: block has {rxSuffixes.Count} animation suffixes, falling through to Case B");
+                    }
+                }
+
+                if (!hasMultipleAnimations)
+                {
+                    // If the existing block has a footer marker, replace with complete program;
+                    // otherwise replace with snippet (preserving surrounding code structure)
+                    string replacement = hasFooter ? completeCode : snippetCode;
+                    newCode = existing.Substring(0, blockStart)
+                            + replacement
+                            + existing.Substring(blockStart + blockLength);
+                }
             }
             else
             {
-                // Tier 2: Smart array-level merge (existing code has kfTick arrays)
-                string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
-                // Tier 3: No existing animation code — use complete compilable program
-                newCode = merged ?? completeCode;
+                // If named keyframed blocks already exist but none matched this sprite,
+                // append a new block instead of mutating unrelated animations.
+                int anyStart, anyLength;
+                bool hasAnyNamedBlock = AnimationSnippetGenerator.FindKeyframedBlockRange(existing, out anyStart, out anyLength);
+
+                // Also guard legacy/manual keyframed code that may not have our generated headers.
+                bool hasAnyKeyframeArrays = existing.IndexOf("kfTick", StringComparison.Ordinal) >= 0
+                                          && existing.IndexOf("kfEase", StringComparison.Ordinal) >= 0;
+
+                if (hasAnyNamedBlock || hasAnyKeyframeArrays)
+                {
+                    // Detect if existing code is a complete program (has Main method or footer marker).
+                    // Complete programs use different variable names than snippets, so we must
+                    // use completeCode replacement rather than snippet-level array merge.
+                    bool isCompleteProgram = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
+                                         || existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
+
+                    if (isCompleteProgram && !string.IsNullOrEmpty(completeCode))
+                    {
+                        // Three distinct cases for complete programs:
+                        //
+                        // Case A: GROUP animation (leader + followers).
+                        //   The code structure must change (new sprite blocks, delta-based
+                        //   interpolation). Array-level merge can't add new frame.Add() blocks,
+                        //   so we must regenerate the complete program.
+                        //
+                        // Case B: SINGLE sprite update (sprite exists in code, no followers).
+                        //   Only keyframe array values and counts need updating. Use
+                        //   MergeKeyframedIntoCode which swaps values inside { } and
+                        //   updates loop counts, preserving all existing variable names.
+                        //
+                        // Case C: NEW independent animation (sprite not in existing code).
+                        //   Inject new arrays as fields and new interpolation + sprite
+                        //   block into Main(), keeping all existing code intact.
+
+                        bool hasFollowers = !string.IsNullOrEmpty(groupId)
+                            && GetGroupFollowers(groupId).Count > 0;
+
+                        // Check if THIS sprite's animation arrays already exist in the code.
+                        // We can't just check the sprite name (it may appear as a static sprite).
+                        // Instead, check if the snippet's tick array (e.g. "kfTick2") is declared in existing code.
+                        string snippetTickArr = AnimationSnippetGenerator.ExtractTickArrayName(snippetCode);
+                        bool animationExistsInCode = !string.IsNullOrEmpty(snippetTickArr)
+                            && Regex.IsMatch(existing, @"(?:int\[\]|int\s*\[\s*\])\s+" + Regex.Escape(snippetTickArr) + @"\s*=");
+
+                        System.Diagnostics.Debug.WriteLine($"[MergeAnim] hasFollowers={hasFollowers}, snippetTickArr={snippetTickArr ?? "null"}, animationExistsInCode={animationExistsInCode}, groupId={groupId ?? "null"}, sourceLine={sprite.SourceLineNumber}");
+
+                        string merged = null;
+
+                        if (hasFollowers)
+                        {
+                            // Case A: group — regenerate entire program with all members
+                            System.Diagnostics.Debug.WriteLine("[MergeAnim] → Case A: group replace");
+                            newCode = completeCode;
+                            SetStatus("✅ Animation group program generated");
+                        }
+                        else if (animationExistsInCode)
+                        {
+                            // Case B: update existing single animation's array values
+                            System.Diagnostics.Debug.WriteLine("[MergeAnim] → Case B: array value merge");
+                            merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
+                            System.Diagnostics.Debug.WriteLine($"[MergeAnim] MergeKeyframedIntoCode returned {(merged != null ? "success" : "null")}");
+                            if (merged != null)
+                            {
+                                newCode = merged;
+                                SetStatus("✅ Animation arrays updated in existing program");
+                            }
+                        }
+
+                        if (newCode == null)
+                        {
+                            // Case C: new independent animation — inject into program
+                            System.Diagnostics.Debug.WriteLine("[MergeAnim] → Case C: inject new animation");
+                            merged = AnimationSnippetGenerator.MergeSnippetIntoCompleteProgram(existing, snippetCode, sprite.SpriteName ?? sprite.Text);
+                            if (merged != null)
+                            {
+                                newCode = merged;
+                                SetStatus("✅ New animation merged into existing program");
+                            }
+                            else
+                            {
+                                newCode = existing;
+                                SetStatus("Could not safely merge animation into existing program; original code preserved.");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Try smart array-level merge when blocks or arrays exist (snippet-to-snippet).
+                        string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
+                        if (merged != null)
+                        {
+                            newCode = merged;
+                            SetStatus("✅ Animation arrays merged into existing code");
+                        }
+                        else
+                        {
+                            // Merge failed (incompatible structure); preserve code and inform user
+                            newCode = existing;
+                            SetStatus("Could not safely merge this animation into existing keyframe blocks; original code preserved.");
+                        }
+                    }
+                }
+                else
+                {
+                    // No existing keyframe content detected at all:
+                    // try smart merge first for hand-written compatible snippets,
+                    // then append (or full program if panel is empty).
+                    string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
+                    if (merged != null)
+                        newCode = merged;
+                    else
+                        newCode = string.IsNullOrWhiteSpace(existing)
+                            ? completeCode
+                            : existing.TrimEnd() + Environment.NewLine + Environment.NewLine + snippetCode.TrimStart();
+                }
             }
 
             // SetCodeText handles suppression, highlighting, and dirty-flag reset
@@ -1129,9 +1396,19 @@ namespace SESpriteLCDLayoutTool
             // ── Detect target script type from code style dropdown ──
             var target = MapCodeStyleToTarget();
 
-            // Open the visual keyframe editor (pass existing params if editing)
-            var dlg = new KeyframeEditorDialog(editTarget, target,
+            // Open the visual keyframe editor.
+            // For group followers (sprite != editTarget): pass the originally selected
+            // sprite so the dialog title and preview show that sprite's appearance,
+            // but supply the leader's existing params so the shared animation is edited.
+            var dlg = new KeyframeEditorDialog(sprite, target,
                 editExisting ? editTarget.KeyframeAnimation : null, _textureCache);
+
+            // The constructor set sprite.KeyframeAnimation = _params.  If the
+            // selected sprite is a follower (not the leader) that side-effect would
+            // promote it to leader and break the group — clear it back immediately.
+            if (sprite != editTarget)
+                sprite.KeyframeAnimation = null;
+
             _snippetDialog = dlg;
 
             var capturedTarget = editTarget;
@@ -1139,6 +1416,8 @@ namespace SESpriteLCDLayoutTool
             dlg.CodeUpdateRequested += newCode =>
             {
                 if (_codeBox == null || string.IsNullOrEmpty(newCode)) return;
+                // MergeAnimationCodeIntoPanel regenerates code from sprite.KeyframeAnimation
+                // which was already updated by the dialog. Use it directly:
                 MergeAnimationCodeIntoPanel(capturedTarget);
                 SetStatus("✅ Animation code updated in code panel");
             };
@@ -1204,6 +1483,39 @@ namespace SESpriteLCDLayoutTool
             panel.Controls.Add(lbl, 0, row);
             panel.Controls.Add(nud, 1, row);
             row++;
+        }
+
+        // ── Multi-sprite timeline ─────────────────────────────────────────────
+
+        private MultiSpriteTimelineDialog _multiTimelineDlg;
+
+        internal void OpenMultiSpriteTimeline()
+        {
+            var animated = _layout?.Sprites?.Where(s => s.KeyframeAnimation != null).ToList();
+            if (animated == null || animated.Count == 0)
+            {
+                SetStatus("No animated sprites found — right-click a sprite → Edit Animation… to create one");
+                return;
+            }
+
+            if (_multiTimelineDlg != null && !_multiTimelineDlg.IsDisposed)
+            {
+                _multiTimelineDlg.BringToFront();
+                return;
+            }
+
+            var dlg = new MultiSpriteTimelineDialog(_layout.Sprites, MapCodeStyleToTarget());
+
+            dlg.UpdateCodeRequested += sprites =>
+            {
+                foreach (var sp in sprites)
+                    MergeAnimationCodeIntoPanel(sp);
+            };
+
+            dlg.FormClosed += (s, e) => _multiTimelineDlg = null;
+            _multiTimelineDlg = dlg;
+            dlg.Show(this);
+            SetStatus($"Multi-sprite timeline opened — {animated.Count} animated sprite(s)");
         }
 
         // ── Animation snippet dialog ──────────────────────────────────────────

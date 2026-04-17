@@ -692,13 +692,36 @@ namespace SESpriteLCDLayoutTool
                 string easingLabel = item.kf.EasingToNext != EasingType.Linear
                     ? $" [{item.kf.EasingToNext}]"
                     : "";
-                _lstKeyframes.Items.Add($"T={item.kf.Tick,4}  {item.kf.Summary}{easingLabel}");
+                _lstKeyframes.Items.Add($"T={item.kf.Tick,4}  {ResolvedSummary(item.kf)}{easingLabel}");
             }
 
             _lstKeyframes.EndUpdate();
 
             if (prevIdx >= 0 && prevIdx < _lstKeyframes.Items.Count)
                 _lstKeyframes.SelectedIndex = prevIdx;
+        }
+
+        private string ResolvedSummary(Keyframe kf)
+        {
+            float x = kf.X ?? _sprite.X;
+            float y = kf.Y ?? _sprite.Y;
+            float w = kf.Width ?? _sprite.Width;
+            float h = kf.Height ?? _sprite.Height;
+            int r = kf.ColorR ?? _sprite.ColorR;
+            int g = kf.ColorG ?? _sprite.ColorG;
+            int b = kf.ColorB ?? _sprite.ColorB;
+            int a = kf.ColorA ?? _sprite.ColorA;
+
+            if (_isText)
+            {
+                float scl = kf.Scale ?? _sprite.Scale;
+                return $"Pos({x:F0},{y:F0}) Size({w:F0},{h:F0}) RGBA({r},{g},{b},{a}) Scl({scl:F2})";
+            }
+            else
+            {
+                float rot = kf.Rotation ?? _sprite.Rotation;
+                return $"Pos({x:F0},{y:F0}) Size({w:F0},{h:F0}) RGBA({r},{g},{b},{a}) Rot({rot:F2})";
+            }
         }
 
         private void RefreshCode()

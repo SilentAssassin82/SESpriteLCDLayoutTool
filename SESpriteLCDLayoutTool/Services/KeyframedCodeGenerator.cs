@@ -26,6 +26,33 @@ namespace SESpriteLCDLayoutTool.Services
             int totalTicks = frames.Last().Tick;
             if (totalTicks <= 0) totalTicks = 1;
 
+            // Get unique variable names from registry based on sprite source line
+            // IMPORTANT: call GetAnimationIndex ONCE, then use index-based overloads to avoid counter increment per call
+            int animIndex = MultiAnimationRegistry.GetAnimationIndex(sprite.SourceLineNumber);
+            string tickVar = MultiAnimationRegistry.GetTickVariableName(animIndex, true);
+            string tickArr = MultiAnimationRegistry.GetTickArrayName(animIndex, true);
+            string easeArr = MultiAnimationRegistry.GetEasingArrayName(animIndex, true);
+            string axArr = MultiAnimationRegistry.GetPosXArrayName(animIndex, true);
+            string ayArr = MultiAnimationRegistry.GetPosYArrayName(animIndex, true);
+            string awArr = MultiAnimationRegistry.GetWidthArrayName(animIndex, true);
+            string ahArr = MultiAnimationRegistry.GetHeightArrayName(animIndex, true);
+            string arArr = MultiAnimationRegistry.GetColorRArrayName(animIndex, true);
+            string agArr = MultiAnimationRegistry.GetColorGArrayName(animIndex, true);
+            string abArr = MultiAnimationRegistry.GetColorBArrayName(animIndex, true);
+            string aaArr = MultiAnimationRegistry.GetColorAArrayName(animIndex, true);
+            string rotArr = MultiAnimationRegistry.GetRotArrayName(animIndex, true);
+            string sclArr = MultiAnimationRegistry.GetScaleArrayName(animIndex, true);
+            string axVar = MultiAnimationRegistry.GetPositionXVariableName(animIndex, true);
+            string ayVar = MultiAnimationRegistry.GetPositionYVariableName(animIndex, true);
+            string awVar = MultiAnimationRegistry.GetSizeWidthVariableName(animIndex, true);
+            string ahVar = MultiAnimationRegistry.GetSizeHeightVariableName(animIndex, true);
+            string arVar = MultiAnimationRegistry.GetColorRVariableName(animIndex, true);
+            string agVar = MultiAnimationRegistry.GetColorGVariableName(animIndex, true);
+            string abVar = MultiAnimationRegistry.GetColorBVariableName(animIndex, true);
+            string aaVar = MultiAnimationRegistry.GetColorAVariableName(animIndex, true);
+            string arotVar = MultiAnimationRegistry.GetRotationVariableName(animIndex, true);
+            string asclVar = MultiAnimationRegistry.GetScaleVariableName(animIndex, true);
+
             // Detect which properties are animated (differ across keyframes)
             bool animPos    = HasVariation(frames, k => k.X) || HasVariation(frames, k => k.Y);
             bool animSize   = HasVariation(frames, k => k.Width) || HasVariation(frames, k => k.Height);
@@ -38,7 +65,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             var sb = new StringBuilder();
             sb.AppendLine($"// ─── Keyframe Animation: \"{SpriteName(sprite)}\" [{TargetLabel(kp.TargetScript)}] ───");
-            sb.AppendLine($"// {frames.Count} keyframes over {totalTicks} ticks  |  Loop: {kp.Loop}");
+            sb.AppendLine($"// {frames.Count} keyframes over {totalTicks} ticks  |  Loop: {kp.Loop}  |  Animation Index: {animIndex}");
             sb.AppendLine();
 
             // ── Easing helper ──
@@ -75,62 +102,86 @@ namespace SESpriteLCDLayoutTool.Services
             // ── Keyframe data arrays ──
             sb.AppendLine("// ── Keyframe data ──");
             sb.AppendLine(FieldHint(kp.TargetScript));
-            sb.AppendLine("int _tick = 0;");
+            sb.AppendLine($"int {tickVar} = 0;");
             sb.AppendLine();
 
             // Tick array
-            sb.Append("int[] kfTick = { ");
+            sb.Append("int[] ");
+            sb.Append(tickArr);
+            sb.Append(" = { ");
             sb.Append(string.Join(", ", frames.Select(k => k.Tick.ToString())));
             sb.AppendLine(" };");
 
             // Easing array
-            sb.Append("int[] kfEase = { ");
+            sb.Append("int[] ");
+            sb.Append(easeArr);
+            sb.Append(" = { ");
             sb.Append(string.Join(", ", frames.Select(k => ((int)k.EasingToNext).ToString())));
             sb.AppendLine(" };");
 
             // Property arrays — only for animated properties
             if (animPos)
             {
-                sb.Append("float[] kfX = { ");
+                sb.Append("float[] ");
+                sb.Append(axArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.X ?? sprite.X:F1}f")));
                 sb.AppendLine(" };");
-                sb.Append("float[] kfY = { ");
+                sb.Append("float[] ");
+                sb.Append(ayArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Y ?? sprite.Y:F1}f")));
                 sb.AppendLine(" };");
             }
             if (animSize)
             {
-                sb.Append("float[] kfW = { ");
+                sb.Append("float[] ");
+                sb.Append(awArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Width ?? sprite.Width:F1}f")));
                 sb.AppendLine(" };");
-                sb.Append("float[] kfH = { ");
+                sb.Append("float[] ");
+                sb.Append(ahArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Height ?? sprite.Height:F1}f")));
                 sb.AppendLine(" };");
             }
             if (animColor)
             {
-                sb.Append("int[] kfR = { ");
+                sb.Append("int[] ");
+                sb.Append(arArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => (k.ColorR ?? sprite.ColorR).ToString())));
                 sb.AppendLine(" };");
-                sb.Append("int[] kfG = { ");
+                sb.Append("int[] ");
+                sb.Append(agArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => (k.ColorG ?? sprite.ColorG).ToString())));
                 sb.AppendLine(" };");
-                sb.Append("int[] kfB = { ");
+                sb.Append("int[] ");
+                sb.Append(abArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => (k.ColorB ?? sprite.ColorB).ToString())));
                 sb.AppendLine(" };");
-                sb.Append("int[] kfA = { ");
+                sb.Append("int[] ");
+                sb.Append(aaArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => (k.ColorA ?? sprite.ColorA).ToString())));
                 sb.AppendLine(" };");
             }
             if (animRot)
             {
-                sb.Append("float[] kfRot = { ");
+                sb.Append("float[] ");
+                sb.Append(rotArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Rotation ?? sprite.Rotation:F4}f")));
                 sb.AppendLine(" };");
             }
             if (animScale)
             {
-                sb.Append("float[] kfScl = { ");
+                sb.Append("float[] ");
+                sb.Append(sclArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Scale ?? sprite.Scale:F2}f")));
                 sb.AppendLine(" };");
             }
@@ -138,67 +189,68 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine();
 
             // ── Interpolation logic ──
+            string ls = MultiAnimationRegistry.Suffix(animIndex); // local variable suffix
             sb.AppendLine(RenderHint(kp.TargetScript));
-            sb.AppendLine("_tick++;");
+            sb.AppendLine($"{tickVar}++;");
 
             // Tick wrapping based on loop mode
             switch (kp.Loop)
             {
                 case LoopMode.Loop:
-                    sb.AppendLine($"int t = _tick % {totalTicks};");
+                    sb.AppendLine($"int t{ls} = {tickVar} % {totalTicks};");
                     break;
                 case LoopMode.PingPong:
-                    sb.AppendLine($"int raw = _tick % {totalTicks * 2};");
-                    sb.AppendLine($"int t = raw < {totalTicks} ? raw : {totalTicks * 2} - raw;");
+                    sb.AppendLine($"int raw{ls} = {tickVar} % {totalTicks * 2};");
+                    sb.AppendLine($"int t{ls} = raw{ls} < {totalTicks} ? raw{ls} : {totalTicks * 2} - raw{ls};");
                     break;
                 default: // Once
-                    sb.AppendLine($"int t = Math.Min(_tick, {totalTicks});");
+                    sb.AppendLine($"int t{ls} = Math.Min({tickVar}, {totalTicks});");
                     break;
             }
             sb.AppendLine();
 
             // Find keyframe segment
             sb.AppendLine("// Find active keyframe segment");
-            sb.AppendLine($"int seg = 0;");
+            sb.AppendLine($"int seg{ls} = 0;");
             sb.AppendLine($"for (int i = 1; i < {frames.Count}; i++)");
-            sb.AppendLine("    if (t >= kfTick[i]) seg = i;");
-            sb.AppendLine($"int next = (seg + 1 < {frames.Count}) ? seg + 1 : seg;");
-            sb.AppendLine("float span = kfTick[next] - kfTick[seg];");
-            sb.AppendLine("float frac = span > 0 ? (t - kfTick[seg]) / span : 0f;");
-            sb.AppendLine("float ef = Ease(frac, kfEase[seg]);");
+            sb.AppendLine($"    if (t{ls} >= {tickArr}[i]) seg{ls} = i;");
+            sb.AppendLine($"int next{ls} = (seg{ls} + 1 < {frames.Count}) ? seg{ls} + 1 : seg{ls};");
+            sb.AppendLine($"float span{ls} = {tickArr}[next{ls}] - {tickArr}[seg{ls}];");
+            sb.AppendLine($"float frac{ls} = span{ls} > 0 ? (t{ls} - {tickArr}[seg{ls}]) / span{ls} : 0f;");
+            sb.AppendLine($"float ef{ls} = Ease(frac{ls}, {easeArr}[seg{ls}]);");
             sb.AppendLine();
 
             // Interpolated variables
             if (animPos)
             {
-                sb.AppendLine("float ax = kfX[seg] + (kfX[next] - kfX[seg]) * ef;");
-                sb.AppendLine("float ay = kfY[seg] + (kfY[next] - kfY[seg]) * ef;");
+                sb.AppendLine($"float {axVar}_interp = {axArr}[seg{ls}] + ({axArr}[next{ls}] - {axArr}[seg{ls}]) * ef{ls};");
+                sb.AppendLine($"float {ayVar}_interp = {ayArr}[seg{ls}] + ({ayArr}[next{ls}] - {ayArr}[seg{ls}]) * ef{ls};");
             }
             if (animSize)
             {
-                sb.AppendLine("float aw = kfW[seg] + (kfW[next] - kfW[seg]) * ef;");
-                sb.AppendLine("float ah = kfH[seg] + (kfH[next] - kfH[seg]) * ef;");
+                sb.AppendLine($"float {awVar}_interp = {awArr}[seg{ls}] + ({awArr}[next{ls}] - {awArr}[seg{ls}]) * ef{ls};");
+                sb.AppendLine($"float {ahVar}_interp = {ahArr}[seg{ls}] + ({ahArr}[next{ls}] - {ahArr}[seg{ls}]) * ef{ls};");
             }
             if (animColor)
             {
-                sb.AppendLine("int ar = (int)(kfR[seg] + (kfR[next] - kfR[seg]) * ef);");
-                sb.AppendLine("int ag = (int)(kfG[seg] + (kfG[next] - kfG[seg]) * ef);");
-                sb.AppendLine("int ab = (int)(kfB[seg] + (kfB[next] - kfB[seg]) * ef);");
-                sb.AppendLine("int aa = (int)(kfA[seg] + (kfA[next] - kfA[seg]) * ef);");
+                sb.AppendLine($"int {arVar}_interp = (int)({arArr}[seg{ls}] + ({arArr}[next{ls}] - {arArr}[seg{ls}]) * ef{ls});");
+                sb.AppendLine($"int {agVar}_interp = (int)({agArr}[seg{ls}] + ({agArr}[next{ls}] - {agArr}[seg{ls}]) * ef{ls});");
+                sb.AppendLine($"int {abVar}_interp = (int)({abArr}[seg{ls}] + ({abArr}[next{ls}] - {abArr}[seg{ls}]) * ef{ls});");
+                sb.AppendLine($"int {aaVar}_interp = (int)({aaArr}[seg{ls}] + ({aaArr}[next{ls}] - {aaArr}[seg{ls}]) * ef{ls});");
             }
             if (animRot)
-                sb.AppendLine("float arot = kfRot[seg] + (kfRot[next] - kfRot[seg]) * ef;");
+                sb.AppendLine($"float {arotVar}_interp = {rotArr}[seg{ls}] + ({rotArr}[next{ls}] - {rotArr}[seg{ls}]) * ef{ls};");
             if (animScale)
-                sb.AppendLine("float ascl = kfScl[seg] + (kfScl[next] - kfScl[seg]) * ef;");
+                sb.AppendLine($"float {asclVar}_interp = {sclArr}[seg{ls}] + ({sclArr}[next{ls}] - {sclArr}[seg{ls}]) * ef{ls};");
 
             sb.AppendLine();
 
             // ── Sprite block ──
-            string posVal  = animPos   ? "new Vector2(ax, ay)"    : $"new Vector2({sprite.X:F1}f, {sprite.Y:F1}f)";
-            string sizeVal = animSize  ? "new Vector2(aw, ah)"    : $"new Vector2({sprite.Width:F1}f, {sprite.Height:F1}f)";
-            string colVal  = animColor ? "new Color(ar, ag, ab, aa)" : $"new Color({sprite.ColorR}, {sprite.ColorG}, {sprite.ColorB}, {sprite.ColorA})";
-            string rotVal  = animRot   ? "arot"                   : $"{sprite.Rotation:F4}f";
-            string sclVal  = animScale ? "ascl"                   : $"{sprite.Scale:F2}f";
+            string posVal  = animPos   ? $"new Vector2({axVar}_interp, {ayVar}_interp)"    : $"new Vector2({sprite.X:F1}f, {sprite.Y:F1}f)";
+            string sizeVal = animSize  ? $"new Vector2({awVar}_interp, {ahVar}_interp)"    : $"new Vector2({sprite.Width:F1}f, {sprite.Height:F1}f)";
+            string colVal  = animColor ? $"new Color({arVar}_interp, {agVar}_interp, {abVar}_interp, {aaVar}_interp)" : $"new Color({sprite.ColorR}, {sprite.ColorG}, {sprite.ColorB}, {sprite.ColorA})";
+            string rotVal  = animRot   ? $"{arotVar}_interp"                   : $"{sprite.Rotation:F4}f";
+            string sclVal  = animScale ? $"{asclVar}_interp"                   : $"{sprite.Scale:F2}f";
 
             sb.AppendLine($"{kp.ListVarName}.Add(new MySprite");
             sb.AppendLine("{");
@@ -374,6 +426,33 @@ namespace SESpriteLCDLayoutTool.Services
             int totalTicks = frames.Last().Tick;
             if (totalTicks <= 0) totalTicks = 1;
 
+            // Get unique variable names from registry (use leader's line number for the group tick)
+            // IMPORTANT: call GetAnimationIndex ONCE, then use index-based overloads
+            int animIndex = MultiAnimationRegistry.GetAnimationIndex(leader.SourceLineNumber);
+            string tickVar = MultiAnimationRegistry.GetTickVariableName(animIndex, true);
+            string tickArr = MultiAnimationRegistry.GetTickArrayName(animIndex, true);
+            string easeArr = MultiAnimationRegistry.GetEasingArrayName(animIndex, true);
+            string axArr = MultiAnimationRegistry.GetPosXArrayName(animIndex, true);
+            string ayArr = MultiAnimationRegistry.GetPosYArrayName(animIndex, true);
+            string awArr = MultiAnimationRegistry.GetWidthArrayName(animIndex, true);
+            string ahArr = MultiAnimationRegistry.GetHeightArrayName(animIndex, true);
+            string arArr = MultiAnimationRegistry.GetColorRArrayName(animIndex, true);
+            string agArr = MultiAnimationRegistry.GetColorGArrayName(animIndex, true);
+            string abArr = MultiAnimationRegistry.GetColorBArrayName(animIndex, true);
+            string aaArr = MultiAnimationRegistry.GetColorAArrayName(animIndex, true);
+            string rotArr = MultiAnimationRegistry.GetRotArrayName(animIndex, true);
+            string sclArr = MultiAnimationRegistry.GetScaleArrayName(animIndex, true);
+            string axVar = MultiAnimationRegistry.GetPositionXVariableName(animIndex, true);
+            string ayVar = MultiAnimationRegistry.GetPositionYVariableName(animIndex, true);
+            string awVar = MultiAnimationRegistry.GetSizeWidthVariableName(animIndex, true);
+            string ahVar = MultiAnimationRegistry.GetSizeHeightVariableName(animIndex, true);
+            string arVar = MultiAnimationRegistry.GetColorRVariableName(animIndex, true);
+            string agVar = MultiAnimationRegistry.GetColorGVariableName(animIndex, true);
+            string abVar = MultiAnimationRegistry.GetColorBVariableName(animIndex, true);
+            string aaVar = MultiAnimationRegistry.GetColorAVariableName(animIndex, true);
+            string arotVar = MultiAnimationRegistry.GetRotationVariableName(animIndex, true);
+            string asclVar = MultiAnimationRegistry.GetScaleVariableName(animIndex, true);
+
             bool animPos   = HasVariation(frames, k => k.X) || HasVariation(frames, k => k.Y);
             bool animSize  = HasVariation(frames, k => k.Width) || HasVariation(frames, k => k.Height);
             bool animColor = HasVariation(frames, k => k.ColorR) || HasVariation(frames, k => k.ColorG)
@@ -394,7 +473,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             var sb = new StringBuilder();
             sb.AppendLine($"// ─── Animation Group: \"{SpriteName(leader)}\" + {followers.Count} sprite(s) [{TargetLabel(kp.TargetScript)}] ───");
-            sb.AppendLine($"// {frames.Count} keyframes over {totalTicks} ticks  |  Loop: {kp.Loop}  |  Group: {allSprites.Count} sprites");
+            sb.AppendLine($"// {frames.Count} keyframes over {totalTicks} ticks  |  Loop: {kp.Loop}  |  Group: {allSprites.Count} sprites  |  Animation Index: {animIndex}");
             sb.AppendLine();
 
             // ── Easing helper (same as single-sprite version) ──
@@ -430,115 +509,141 @@ namespace SESpriteLCDLayoutTool.Services
             // ── Shared keyframe arrays ──
             sb.AppendLine("// ── Shared keyframe data (animation group) ──");
             sb.AppendLine(FieldHint(kp.TargetScript));
-            sb.AppendLine("int _tick = 0;");
+            sb.AppendLine($"int {tickVar} = 0;");
             sb.AppendLine();
 
-            sb.Append("int[] kfTick = { ");
+            sb.Append("int[] ");
+            sb.Append(tickArr);
+            sb.Append(" = { ");
             sb.Append(string.Join(", ", frames.Select(k => k.Tick.ToString())));
             sb.AppendLine(" };");
 
-            sb.Append("int[] kfEase = { ");
+            sb.Append("int[] ");
+            sb.Append(easeArr);
+            sb.Append(" = { ");
             sb.Append(string.Join(", ", frames.Select(k => ((int)k.EasingToNext).ToString())));
             sb.AppendLine(" };");
 
             if (animPos)
             {
-                sb.Append("float[] kfX = { ");
+                sb.Append("float[] ");
+                sb.Append(axArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.X ?? leader.X:F1}f")));
                 sb.AppendLine(" };");
-                sb.Append("float[] kfY = { ");
+                sb.Append("float[] ");
+                sb.Append(ayArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Y ?? leader.Y:F1}f")));
                 sb.AppendLine(" };");
             }
             if (animSize)
             {
-                sb.Append("float[] kfW = { ");
+                sb.Append("float[] ");
+                sb.Append(awArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Width ?? leader.Width:F1}f")));
                 sb.AppendLine(" };");
-                sb.Append("float[] kfH = { ");
+                sb.Append("float[] ");
+                sb.Append(ahArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Height ?? leader.Height:F1}f")));
                 sb.AppendLine(" };");
             }
             if (animColor)
             {
-                sb.Append("int[] kfR = { ");
+                sb.Append("int[] ");
+                sb.Append(arArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => (k.ColorR ?? leader.ColorR).ToString())));
                 sb.AppendLine(" };");
-                sb.Append("int[] kfG = { ");
+                sb.Append("int[] ");
+                sb.Append(agArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => (k.ColorG ?? leader.ColorG).ToString())));
                 sb.AppendLine(" };");
-                sb.Append("int[] kfB = { ");
+                sb.Append("int[] ");
+                sb.Append(abArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => (k.ColorB ?? leader.ColorB).ToString())));
                 sb.AppendLine(" };");
-                sb.Append("int[] kfA = { ");
+                sb.Append("int[] ");
+                sb.Append(aaArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => (k.ColorA ?? leader.ColorA).ToString())));
                 sb.AppendLine(" };");
             }
             if (animRot)
             {
-                sb.Append("float[] kfRot = { ");
+                sb.Append("float[] ");
+                sb.Append(rotArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Rotation ?? leader.Rotation:F4}f")));
                 sb.AppendLine(" };");
             }
             if (animScale)
             {
-                sb.Append("float[] kfScl = { ");
+                sb.Append("float[] ");
+                sb.Append(sclArr);
+                sb.Append(" = { ");
                 sb.Append(string.Join(", ", frames.Select(k => $"{k.Scale ?? leader.Scale:F2}f")));
                 sb.AppendLine(" };");
             }
             sb.AppendLine();
 
             // ── Shared interpolation ──
+            string ls = MultiAnimationRegistry.Suffix(animIndex); // local variable suffix
             sb.AppendLine(RenderHint(kp.TargetScript));
-            sb.AppendLine("_tick++;");
+            sb.AppendLine($"{tickVar}++;");
 
             switch (kp.Loop)
             {
                 case LoopMode.Loop:
-                    sb.AppendLine($"int t = _tick % {totalTicks};");
+                    sb.AppendLine($"int t{ls} = {tickVar} % {totalTicks};");
                     break;
                 case LoopMode.PingPong:
-                    sb.AppendLine($"int raw = _tick % {totalTicks * 2};");
-                    sb.AppendLine($"int t = raw < {totalTicks} ? raw : {totalTicks * 2} - raw;");
+                    sb.AppendLine($"int raw{ls} = {tickVar} % {totalTicks * 2};");
+                    sb.AppendLine($"int t{ls} = raw{ls} < {totalTicks} ? raw{ls} : {totalTicks * 2} - raw{ls};");
                     break;
                 default:
-                    sb.AppendLine($"int t = Math.Min(_tick, {totalTicks});");
+                    sb.AppendLine($"int t{ls} = Math.Min({tickVar}, {totalTicks});");
                     break;
             }
             sb.AppendLine();
 
+            // Find keyframe segment
             sb.AppendLine("// Find active keyframe segment");
-            sb.AppendLine("int seg = 0;");
+            sb.AppendLine($"int seg{ls} = 0;");
             sb.AppendLine($"for (int i = 1; i < {frames.Count}; i++)");
-            sb.AppendLine("    if (t >= kfTick[i]) seg = i;");
-            sb.AppendLine($"int next = (seg + 1 < {frames.Count}) ? seg + 1 : seg;");
-            sb.AppendLine("float span = kfTick[next] - kfTick[seg];");
-            sb.AppendLine("float frac = span > 0 ? (t - kfTick[seg]) / span : 0f;");
-            sb.AppendLine("float ef = Ease(frac, kfEase[seg]);");
+            sb.AppendLine($"    if (t{ls} >= {tickArr}[i]) seg{ls} = i;");
+            sb.AppendLine($"int next{ls} = (seg{ls} + 1 < {frames.Count}) ? seg{ls} + 1 : seg{ls};");
+            sb.AppendLine($"float span{ls} = {tickArr}[next{ls}] - {tickArr}[seg{ls}];");
+            sb.AppendLine($"float frac{ls} = span{ls} > 0 ? (t{ls} - {tickArr}[seg{ls}]) / span{ls} : 0f;");
+            sb.AppendLine($"float ef{ls} = Ease(frac{ls}, {easeArr}[seg{ls}]);");
             sb.AppendLine();
 
             // Interpolated delta values (relative to leader's base)
             if (animPos)
             {
-                sb.AppendLine($"float dX = (kfX[seg] + (kfX[next] - kfX[seg]) * ef) - {baseX:F1}f;");
-                sb.AppendLine($"float dY = (kfY[seg] + (kfY[next] - kfY[seg]) * ef) - {baseY:F1}f;");
+                sb.AppendLine($"float dX{ls} = ({axArr}[seg{ls}] + ({axArr}[next{ls}] - {axArr}[seg{ls}]) * ef{ls}) - {baseX:F1}f;");
+                sb.AppendLine($"float dY{ls} = ({ayArr}[seg{ls}] + ({ayArr}[next{ls}] - {ayArr}[seg{ls}]) * ef{ls}) - {baseY:F1}f;");
             }
             if (animSize)
             {
-                sb.AppendLine($"float dW = (kfW[seg] + (kfW[next] - kfW[seg]) * ef) - {baseW:F1}f;");
-                sb.AppendLine($"float dH = (kfH[seg] + (kfH[next] - kfH[seg]) * ef) - {baseH:F1}f;");
+                sb.AppendLine($"float dW{ls} = ({awArr}[seg{ls}] + ({awArr}[next{ls}] - {awArr}[seg{ls}]) * ef{ls}) - {baseW:F1}f;");
+                sb.AppendLine($"float dH{ls} = ({ahArr}[seg{ls}] + ({ahArr}[next{ls}] - {ahArr}[seg{ls}]) * ef{ls}) - {baseH:F1}f;");
             }
             if (animColor)
             {
-                sb.AppendLine("int ar = (int)(kfR[seg] + (kfR[next] - kfR[seg]) * ef);");
-                sb.AppendLine("int ag = (int)(kfG[seg] + (kfG[next] - kfG[seg]) * ef);");
-                sb.AppendLine("int ab = (int)(kfB[seg] + (kfB[next] - kfB[seg]) * ef);");
-                sb.AppendLine("int aa = (int)(kfA[seg] + (kfA[next] - kfA[seg]) * ef);");
+                sb.AppendLine($"int ar{ls} = (int)({arArr}[seg{ls}] + ({arArr}[next{ls}] - {arArr}[seg{ls}]) * ef{ls});");
+                sb.AppendLine($"int ag{ls} = (int)({agArr}[seg{ls}] + ({agArr}[next{ls}] - {agArr}[seg{ls}]) * ef{ls});");
+                sb.AppendLine($"int ab{ls} = (int)({abArr}[seg{ls}] + ({abArr}[next{ls}] - {abArr}[seg{ls}]) * ef{ls});");
+                sb.AppendLine($"int aa{ls} = (int)({aaArr}[seg{ls}] + ({aaArr}[next{ls}] - {aaArr}[seg{ls}]) * ef{ls});");
             }
             if (animRot)
-                sb.AppendLine("float arot = kfRot[seg] + (kfRot[next] - kfRot[seg]) * ef;");
+                sb.AppendLine($"float arot{ls} = {rotArr}[seg{ls}] + ({rotArr}[next{ls}] - {rotArr}[seg{ls}]) * ef{ls};");
             if (animScale)
-                sb.AppendLine("float ascl = kfScl[seg] + (kfScl[next] - kfScl[seg]) * ef;");
+                sb.AppendLine($"float ascl{ls} = {sclArr}[seg{ls}] + ({sclArr}[next{ls}] - {sclArr}[seg{ls}]) * ef{ls};");
             sb.AppendLine();
 
             // ── Per-sprite blocks ──
@@ -549,16 +654,16 @@ namespace SESpriteLCDLayoutTool.Services
 
                 // Position: sprite's own base + delta from leader's motion
                 string posVal = animPos
-                    ? $"new Vector2({sp.X:F1}f + dX, {sp.Y:F1}f + dY)"
+                    ? $"new Vector2({sp.X:F1}f + dX{ls}, {sp.Y:F1}f + dY{ls})"
                     : $"new Vector2({sp.X:F1}f, {sp.Y:F1}f)";
                 string sizeVal = animSize
-                    ? $"new Vector2({sp.Width:F1}f + dW, {sp.Height:F1}f + dH)"
+                    ? $"new Vector2({sp.Width:F1}f + dW{ls}, {sp.Height:F1}f + dH{ls})"
                     : $"new Vector2({sp.Width:F1}f, {sp.Height:F1}f)";
                 string colVal = animColor
-                    ? "new Color(ar, ag, ab, aa)"
+                    ? $"new Color(ar{ls}, ag{ls}, ab{ls}, aa{ls})"
                     : $"new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA})";
-                string rotVal = animRot ? "arot" : $"{sp.Rotation:F4}f";
-                string sclVal = animScale ? "ascl" : $"{sp.Scale:F2}f";
+                string rotVal = animRot ? $"arot{ls}" : $"{sp.Rotation:F4}f";
+                string sclVal = animScale ? $"ascl{ls}" : $"{sp.Scale:F2}f";
 
                 sb.AppendLine($"// {SpriteName(sp)}{(sp == leader ? " (leader)" : "")}");
                 sb.AppendLine($"{kp.ListVarName}.Add(new MySprite");
@@ -838,75 +943,167 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
-        /// Smart array-level merge: updates kfXxx array declarations, keyframe count
-        /// references, and max-tick references in existing code using values from a
-        /// newly-generated snippet. Works even when the existing code has a different
-        /// structure (e.g., a hand-written PB script) than the generated snippet.
-        /// Returns the merged code, or <c>null</c> if the existing code has no kfTick array.
+        /// Regex that captures: (1) the array type (int or float), (2) the variable name, (3) the values inside braces.
+        /// Used to extract and replace only the values portion of array declarations.
+        /// </summary>
+        private static readonly Regex RxArrayDecl = new Regex(
+            @"^([ \t]*)(int|float)\[\]\s+(\w+)\s*=\s*\{([^}]+)\}\s*;([^\r\n]*)",
+            RegexOptions.Multiline | RegexOptions.Compiled);
+
+        /// <summary>
+        /// Known array type prefixes. Each prefix maps to a "kind" so we can match
+        /// existing arrays to new arrays by purpose rather than exact name.
+        /// Order matters: more specific prefixes first.
+        /// </summary>
+        private static readonly (string prefix, string kind)[] ArrayPrefixes =
+        {
+            ("kfTick", "tick"), ("kfEase", "ease"),
+            ("kfRot",  "rot"),  ("kfX",    "posX"),  ("kfY",    "posY"),
+            ("kfW",    "width"),("kfH",    "height"),("kfScl",  "scale"),
+            ("kfR",    "colR"), ("kfG",    "colG"),  ("kfB",    "colB"), ("kfA", "colA"),
+        };
+
+        /// <summary>Returns the kind for a variable name, or null if not a known kf array.</summary>
+        private static string GetArrayKind(string varName)
+        {
+            foreach (var (prefix, kind) in ArrayPrefixes)
+                if (varName.StartsWith(prefix, StringComparison.Ordinal))
+                    return kind;
+            return null;
+        }
+
+        /// <summary>Extracts the numeric suffix from a kf array name (e.g. "kfTick2" → "2", "kfTick" → "").</summary>
+        private static string GetArraySuffix(string varName)
+        {
+            foreach (var (prefix, _) in ArrayPrefixes)
+                if (varName.StartsWith(prefix, StringComparison.Ordinal))
+                    return varName.Substring(prefix.Length);
+            return "";
+        }
+
+        /// <summary>
+        /// Extracts the tick array variable name (e.g. "kfTick" or "kfTick2") from a code snippet.
+        /// Returns null if no tick array declaration is found.
+        /// </summary>
+        public static string ExtractTickArrayName(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return null;
+            foreach (Match m in RxArrayDecl.Matches(code))
+            {
+                string varName = m.Groups[3].Value;
+                if (varName.StartsWith("kfTick", StringComparison.Ordinal))
+                    return varName;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Smart array-level merge: updates keyframe array VALUES in existing code
+        /// using values from a newly-generated snippet. Matches arrays by type prefix
+        /// (kfTick→kfTick, kfRot→kfRot, etc.) so variable names are NEVER changed.
+        /// Only the values inside { } and the keyframe count literals are updated.
+        /// Returns the merged code, or <c>null</c> if no tick array can be matched.
         /// </summary>
         public static string MergeKeyframedIntoCode(string existingCode, string newSnippetCode)
         {
             if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(newSnippetCode))
                 return null;
 
-            // Both must have kfTick arrays
-            int[] oldTicks = ParseIntArray(existingCode, "kfTick");
-            int[] newTicks = ParseIntArray(newSnippetCode, "kfTick");
-            if (oldTicks == null || newTicks == null || oldTicks.Length < 2 || newTicks.Length < 2)
+            // ── Step 1: Determine which animation suffix we're merging (e.g. "" or "2") ──
+            string snippetTickName = ExtractTickArrayName(newSnippetCode);
+            if (snippetTickName == null) return null;
+            string targetSuffix = GetArraySuffix(snippetTickName);
+
+            // Parse array declarations, filtering by the target suffix so we only
+            // touch the correct animation's arrays (kfTick2/kfRot2, not kfTick/kfRot).
+            var existingArrays = new Dictionary<string, (string varName, string values, string fullMatch)>();
+            foreach (Match m in RxArrayDecl.Matches(existingCode))
+            {
+                string varName = m.Groups[3].Value;
+                string kind = GetArrayKind(varName);
+                if (kind != null && GetArraySuffix(varName) == targetSuffix && !existingArrays.ContainsKey(kind))
+                    existingArrays[kind] = (varName, m.Groups[4].Value.Trim(), m.Value);
+            }
+
+            var newArrays = new Dictionary<string, (string varName, string values, string fullMatch)>();
+            foreach (Match m in RxArrayDecl.Matches(newSnippetCode))
+            {
+                string varName = m.Groups[3].Value;
+                string kind = GetArrayKind(varName);
+                if (kind != null && GetArraySuffix(varName) == targetSuffix && !newArrays.ContainsKey(kind))
+                    newArrays[kind] = (varName, m.Groups[4].Value.Trim(), m.Value);
+            }
+
+            // Must have tick arrays on both sides
+            if (!existingArrays.ContainsKey("tick") || !newArrays.ContainsKey("tick"))
                 return null;
 
-            int oldCount = oldTicks.Length;
-            int newCount = newTicks.Length;
-            int oldMaxTick = oldTicks[oldTicks.Length - 1];
-            int newMaxTick = newTicks[newTicks.Length - 1];
-
+            // ── Step 2: For each new array kind, find matching existing array and replace values only ──
             string result = existingCode;
+            string lastExistingLine = null;
 
-            // All known kf array names in declaration order
-            string[] arrayNames = { "kfTick", "kfEase", "kfX", "kfY", "kfW", "kfH",
-                                    "kfR", "kfG", "kfB", "kfA", "kfRot", "kfScl" };
-
-            string lastFoundLine = null;
-
-            foreach (string name in arrayNames)
+            foreach (var kvp in newArrays)
             {
-                string oldLine = ExtractArrayLine(result, name);
-                string newLine = ExtractArrayLine(newSnippetCode, name);
+                string kind = kvp.Key;
+                string newValues = kvp.Value.values;
 
-                if (oldLine != null && newLine != null)
+                if (existingArrays.TryGetValue(kind, out var existing))
                 {
-                    // Preserve original indentation
-                    string indent = GetIndent(oldLine);
-                    string replacement = indent + newLine.TrimStart();
-                    result = result.Replace(oldLine, replacement);
-                    lastFoundLine = replacement;
+                    // Replace ONLY the values portion: { OLD_VALUES } → { NEW_VALUES }
+                    // Keep the existing variable name, type, indent, and trailing comment structure
+                    string oldFullLine = existing.fullMatch;
+                    // Build replacement: same line but swap values inside braces
+                    string replaced = RxArrayDecl.Replace(oldFullLine, m =>
+                    {
+                        string indent = m.Groups[1].Value;
+                        string type = m.Groups[2].Value;
+                        string name = m.Groups[3].Value;
+                        // Keep trailing comment only if values didn't change shape
+                        return $"{indent}{type}[] {name} = {{ {newValues} }};";
+                    });
+                    result = result.Replace(oldFullLine, replaced);
+                    lastExistingLine = replaced;
                 }
-                else if (oldLine != null && newLine == null)
+                else if (lastExistingLine != null)
                 {
-                    // Property no longer animated — remove the array
-                    result = RemoveCodeLine(result, oldLine);
-                }
-                else if (oldLine == null && newLine != null && lastFoundLine != null)
-                {
-                    // New property being animated — insert after last known array
-                    int insertIdx = result.IndexOf(lastFoundLine, StringComparison.Ordinal);
+                    // New property array that didn't exist before (e.g., adding color animation).
+                    // Insert after the last matched array line, using the NEW snippet's variable name.
+                    int insertIdx = result.IndexOf(lastExistingLine, StringComparison.Ordinal);
                     if (insertIdx >= 0)
                     {
-                        string indent = GetIndent(lastFoundLine);
-                        string toInsert = indent + newLine.TrimStart();
+                        string indent = GetIndent(lastExistingLine);
+                        string newLine = kvp.Value.fullMatch.TrimStart();
+                        string toInsert = indent + newLine;
                         int eol = result.IndexOf('\n', insertIdx);
                         if (eol >= 0)
                             result = result.Insert(eol + 1, toInsert + Environment.NewLine);
                         else
                             result += Environment.NewLine + toInsert;
-                        lastFoundLine = toInsert;
+                        lastExistingLine = toInsert;
                     }
                 }
             }
 
-            // ── Update keyframe count references ──
-            if (oldCount != newCount)
+            // ── Step 3: Remove existing arrays whose kind is no longer in the new snippet ──
+            // (e.g., user removed color animation — remove kfR, kfG, kfB, kfA arrays)
+            foreach (var kvp in existingArrays)
             {
+                string kind = kvp.Key;
+                if (kind == "tick" || kind == "ease") continue; // never remove tick/ease
+                if (!newArrays.ContainsKey(kind))
+                {
+                    result = RemoveCodeLine(result, kvp.Value.fullMatch);
+                }
+            }
+
+            // ── Step 4: Update keyframe count references if array length changed ──
+            int[] existingTicks = ParseIntArray(existingCode, existingArrays["tick"].varName);
+            int[] newTicks = ParseIntArray(newSnippetCode, newArrays["tick"].varName);
+            if (existingTicks != null && newTicks != null && existingTicks.Length != newTicks.Length)
+            {
+                int oldCount = existingTicks.Length;
+                int newCount = newTicks.Length;
+
                 // for (int i = 1; i < N; i++)
                 result = Regex.Replace(result,
                     @"(for\s*\(\s*int\s+\w+\s*=\s*1\s*;\s*\w+\s*<\s*)" + oldCount + @"(\s*;)",
@@ -918,54 +1115,290 @@ namespace SESpriteLCDLayoutTool.Services
                     "${1}" + newCount + "${2}");
             }
 
-            // ── Update max tick references ──
-            if (oldMaxTick != newMaxTick)
+            // ── Step 5: Update tick modulo if total ticks changed ──
+            if (existingTicks != null && newTicks != null)
             {
-                // Loop: % maxTick;
-                result = Regex.Replace(result,
-                    @"(%\s*)" + oldMaxTick + @"(\s*;)",
-                    "${1}" + newMaxTick + "${2}");
-
-                // PingPong: % (maxTick*2);
-                if (oldMaxTick * 2 != newMaxTick * 2)
+                int oldTotal = existingTicks.Last();
+                int newTotal = newTicks.Last();
+                if (oldTotal != newTotal && oldTotal > 0 && newTotal > 0)
                 {
+                    // _tick % OLD → _tick % NEW  (loop mode)
                     result = Regex.Replace(result,
-                        @"(%\s*)" + (oldMaxTick * 2) + @"(\s*;)",
-                        "${1}" + (newMaxTick * 2) + "${2}");
+                        @"(%\s*)" + oldTotal + @"(\s*;)",
+                        "${1}" + newTotal + "${2}");
+
+                    // Math.Min(_tick, OLD) (once mode)
+                    result = Regex.Replace(result,
+                        @"(Math\.Min\s*\(\s*\w+\s*,\s*)" + oldTotal + @"(\s*\))",
+                        "${1}" + newTotal + "${2}");
+
+                    // raw % (OLD*2) and (OLD*2) - raw (ping-pong)
+                    int oldDouble = oldTotal * 2;
+                    int newDouble = newTotal * 2;
+                    if (result.Contains(oldDouble.ToString()))
+                    {
+                        result = result.Replace(oldDouble.ToString(), newDouble.ToString());
+                    }
                 }
             }
 
-            // ── Update header comment counts if present ──
-            result = Regex.Replace(result,
-                @"(\d+)\s+keyframes\s+over\s+(\d+)\s+ticks",
-                $"{newCount} keyframes over {newMaxTick} ticks");
+            return result;
+        }
 
-            // ── Wire animation variables into sprite blocks ──
-            // After merging arrays, sprite blocks added by other code paths
-            // (e.g. RoslynCodeMerger) may still reference static float/int
-            // literals instead of the computed animation variables.
-            // Replace them so all sprites in the scope use the shared vars.
-            if (result.Contains("float arot ="))
+        /// <summary>
+        /// Merges a NEW animation snippet (with indexed variable names) into an
+        /// existing COMPLETE PB program. Inserts field declarations before the Ease
+        /// function and interpolation + sprite code before frame.Dispose().
+        /// Returns the merged code, or null if the structure can't be parsed.
+        /// </summary>
+        public static string MergeSnippetIntoCompleteProgram(string existingCode, string snippetCode, string spriteName = null)
+        {
+            if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(snippetCode))
+                return null;
+
+            // ── Remove the original static sprite block for this sprite ──
+            // SourceStart/End offsets become stale after earlier merges modify the code,
+            // so we find the static block by matching Data = "SpriteName" in a frame.Add block
+            // that does NOT contain interpolation variables (i.e. not already animated).
+            if (!string.IsNullOrEmpty(spriteName))
             {
-                result = Regex.Replace(result,
-                    @"(RotationOrScale\s*=\s*)-?[\d.]+f(\s*,)",
-                    "${1}arot${2}");
-            }
-            else if (result.Contains("float ascl ="))
-            {
-                result = Regex.Replace(result,
-                    @"(RotationOrScale\s*=\s*)-?[\d.]+f(\s*,)",
-                    "${1}ascl${2}");
+                existingCode = RemoveStaticSpriteBlock(existingCode, spriteName);
             }
 
-            if (result.Contains("int ar ="))
+            // ── Extract field-level declarations from snippet ──
+            // These are: tick variable (int _tick2 = 0;) and kf arrays (int[] kfTick2 = {...};)
+            // They appear between "// ── Keyframe data ──" and the render hint or interpolation start.
+            var fieldLines = new List<string>();
+            var renderLines = new List<string>();
+            bool inFields = false;
+            bool inRender = false;
+            string[] snippetLines = snippetCode.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+
+            for (int i = 0; i < snippetLines.Length; i++)
             {
-                result = Regex.Replace(result,
-                    @"(Color\s*=\s*)new\s+Color\s*\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*\d+)?\s*\)(\s*,)",
-                    "${1}new Color(ar, ag, ab, aa)${2}");
+                string line = snippetLines[i];
+                string trimmed = line.TrimStart();
+
+                // Skip the Ease function block in the snippet (already in existing code)
+                if (trimmed.StartsWith("// ── Easing helper", StringComparison.Ordinal))
+                {
+                    // Skip until closing brace of the function
+                    int braceDepth = 0;
+                    bool enteredFunction = false;
+                    for (; i < snippetLines.Length; i++)
+                    {
+                        string fl = snippetLines[i];
+                        foreach (char ch in fl)
+                        {
+                            if (ch == '{') { braceDepth++; enteredFunction = true; }
+                            else if (ch == '}') braceDepth--;
+                        }
+                        if (enteredFunction && braceDepth <= 0) break;
+                    }
+                    continue;
+                }
+
+                // Start collecting field declarations
+                if (trimmed.StartsWith("// ── Keyframe data", StringComparison.Ordinal))
+                {
+                    inFields = true;
+                    fieldLines.Add("");
+                    fieldLines.Add(line);
+                    continue;
+                }
+
+                // Transition from fields to render (interpolation) section
+                if (inFields && (trimmed.StartsWith("// In your Main()", StringComparison.Ordinal)
+                    || trimmed.StartsWith("// In your render method", StringComparison.Ordinal)
+                    || trimmed.StartsWith("// Field —", StringComparison.Ordinal)))
+                {
+                    // Skip hint comments
+                    continue;
+                }
+
+                if (inFields && !inRender)
+                {
+                    // Once we hit a non-array, non-empty, non-comment line that looks like
+                    // interpolation code (tick increment), switch to render section
+                    if (trimmed.Length > 0 && !trimmed.StartsWith("//")
+                        && !trimmed.StartsWith("int[]") && !trimmed.StartsWith("float[]")
+                        && !trimmed.StartsWith("int _tick") && !trimmed.StartsWith("int _anim"))
+                    {
+                        inFields = false;
+                        inRender = true;
+                        renderLines.Add("");
+                        renderLines.Add("    // ── Animation (merged) ──");
+                    }
+                    else if (trimmed.Length > 0 && !trimmed.StartsWith("//"))
+                    {
+                        fieldLines.Add(line);
+                        continue;
+                    }
+                    else if (trimmed.Length == 0)
+                    {
+                        // blank line in fields section - keep it
+                        fieldLines.Add(line);
+                        continue;
+                    }
+                    else
+                    {
+                        // comment line in fields section
+                        fieldLines.Add(line);
+                        continue;
+                    }
+                }
+
+                if (inRender)
+                {
+                    // Collect all render lines (interpolation + sprite block)
+                    // Indent them for inside Main()
+                    if (trimmed.Length > 0)
+                        renderLines.Add("    " + trimmed);
+                    else
+                        renderLines.Add("");
+                }
+            }
+
+            if (fieldLines.Count == 0 && renderLines.Count == 0)
+                return null;
+
+            string result = existingCode;
+
+            // ── Insert field declarations before the Ease function ──
+            if (fieldLines.Count > 0)
+            {
+                // Look for "public float Ease(" or "float Ease(" as insertion point
+                int easeIdx = result.IndexOf("public float Ease(", StringComparison.Ordinal);
+                if (easeIdx < 0)
+                    easeIdx = result.IndexOf("float Ease(", StringComparison.Ordinal);
+                if (easeIdx < 0)
+                {
+                    // Fallback: look for "// ── Easing helper"
+                    easeIdx = result.IndexOf("// ── Easing helper", StringComparison.Ordinal);
+                }
+
+                if (easeIdx >= 0)
+                {
+                    // Walk back to line start
+                    int lineStart = easeIdx;
+                    while (lineStart > 0 && result[lineStart - 1] != '\n') lineStart--;
+
+                    // Also skip preceding blank lines and the "// ── Easing helper" comment
+                    // to insert right before them
+                    string fieldBlock = string.Join(Environment.NewLine, fieldLines) + Environment.NewLine;
+                    result = result.Insert(lineStart, fieldBlock);
+                }
+            }
+
+            // ── Insert interpolation + sprite block before frame.Dispose() ──
+            if (renderLines.Count > 0)
+            {
+                int disposeIdx = result.IndexOf("frame.Dispose()", StringComparison.Ordinal);
+                if (disposeIdx >= 0)
+                {
+                    // Walk back to line start
+                    int lineStart = disposeIdx;
+                    while (lineStart > 0 && result[lineStart - 1] != '\n') lineStart--;
+
+                    string renderBlock = string.Join(Environment.NewLine, renderLines) + Environment.NewLine + Environment.NewLine;
+                    result = result.Insert(lineStart, renderBlock);
+                }
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Removes a static (non-animated) frame.Add(new MySprite { Data = "name" ... }) block
+        /// from the code. Only removes blocks that don't contain interpolation markers like "← animated".
+        /// </summary>
+        private static string RemoveStaticSpriteBlock(string code, string spriteName)
+        {
+            string dataPattern = "\"" + spriteName + "\"";
+            int searchFrom = 0;
+            while (searchFrom < code.Length)
+            {
+                int dataIdx = code.IndexOf(dataPattern, searchFrom, StringComparison.Ordinal);
+                if (dataIdx < 0) break;
+
+                // Check this is a Data = "..." assignment
+                int lineStart = code.LastIndexOf('\n', dataIdx) + 1;
+                string lineText = code.Substring(lineStart, dataIdx - lineStart).TrimStart();
+                if (!lineText.StartsWith("Data", StringComparison.Ordinal))
+                {
+                    searchFrom = dataIdx + dataPattern.Length;
+                    continue;
+                }
+
+                // Walk backwards to find the frame.Add(new MySprite start
+                int blockStart = -1;
+                int scan = lineStart - 1;
+                while (scan >= 0)
+                {
+                    int ls = code.LastIndexOf('\n', scan) + 1;
+                    string trimLine = code.Substring(ls, scan + 1 - ls).TrimStart();
+                    if (trimLine.Contains("frame.Add(") || trimLine.Contains(".Add(new MySprite"))
+                    {
+                        blockStart = ls;
+                        break;
+                    }
+                    if (trimLine.Contains("new MySprite"))
+                    {
+                        blockStart = ls;
+                        break;
+                    }
+                    if (trimLine.Length > 0 && !trimLine.StartsWith("{") && !trimLine.StartsWith("//")
+                        && !trimLine.StartsWith("Type") && !trimLine.StartsWith("Data")
+                        && !trimLine.StartsWith("Position") && !trimLine.StartsWith("Size")
+                        && !trimLine.StartsWith("Color") && !trimLine.StartsWith("Alignment")
+                        && !trimLine.StartsWith("RotationOrScale") && !trimLine.StartsWith("FontId"))
+                    {
+                        break;
+                    }
+                    scan = ls - 2;
+                    if (scan < 0) break;
+                }
+
+                if (blockStart < 0)
+                {
+                    searchFrom = dataIdx + dataPattern.Length;
+                    continue;
+                }
+
+                // Find the end of the block: closing });
+                int blockEnd = code.IndexOf("});", dataIdx, StringComparison.Ordinal);
+                if (blockEnd < 0)
+                {
+                    searchFrom = dataIdx + dataPattern.Length;
+                    continue;
+                }
+                blockEnd += 3; // past ");"
+
+                if (blockEnd < code.Length && code[blockEnd] == '\r') blockEnd++;
+                if (blockEnd < code.Length && code[blockEnd] == '\n') blockEnd++;
+
+                string block = code.Substring(blockStart, blockEnd - blockStart);
+
+                // Only remove if this is a STATIC block (not animated)
+                if (block.Contains("\u2190 animated"))
+                {
+                    searchFrom = blockEnd;
+                    continue;
+                }
+
+                // Remove the block (and any preceding blank line)
+                int removeStart = blockStart;
+                if (removeStart > 0 && code[removeStart - 1] == '\n')
+                {
+                    removeStart--;
+                    if (removeStart > 0 && code[removeStart - 1] == '\r') removeStart--;
+                }
+
+                code = code.Remove(removeStart, blockEnd - removeStart);
+                break; // only remove the first static instance
+            }
+
+            return code;
         }
 
         // ── Complete program generation (compilable by AnimationPlayer) ─────────
@@ -1471,15 +1904,15 @@ namespace SESpriteLCDLayoutTool.Services
                 sizeVal = animSize  ? "new Vector2(aw, ah)"    : $"new Vector2({sp.Width:F1}f, {sp.Height:F1}f)";
             }
             colVal  = animColor ? "new Color(ar, ag, ab, aa)" : $"new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA})";
-            rotVal  = animRot   ? "arot"                      : $"{sp.Rotation:F4}f";
-            sclVal  = animScale ? "ascl"                      : $"{sp.Scale:F2}f";
+            rotVal  = animRot   ? "arot"                   : $"{sp.Rotation:F4}f";
+            sclVal  = animScale ? "ascl"                   : $"{sp.Scale:F2}f";
 
             sb.AppendLine($"{indent}{listVar}.Add(new MySprite");
             sb.AppendLine($"{indent}{{");
             if (isText)
             {
-                sb.AppendLine($"{indent}    Type            = SpriteType.TEXT,");
-                sb.AppendLine($"{indent}    Data            = \"{Esc(sp.Text)}\",");
+                sb.AppendLine($"{indent}    Type           = SpriteType.TEXT,");
+                sb.AppendLine($"{indent}    Data           = \"{Esc(sp.Text)}\",");
                 sb.AppendLine($"{indent}    Position        = {posVal},");
                 sb.AppendLine($"{indent}    Color           = {colVal},");
                 sb.AppendLine($"{indent}    FontId          = \"{Esc(sp.FontId)}\",");

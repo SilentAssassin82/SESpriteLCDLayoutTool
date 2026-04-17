@@ -219,6 +219,12 @@ namespace SESpriteLCDLayoutTool.Models
         [XmlIgnore] public KeyframeAnimationParams KeyframeAnimation { get; set; }
 
         /// <summary>
+        /// The animation index assigned by MultiAnimationRegistry (1 = unsuffixed kfTick, 2 = kfTick2, etc.).
+        /// Persisted on the sprite so re-edits use the same suffix. 0 = not yet assigned.
+        /// </summary>
+        [XmlIgnore] public int AnimationIndex { get; set; } = 0;
+
+        /// <summary>
         /// Animation group identifier. Sprites sharing the same non-null group ID
         /// animate together using the leader's keyframe data with per-sprite offsets.
         /// The "leader" is the sprite that owns the KeyframeAnimation; followers reference

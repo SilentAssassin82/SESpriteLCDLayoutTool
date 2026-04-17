@@ -304,6 +304,10 @@ namespace SESpriteLCDLayoutTool
 
             ms.Items.Add(view);
 
+            var animation = new ToolStripMenuItem("Animation");
+            animation.DropDownItems.Add("Multi-Sprite Timeline…", null, (s, e) => OpenMultiSpriteTimeline());
+            ms.Items.Add(animation);
+
             var surface = new ToolStripMenuItem("Surface Size");
             for (int i = 0; i < SpriteCatalog.SurfacePresetNames.Length; i++)
             {

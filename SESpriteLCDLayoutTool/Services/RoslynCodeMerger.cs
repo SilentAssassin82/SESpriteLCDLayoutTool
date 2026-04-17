@@ -361,12 +361,9 @@ namespace SESpriteLCDLayoutTool.Services
             sb.Append(sprite.ColorG);
             sb.Append(", ");
             sb.Append(sprite.ColorB);
-            if (sprite.ColorA != 255)
-            {
-                sb.Append(", ");
-                sb.Append(sprite.ColorA);
-            }
-            sb.AppendLine(",");
+            sb.Append(", ");
+            sb.Append(sprite.ColorA);
+            sb.AppendLine("),");
 
             // RotationOrScale (text uses scale, texture uses rotation)
             if (sprite.Type == SpriteEntryType.Text)
