@@ -456,7 +456,7 @@ namespace SESpriteLCDLayoutTool
                 hideItem.Enabled = selected.Count > 0;
 
                 // Lock/Unlock items
-                bool locked = _canvas.SelectedSprite.IsLocked;
+                bool locked = _canvas.SelectedSprite?.IsLocked ?? false;
                 lockItem.Text    = selected.Count > 1 ? $"Lock Selected ({selected.Count})" : "Lock Selected";
                 unlockItem.Text  = selected.Count > 1 ? $"Unlock Selected ({selected.Count})" : "Unlock Selected";
                 lockItem.Visible = !locked || selected.Count > 1;
@@ -730,6 +730,8 @@ namespace SESpriteLCDLayoutTool
 
             num1 = new NumericUpDown { Dock = DockStyle.Fill, Minimum = min, Maximum = max, DecimalPlaces = decimals, Increment = 1, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.White };
             num2 = new NumericUpDown { Dock = DockStyle.Fill, Minimum = min, Maximum = max, DecimalPlaces = decimals, Increment = 1, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.White };
+            num1.KeyDown += SuppressEnterBeep;
+            num2.KeyDown += SuppressEnterBeep;
 
             row.Controls.Add(l1,   0, 0);
             row.Controls.Add(num1, 1, 0);
@@ -750,6 +752,15 @@ namespace SESpriteLCDLayoutTool
             };
             btn.FlatAppearance.BorderSize = 0;
             return btn;
+        }
+
+        private static void SuppressEnterBeep(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Return)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
         }
 
         private static float ClampF(float v, float min, float max) => v < min ? min : v > max ? max : v;

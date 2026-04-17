@@ -1128,6 +1128,7 @@ namespace SESpriteLCDLayoutTool
                 ForeColor = Color.FromArgb(220, 220, 220),
             };
             nud.ValueChanged += (s, e) => onChange((float)nud.Value);
+            nud.KeyDown += NudSuppressEnter;
 
             _pnlProps.RowCount = row + 1;
             _pnlProps.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
@@ -1158,12 +1159,22 @@ namespace SESpriteLCDLayoutTool
                 ForeColor = Color.FromArgb(220, 220, 220),
             };
             nud.ValueChanged += (s, e) => onChange((int)nud.Value);
+            nud.KeyDown += NudSuppressEnter;
 
             _pnlProps.RowCount = row + 1;
             _pnlProps.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             _pnlProps.Controls.Add(lbl, 0, row);
             _pnlProps.Controls.Add(nud, 1, row);
             row++;
+        }
+
+        private void NudSuppressEnter(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Return)
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
         }
 
         private void AddPropCombo(string label, string[] items, int selected,

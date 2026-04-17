@@ -575,6 +575,7 @@ namespace SESpriteLCDLayoutTool
                 ForeColor     = Color.White,
             };
             _numRotScale.ValueChanged += OnPropChanged;
+            _numRotScale.KeyDown += SuppressEnterBeep;
             flow.Controls.Add(_numRotScale);
 
             // ── Color ─────────────────────────────────────────────────────────────

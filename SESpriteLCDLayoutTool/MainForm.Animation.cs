@@ -1862,6 +1862,7 @@ namespace SESpriteLCDLayoutTool
                 ForeColor = Color.FromArgb(220, 220, 220),
             };
             nud.ValueChanged += (s, e) => onChange((float)nud.Value);
+            nud.KeyDown += SuppressEnterBeep;
 
             panel.Controls.Add(lbl, 0, row);
             panel.Controls.Add(nud, 1, row);
@@ -1891,6 +1892,7 @@ namespace SESpriteLCDLayoutTool
                 ForeColor = Color.FromArgb(220, 220, 220),
             };
             nud.ValueChanged += (s, e) => onChange((int)nud.Value);
+            nud.KeyDown += SuppressEnterBeep;
 
             panel.Controls.Add(lbl, 0, row);
             panel.Controls.Add(nud, 1, row);
