@@ -1203,6 +1203,8 @@ namespace SESpriteLCDLayoutTool
             _codeBox.TextChanged += (s, e) =>
             {
                 if (_suppressCodeBoxEvents) return;
+                if (!_codeUndo.IsUndoRedoing)
+                    _codeUndo.Push(_codeBox.Text, _codeBox.SelectionStart);
                 _codeBoxDirty = true;
                 _lblCodeTitle.Text = "✏ Code (edited)";
                 _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);

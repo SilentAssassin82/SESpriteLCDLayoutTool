@@ -82,6 +82,47 @@ namespace SESpriteLCDLayoutTool
                         }
                         return true;
                     }
+
+                    // Custom undo/redo — bypass native RichTextBox undo which is
+                    // polluted by syntax-highlighting formatting changes.
+                    if (keyCode == Keys.Z && modifiers == Keys.Control)
+                    {
+                        var state = _codeUndo.Undo();
+                        if (state != null)
+                        {
+                            _suppressCodeBoxEvents = true;
+                            _codeBox.Text = state.Text;
+                            _lastHighlightedCode = null;
+                            if (_codeBox.TextLength <= InitialHighlightMaxChars)
+                            {
+                                Services.SyntaxHighlighter.Highlight(_codeBox);
+                                _lastHighlightedCode = _codeBox.Text;
+                            }
+                            if (state.CaretPosition <= _codeBox.TextLength)
+                                _codeBox.SelectionStart = state.CaretPosition;
+                            _suppressCodeBoxEvents = false;
+                        }
+                        return true;
+                    }
+                    if (keyCode == Keys.Y && modifiers == Keys.Control)
+                    {
+                        var state = _codeUndo.Redo();
+                        if (state != null)
+                        {
+                            _suppressCodeBoxEvents = true;
+                            _codeBox.Text = state.Text;
+                            _lastHighlightedCode = null;
+                            if (_codeBox.TextLength <= InitialHighlightMaxChars)
+                            {
+                                Services.SyntaxHighlighter.Highlight(_codeBox);
+                                _lastHighlightedCode = _codeBox.Text;
+                            }
+                            if (state.CaretPosition <= _codeBox.TextLength)
+                                _codeBox.SelectionStart = state.CaretPosition;
+                            _suppressCodeBoxEvents = false;
+                        }
+                        return true;
+                    }
                 }
 
                 switch (keyData)

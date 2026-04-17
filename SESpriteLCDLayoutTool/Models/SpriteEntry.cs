@@ -219,6 +219,13 @@ namespace SESpriteLCDLayoutTool.Models
         [XmlIgnore] public KeyframeAnimationParams KeyframeAnimation { get; set; }
 
         /// <summary>
+        /// Stacked animation effects for this sprite. The Roslyn injector reads these
+        /// to generate fields, computation, and property overrides in the output code.
+        /// Multiple effects can coexist (e.g. Rotate + ColorCycle).
+        /// </summary>
+        [XmlIgnore] public List<IAnimationEffect> AnimationEffects { get; set; } = new List<IAnimationEffect>();
+
+        /// <summary>
         /// The animation index assigned by MultiAnimationRegistry (1 = unsuffixed kfTick, 2 = kfTick2, etc.).
         /// Persisted on the sprite so re-edits use the same suffix. 0 = not yet assigned.
         /// </summary>

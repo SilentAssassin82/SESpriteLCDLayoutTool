@@ -107,6 +107,10 @@ namespace SESpriteLCDLayoutTool.Services
                 rtb.EndUpdate();
                 rtb.ResumeLayout();
 
+                // Clear the native undo buffer so formatting changes don't
+                // pollute Ctrl+Z — we use a custom undo stack for text edits.
+                NativeMethods.SendMessage(rtb.Handle, NativeMethods.EM_EMPTYUNDOBUFFER, IntPtr.Zero, IntPtr.Zero);
+
                 if (selStart >= 0 && selStart <= rtb.TextLength)
                     rtb.Select(selStart, selLength);
             }
@@ -202,11 +206,34 @@ namespace SESpriteLCDLayoutTool.Services
                         case SyntaxKind.PointerType:
                         case SyntaxKind.QualifiedName:
                             return ColType;
+
+                        // PascalCase identifier on left side of member access
+                        // (e.g. SpriteType.TEXTURE, Math.Cos, ContentType.SCRIPT)
+                        case SyntaxKind.SimpleMemberAccessExpression:
+                            var mae = gp as MemberAccessExpressionSyntax;
+                            if (mae != null && mae.Expression == parent && IsPascalCase(token.Text))
+                                return ColType;
+                            break;
                     }
                     break;
             }
 
             return ColDefault;
+        }
+
+        /// <summary>
+        /// Returns true if the identifier starts with an uppercase letter and
+        /// contains at least one lowercase letter (heuristic for PascalCase type names).
+        /// Single-char names like "I" or all-caps like "PI" return false to avoid
+        /// false positives on constants and loop variables.
+        /// </summary>
+        private static bool IsPascalCase(string name)
+        {
+            if (string.IsNullOrEmpty(name) || name.Length < 2) return false;
+            if (!char.IsUpper(name[0])) return false;
+            for (int i = 1; i < name.Length; i++)
+                if (char.IsLower(name[i])) return true;
+            return false; // all-caps like "PI" — probably a constant, not a type
         }
 
         private static Color? ClassifyTrivia(SyntaxTrivia trivia)
@@ -271,5 +298,7 @@ namespace SESpriteLCDLayoutTool.Services
     {
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        internal const int EM_EMPTYUNDOBUFFER = 0x00CD;
     }
 }

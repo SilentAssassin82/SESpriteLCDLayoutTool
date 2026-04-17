@@ -358,6 +358,127 @@ namespace SESpriteLCDLayoutTool.Services
                                   System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : (float?)null;
         }
 
+        /// <summary>
+        /// Merges a simple animation snippet into an existing program that has no
+        /// simple-animation header. Finds the sprite's <c>.Add(new MySprite</c> block
+        /// and replaces it with the animated version, inserting animation variable
+        /// computation lines immediately before it. Returns null if no merge point found.
+        /// </summary>
+        public static string MergeSimpleAnimIntoProgram(string existingCode, string snippet)
+        {
+            if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(snippet))
+                return null;
+
+            // Extract the animated Add block from the snippet
+            const string addToken = ".Add(new MySprite";
+            int snipAddIdx = snippet.IndexOf(addToken, StringComparison.Ordinal);
+            if (snipAddIdx < 0) return null;
+
+            // Check for blink's "if (blinkVisible)" wrapper
+            bool hasBlink = snippet.Contains("if (blinkVisible)");
+
+            // Walk back to get animation variable lines (everything between _tick++ and the Add block)
+            string[] snipLines = snippet.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var varLines = new System.Collections.Generic.List<string>();
+            bool pastRenderHint = false;
+            bool pastTick = false;
+            foreach (string line in snipLines)
+            {
+                string trimmed = line.Trim();
+                // Skip header, field hint, _tick declaration, render hint
+                if (trimmed.StartsWith("// ─── Animation:")) continue;
+                if (trimmed.StartsWith("// Field —") || trimmed.StartsWith("// Add to")) continue;
+                if (trimmed == "int _tick = 0;") continue;
+                if (trimmed.StartsWith("// In your") || trimmed.StartsWith("// ──"))
+                { pastRenderHint = true; continue; }
+                if (!pastRenderHint) continue;
+                if (trimmed == "_tick++;") { pastTick = true; continue; }
+                if (!pastTick) continue;
+                // Stop when we hit the Add block
+                if (trimmed.Contains(addToken.Trim())) break;
+                // Stop at blink wrapper
+                if (hasBlink && trimmed == "if (blinkVisible)") break;
+                varLines.Add(line);
+            }
+
+            // Find the target sprite's Add block in existing code
+            int tgtAddIdx = existingCode.IndexOf(addToken, StringComparison.Ordinal);
+            if (tgtAddIdx < 0) return null;
+
+            // Walk back to line start
+            int tgtLineStart = tgtAddIdx;
+            while (tgtLineStart > 0 && existingCode[tgtLineStart - 1] != '\n')
+                tgtLineStart--;
+
+            // Detect indentation of the existing Add block
+            string existingLine = existingCode.Substring(tgtLineStart, tgtAddIdx - tgtLineStart + addToken.Length);
+            string indent = "";
+            foreach (char c in existingLine)
+            {
+                if (c == ' ' || c == '\t') indent += c;
+                else break;
+            }
+
+            // Find the close of the existing Add block: "});"
+            const string closeToken = "});";
+            int tgtClose = existingCode.IndexOf(closeToken, tgtAddIdx, StringComparison.Ordinal);
+            if (tgtClose < 0) return null;
+            int tgtEnd = tgtClose + closeToken.Length;
+
+            // Build the replacement: animation var lines + animated Add block (from snippet)
+            // Get the full animated Add block from snippet (including blink wrapper if present)
+            int snipBlockStart;
+            if (hasBlink)
+            {
+                int blinkIdx = snippet.IndexOf("if (blinkVisible)", StringComparison.Ordinal);
+                snipBlockStart = blinkIdx;
+                while (snipBlockStart > 0 && snippet[snipBlockStart - 1] != '\n')
+                    snipBlockStart--;
+            }
+            else
+            {
+                snipBlockStart = snipAddIdx;
+                while (snipBlockStart > 0 && snippet[snipBlockStart - 1] != '\n')
+                    snipBlockStart--;
+            }
+            int snipClose = snippet.LastIndexOf(closeToken, StringComparison.Ordinal);
+            if (snipClose < 0) return null;
+            int snipEnd = snipClose + closeToken.Length;
+            // For blink, include the closing "}"
+            if (hasBlink)
+            {
+                int braceClose = snippet.IndexOf("}", snipEnd, StringComparison.Ordinal);
+                if (braceClose >= 0) snipEnd = braceClose + 1;
+            }
+            string snipBlock = snippet.Substring(snipBlockStart, snipEnd - snipBlockStart);
+
+            // Re-indent snippet block to match existing indentation
+            string[] blockLines = snipBlock.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var sb = new StringBuilder();
+
+            // Insert animation variable lines first
+            foreach (string vl in varLines)
+            {
+                string trimmed = vl.Trim();
+                if (trimmed.Length == 0) continue; // skip blank lines in var section
+                sb.AppendLine(indent + trimmed);
+            }
+
+            // Insert the animated Add block
+            foreach (string bl in blockLines)
+            {
+                string trimmed = bl.Trim();
+                if (trimmed.Length == 0) continue;
+                sb.AppendLine(indent + trimmed);
+            }
+
+            string replacement = sb.ToString().TrimEnd('\r', '\n');
+
+            return existingCode.Substring(0, tgtLineStart)
+                 + replacement + Environment.NewLine
+                 + existingCode.Substring(tgtEnd);
+        }
+
         private static int? ParseInt(string code, string pattern)
         {
             var m = Regex.Match(code, pattern);

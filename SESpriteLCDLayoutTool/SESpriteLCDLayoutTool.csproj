@@ -119,6 +119,7 @@
     <Compile Include="KeyframeEditorDialog.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Models\AnimationEffect.cs" />
     <Compile Include="MultiSpriteTimelineDialog.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -164,11 +165,14 @@
     <Compile Include="Models\WatchExpression.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Services\AnimationMergeEngine.cs" />
     <Compile Include="Services\AnimationPlayer.cs" />
     <Compile Include="Services\AnimationSnippetGenerator.cs" />
     <Compile Include="Services\CodeAutoComplete.cs" />
     <Compile Include="Services\CodeExecutor.cs" />
+    <Compile Include="Services\CodeUndoManager.cs" />
     <Compile Include="Services\MultiAnimationRegistry.cs" />
+    <Compile Include="Services\RoslynAnimationInjector.cs" />
     <Compile Include="Services\SEStubs.cs" />
     <Compile Include="Services\CodePatcher.cs" />
     <Compile Include="Services\KeyframedCodeGenerator.cs" />

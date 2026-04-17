@@ -178,6 +178,7 @@ namespace SESpriteLCDLayoutTool
         // ── Editable code panel ──────────────────────────────────────────────
         private bool  _codeBoxDirty;
         private bool  _suppressCodeBoxEvents;
+        private readonly Services.CodeUndoManager _codeUndo = new Services.CodeUndoManager();
         private bool  _executingCode;  // true while OnExecCodeClick is running — suppresses RefreshCode from OnSelectionChanged
         private Label _lblCodeTitle;
         private Label _lblCodeMode;
@@ -1950,6 +1951,9 @@ namespace SESpriteLCDLayoutTool
                     SyntaxHighlighter.Highlight(_codeBox);
                     _lastHighlightedCode = _codeBox.Text;
                 }
+                // Seed the custom undo stack with the new content
+                _codeUndo.Clear();
+                _codeUndo.Push(_codeBox.Text, 0);
             }
             _suppressCodeBoxEvents = false;
         }
