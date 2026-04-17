@@ -1332,6 +1332,57 @@ namespace SESpriteLCDLayoutTool
                 }
             }
 
+            // If Tier 1 was skipped due to multiple animations but the else block
+            // didn't run (because `if (found)` was already entered), fall through
+            // to Case B/C merge logic here.
+            if (newCode == null)
+            {
+                bool isCompleteProgram = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
+                                      || existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
+
+                if (isCompleteProgram && !string.IsNullOrEmpty(completeCode))
+                {
+                    string snippetTickArr = AnimationSnippetGenerator.ExtractTickArrayName(snippetCode);
+                    bool animationExistsInCode = !string.IsNullOrEmpty(snippetTickArr)
+                        && Regex.IsMatch(existing, @"(?:int\[\]|int\s*\[\s*\])\s+" + Regex.Escape(snippetTickArr) + @"\s*=");
+
+                    System.Diagnostics.Debug.WriteLine($"[MergeAnim] Fallthrough: snippetTickArr={snippetTickArr ?? "null"}, animationExistsInCode={animationExistsInCode}");
+
+                    if (animationExistsInCode)
+                    {
+                        // Case B: update existing animation's array values
+                        string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
+                        if (merged != null)
+                        {
+                            newCode = merged;
+                            SetStatus("✅ Animation arrays updated in existing program");
+                        }
+                    }
+
+                    if (newCode == null)
+                    {
+                        // Case C: inject new animation into program
+                        string merged = AnimationSnippetGenerator.MergeSnippetIntoCompleteProgram(existing, snippetCode, sprite.SpriteName ?? sprite.Text);
+                        if (merged != null)
+                        {
+                            newCode = merged;
+                            SetStatus("✅ New animation merged into existing program");
+                        }
+                        else
+                        {
+                            newCode = existing;
+                            SetStatus("Could not safely merge animation; original code preserved.");
+                        }
+                    }
+                }
+                else
+                {
+                    // Non-program fallback
+                    string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
+                    newCode = merged ?? existing;
+                }
+            }
+
             // SetCodeText handles suppression, highlighting, and dirty-flag reset
             // in one place — avoids the grey-text bug caused by bypassing the
             // TextChanged handler while _suppressCodeBoxEvents is true.
