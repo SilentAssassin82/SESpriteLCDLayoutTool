@@ -109,8 +109,10 @@ namespace SESpriteLCDLayoutTool.Services
                 // so the diagnostic tree sees them as valid member declarations.
                 // When no wrapping is needed we reuse the already-parsed tree (free).
                 const string diagPrefix = "class __D__ {\n";
-                bool isBareScript = source.IndexOf("void Main(", StringComparison.Ordinal) >= 0
-                                 && source.IndexOf("class ", StringComparison.Ordinal) < 0;
+                // Any file-scope code without a class declaration (PB Main, LCD helper methods,
+                // generated templates) needs wrapping so Roslyn doesn't flag member declarations
+                // at file scope as syntax errors.
+                bool isBareScript = source.IndexOf("class ", StringComparison.Ordinal) < 0;
                 SyntaxTree diagTree;
                 int diagOffset;
                 if (isBareScript)
