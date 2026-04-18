@@ -1,3 +1,4 @@
 {
-    "dotnet.preferCSharpExtension": true
+    "dotnet.preferCSharpExtension": true,
+    "geminicodeassist.project": "gen-lang-client-0481576922"
 }
