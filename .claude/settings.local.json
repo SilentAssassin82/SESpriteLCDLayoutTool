@@ -9,7 +9,8 @@
       "Bash(cmd /c \"\\\\\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Enterprise\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\\\\\" \\\\\"C:\\\\Users\\\\chris\\\\source\\\\repos\\\\Torch\\\\Plugins\\\\SESpriteLCDLayoutTool\\\\SESpriteLCDLayoutTool\\\\SESpriteLCDLayoutTool.csproj\\\\\" /p:Configuration=Debug /t:Build /v:minimal\")",
       "Bash(powershell -Command \"& 'C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Enterprise\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe' 'C:\\\\Users\\\\chris\\\\source\\\\repos\\\\Torch\\\\Plugins\\\\SESpriteLCDLayoutTool\\\\SESpriteLCDLayoutTool\\\\SESpriteLCDLayoutTool.csproj' /p:Configuration=Debug /t:Build /v:minimal\")",
       "Bash(powershell -Command \"& 'C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Enterprise\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe' 'C:\\\\Users\\\\chris\\\\source\\\\repos\\\\Torch\\\\Plugins\\\\SESpriteLCDLayoutTool\\\\SESpriteLCDLayoutTool\\\\SESpriteLCDLayoutTool.csproj' /p:Configuration=Debug /t:Build /v:minimal 2>&1\")",
-      "Bash(powershell *)"
+      "Bash(powershell *)",
+      "Bash(dotnet build *)"
     ]
   }
 }

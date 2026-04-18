@@ -101,6 +101,45 @@ namespace SESpriteLCDLayoutTool.Services
                     foreach (SyntaxTrivia trivia in token.TrailingTrivia)
                         ApplyTrivia(rtb, trivia);
                 }
+
+                // ── Wavy red underlines on syntax errors ─────────────────────
+                // SE PB scripts write class members at file scope (no "class Program"
+                // wrapper) — Roslyn Regular mode reports these as syntax errors even
+                // though they're valid PB code.  Wrap bare scripts in a dummy class
+                // so the diagnostic tree sees them as valid member declarations.
+                // When no wrapping is needed we reuse the already-parsed tree (free).
+                const string diagPrefix = "class __D__ {\n";
+                bool isBareScript = source.IndexOf("void Main(", StringComparison.Ordinal) >= 0
+                                 && source.IndexOf("class ", StringComparison.Ordinal) < 0;
+                SyntaxTree diagTree;
+                int diagOffset;
+                if (isBareScript)
+                {
+                    diagTree   = CSharpSyntaxTree.ParseText(diagPrefix + source + "\n}", _parseOptions);
+                    diagOffset = diagPrefix.Length;
+                }
+                else
+                {
+                    diagTree   = tree;   // reuse, zero cost
+                    diagOffset = 0;
+                }
+
+                // Cap at 50 so large broken files don't stall the UI thread.
+                int errCount = 0;
+                foreach (var diag in diagTree.GetDiagnostics())
+                {
+                    if (diag.Severity != DiagnosticSeverity.Error) continue;
+                    if (++errCount > 50) break;
+
+                    var span    = diag.Location.SourceSpan;
+                    int eStart  = span.Start - diagOffset;
+                    int eLen    = Math.Max(1, span.Length);
+                    if (eStart < 0 || eStart >= rtb.TextLength) continue;
+                    eLen = Math.Min(eLen, rtb.TextLength - eStart);
+
+                    rtb.Select(eStart, eLen);
+                    NativeMethods.ApplyWavyUnderline(rtb);
+                }
             }
             finally
             {
@@ -299,6 +338,67 @@ namespace SESpriteLCDLayoutTool.Services
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref CHARFORMAT2 lParam);
+
         internal const int EM_EMPTYUNDOBUFFER = 0x00CD;
+
+        // ── EM_SETCHARFORMAT ─────────────────────────────────────────────────
+        internal const int  EM_SETCHARFORMAT    = 0x0444;
+        internal const int  SCF_SELECTION       = 0x0001;
+
+        internal const uint CFM_UNDERLINE       = 0x00000004;
+        internal const uint CFM_UNDERLINETYPE   = 0x00800000;
+        internal const uint CFM_UNDERLINECOLOR  = 0x00400000;  // RichEdit 3.0+
+        internal const uint CFE_UNDERLINE       = 0x00000004;
+
+        internal const byte CFU_UNDERLINEWAVE   = 0x08;
+        internal const byte CFU_COLOR_RED       = 0x06;        // built-in red index
+
+        // Layout matches Windows SDK CHARFORMAT2W with default packing.
+        [System.Runtime.InteropServices.StructLayout(
+            System.Runtime.InteropServices.LayoutKind.Sequential,
+            Pack = 4, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        internal struct CHARFORMAT2
+        {
+            public uint   cbSize;
+            public uint   dwMask;
+            public uint   dwEffects;
+            public int    yHeight;
+            public int    yOffset;
+            public int    crTextColor;
+            public byte   bCharSet;
+            public byte   bPitchAndFamily;
+            [System.Runtime.InteropServices.MarshalAs(
+                System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 32)]
+            public string szFaceName;
+            public short  wWeight;
+            public short  sSpacing;
+            public int    crBackColor;
+            public uint   lcid;
+            public uint   dwReserved;
+            public short  sStyle;
+            public short  wKerning;
+            public byte   bUnderlineType;
+            public byte   bAnimation;
+            public byte   bRevAuthor;
+            public byte   bUnderlineColor;
+        }
+
+        /// <summary>
+        /// Applies a wavy red underline to the current RichTextBox selection
+        /// using the native RichEdit CHARFORMAT2 structure.  Text colours are
+        /// left untouched so syntax highlighting is preserved.
+        /// </summary>
+        internal static void ApplyWavyUnderline(RichTextBox rtb)
+        {
+            var cf = new CHARFORMAT2();
+            cf.cbSize         = (uint)System.Runtime.InteropServices.Marshal.SizeOf(cf);
+            cf.dwMask         = CFM_UNDERLINE | CFM_UNDERLINETYPE | CFM_UNDERLINECOLOR;
+            cf.dwEffects      = CFE_UNDERLINE;
+            cf.bUnderlineType = CFU_UNDERLINEWAVE;
+            cf.bUnderlineColor = CFU_COLOR_RED;
+            SendMessage(rtb.Handle, EM_SETCHARFORMAT, new IntPtr(SCF_SELECTION), ref cf);
+        }
     }
 }

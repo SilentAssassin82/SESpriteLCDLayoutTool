@@ -270,20 +270,35 @@ namespace SESpriteLCDLayoutTool
         /// <summary>
         /// Determines if a field should be shown based on the "Show internal fields" checkbox.
         /// </summary>
+        // Infrastructure fields injected by the code builder — always hidden regardless of script type.
+        private static readonly System.Collections.Generic.HashSet<string> _infraFields =
+            new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal)
+            {
+                "_echoLog", "_stubSurface", "_methodTimings",
+                "Runtime", "Me", "GridTerminalSystem", "Storage",
+            };
+
         private bool ShouldShowField(string fieldName)
         {
             if (_chkShowInternalFields?.Checked == true)
-                return true; // Show all fields
+                return true;
 
-            // Hide fields starting with _ (private convention: _stubSurface, _timer)
-            if (fieldName.StartsWith("_"))
-                return false;
+            // Always hide compiler-generated fields and injected infrastructure.
+            if (fieldName.StartsWith("<")) return false;
+            if (_infraFields.Contains(fieldName)) return false;
 
-            // Hide compiler-generated fields (e.g., <>f__AnonymousType)
-            if (fieldName.StartsWith("<"))
-                return false;
+            // For mod/plugin scripts, the SE _ prefix is user convention, not infrastructure.
+            // Show those fields so the Variables panel isn't empty for mods.
+            var scriptType = (_animPlayer ?? _lastAnimPlayer)?.ScriptType;
+            bool isMod = scriptType == ScriptType.ModSurface
+                      || scriptType == ScriptType.PulsarPlugin
+                      || scriptType == ScriptType.TorchPlugin;
+            if (isMod) return true;
 
-            return true; // Show user-defined fields
+            // PB / LCD helper: hide _ prefix (tool-injected stubs like _tick, _h2, etc.)
+            if (fieldName.StartsWith("_")) return false;
+
+            return true;
         }
 
         /// <summary>

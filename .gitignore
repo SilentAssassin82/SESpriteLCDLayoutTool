@@ -54,3 +54,5 @@ release/
 ## Duplicate/stale nested copy (build artifact)
 SESpriteLCDLayoutTool/SESpriteLCDLayoutTool/
 /.roslyn-mcp/memory.db
+/.claude/settings.local.json
+/.claude/settings.local.json

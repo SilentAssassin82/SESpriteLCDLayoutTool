@@ -1191,12 +1191,18 @@ namespace SESpriteLCDLayoutTool
 
             string existing = _codeBox.Text;
 
+            // A method-body snippet from CodeGenerator.Generate() is NOT a complete program.
+            // Roslyn would place fields at file scope and miss Main() for tick insertion.
+            // Only use Roslyn injection when the existing code is a complete PB program.
+            bool existingIsComplete = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
+                                   || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0;
+
             // Pass all sprites so ordinal matching works for duplicates
             var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
 
-            // Try Roslyn injection
+            // Try Roslyn injection (only for complete programs)
             var injResult = RoslynAnimationInjector.InjectAnimations(existing, allSprites);
-            if (injResult.Success && injResult.Code != existing)
+            if (injResult.Success && injResult.Code != existing && existingIsComplete)
             {
                 SetCodeText(injResult.Code);
                 _codeBoxDirty = true;
@@ -1513,12 +1519,13 @@ namespace SESpriteLCDLayoutTool
                 {
                     // No existing keyframe content detected at all:
                     // try smart merge first for hand-written compatible snippets,
-                    // then append (or full program if panel is empty).
+                    // then use completeCode when panel is empty or holds only a
+                    // generated method-body snippet (not a complete PB program).
                     string merged = AnimationSnippetGenerator.MergeKeyframedIntoCode(existing, snippetCode);
                     if (merged != null)
                         newCode = merged;
                     else
-                        newCode = string.IsNullOrWhiteSpace(existing)
+                        newCode = (string.IsNullOrWhiteSpace(existing) || !existingIsComplete)
                             ? completeCode
                             : existing.TrimEnd() + Environment.NewLine + Environment.NewLine + snippetCode.TrimStart();
                 }
@@ -1995,9 +2002,12 @@ namespace SESpriteLCDLayoutTool
                 // Pass all sprites so ordinal matching works for duplicates
                 var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
 
-                // If the code panel is empty, generate a complete program first
+                // Roslyn needs a complete PB program. If the panel is empty or only
+                // holds a generated method-body snippet, build the complete program first.
+                bool simpleExistingIsComplete = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
+                                            || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0;
                 string codeToInject = existing;
-                if (string.IsNullOrWhiteSpace(existing))
+                if (string.IsNullOrWhiteSpace(existing) || !simpleExistingIsComplete)
                 {
                     codeToInject = AnimationSnippetGenerator.GenerateSimpleComplete(sprite, animType, p);
                 }
@@ -2013,8 +2023,8 @@ namespace SESpriteLCDLayoutTool
                 }
                 else
                 {
-                    // Fallback: use the old snippet-based complete program for empty panels
-                    if (string.IsNullOrWhiteSpace(existing))
+                    // Fallback: generate complete standalone program
+                    if (string.IsNullOrWhiteSpace(existing) || !simpleExistingIsComplete)
                     {
                         newCode = AnimationSnippetGenerator.GenerateSimpleComplete(sprite, animType, p);
                         SetStatus("Animation applied (standalone program)");

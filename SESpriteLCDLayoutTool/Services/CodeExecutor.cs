@@ -85,10 +85,11 @@ namespace SESpriteLCDLayoutTool.Services
 
         // Matches void methods with no params whose name indicates a state-update
         // method: Advance, Update, Tick, Simulate, Step, etc.
+        // Also matches MySessionComponentBase overrides (UpdateAfterSimulation, UpdateBeforeSimulation).
         // Excludes OnTick/OnUpdate/OnStep — these are timer/event wrappers that
         // typically call the direct methods, causing double-advance if both match.
         private static readonly Regex _rxStateUpdateMethod = new Regex(
-            @"(?:private|public|internal|protected)?\s*(?:static\s+)?void\s+(Advance|Update|Tick|Simulate|Step|DoUpdate|ProcessTick)\s*\(\s*\)",
+            @"(?:private|public|internal|protected)?\s*(?:static\s+|override\s+|virtual\s+)?void\s+(Advance|Update|Tick|Simulate|Step|DoUpdate|ProcessTick|UpdateAfterSimulation|UpdateBeforeSimulation)\s*\(\s*\)",
             RegexOptions.Compiled);
 
         // Matches methods that RETURN List<MySprite> — these are orchestrators
@@ -1769,6 +1770,20 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.AppendLine("        public virtual void Save() { }");
                 sb.AppendLine();
             }
+            else
+            {
+                // Inject observable stub fields so the Variables panel and sparklines
+                // have numeric data even when the user's bare mod script has no class-level fields.
+                sb.AppendLine("        public int _tick = 0;");
+                sb.AppendLine("        public float _h2 = 0.5f;");
+                sb.AppendLine("        public float _o2 = 0.8f;");
+                sb.AppendLine("        public float _power = 0.75f;");
+                sb.AppendLine("        public bool _alert = false;");
+                sb.AppendLine("        public string _status = \"ONLINE\";");
+                sb.AppendLine("        public float _cargo = 0.5f;");
+                sb.AppendLine("        public int _count = 0;");
+                sb.AppendLine();
+            }
 
             sb.AppendLine(stripped);
             sb.AppendLine();
@@ -1798,6 +1813,8 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("            _echoLog.Clear();");
             sb.AppendLine("            _methodTimings.Clear();");
             sb.AppendLine("            SpriteCollector.Reset();");
+            if (!hadClassWrapper)
+                sb.AppendLine("            _tick = tick;");
             // Call state-update methods (Advance, Update, Tick, etc.) before rendering
             if (stateUpdateCalls != null)
             {
