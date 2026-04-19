@@ -311,6 +311,8 @@ namespace SESpriteLCDLayoutTool
         {
             BeginInvoke((Action)(() =>
             {
+                string priorSource = _layout?.OriginalSourceCode ?? _codeBox?.Text;
+
                 // Normalise line endings to \r\n so OriginalSourceCode, SourceStart/
                 // SourceEnd offsets, and _codeBox.Text are always in sync.  VS Code
                 // and other editors may save with bare \n which creates mismatches.
@@ -399,6 +401,9 @@ namespace SESpriteLCDLayoutTool
                 // baselines equal current values (nothing has been modified yet).
                 SetCodeText(frame);
                 RefreshDetectedCalls();
+
+                if (!string.IsNullOrEmpty(priorSource) && !string.Equals(priorSource, frame, StringComparison.Ordinal))
+                    ShowPatchDiff(priorSource, frame);
 
                 // Don't overwrite _lastLiveFrame here - preserve the snapshot!
                 // _lastLiveFrame is only updated when "Capture Snapshot" button is clicked
@@ -796,7 +801,7 @@ namespace SESpriteLCDLayoutTool
 
                             // Transfer SourceMethodName from executed sprite to layout sprite
                             // so navigation continues to work after Execute to Isolate
-                            if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                            if (!string.IsNullOrEmpty(execSp.SourceMethodName) &&
                                 string.IsNullOrEmpty(layoutSp.SourceMethodName))
                             {
                                 layoutSp.SourceMethodName = execSp.SourceMethodName;
@@ -825,7 +830,7 @@ namespace SESpriteLCDLayoutTool
                             _isolatedCallSprites.Add(layoutSp);
 
                             // Transfer SourceMethodName from executed sprite to layout sprite
-                            if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                            if (!string.IsNullOrEmpty(execSp.SourceMethodName) &&
                                 string.IsNullOrEmpty(layoutSp.SourceMethodName))
                             {
                                 layoutSp.SourceMethodName = execSp.SourceMethodName;
@@ -1051,7 +1056,7 @@ namespace SESpriteLCDLayoutTool
                                 _isolatedCallSprites.Add(layoutSp);
 
                                 // Transfer SourceMethodName from executed sprite to layout sprite
-                                if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                                if (!string.IsNullOrEmpty(execSp.SourceMethodName) &&
                                     string.IsNullOrEmpty(layoutSp.SourceMethodName))
                                 {
                                     layoutSp.SourceMethodName = execSp.SourceMethodName;
@@ -1159,7 +1164,7 @@ namespace SESpriteLCDLayoutTool
                                     _isolatedCallSprites.Add(layoutSp);
 
                                     // Transfer SourceMethodName from executed sprite to layout sprite
-                                    if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                                    if (!string.IsNullOrEmpty(execSp.SourceMethodName) &&
                                         string.IsNullOrEmpty(layoutSp.SourceMethodName))
                                     {
                                         layoutSp.SourceMethodName = execSp.SourceMethodName;
@@ -1229,7 +1234,7 @@ namespace SESpriteLCDLayoutTool
                                     _isolatedCallSprites.Add(sp);
 
                                     // Transfer source tracking from executed sprite to layout sprite
-                                    if (!string.IsNullOrEmpty(execSp.SourceMethodName) && 
+                                    if (!string.IsNullOrEmpty(execSp.SourceMethodName) &&
                                         string.IsNullOrEmpty(sp.SourceMethodName))
                                     {
                                         sp.SourceMethodName = execSp.SourceMethodName;
@@ -1346,8 +1351,8 @@ namespace SESpriteLCDLayoutTool
                         // Priority 1: Specific render methods (RenderOscilloscope, RenderTitle, etc.)
                         foreach (var method in methodList)
                         {
-                            if (method.StartsWith("Render", StringComparison.Ordinal) && 
-                                method.Length > 6 && 
+                            if (method.StartsWith("Render", StringComparison.Ordinal) &&
+                                method.Length > 6 &&
                                 method != "Render")
                             {
                                 chosen = method;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Windows.Forms;
 using SESpriteLCDLayoutTool.Controls;
@@ -25,7 +26,14 @@ namespace SESpriteLCDLayoutTool
         // ── Controls ────────────────────────────────────────────────────────────
         private MultiSpriteTimeline _timeline;
         private Panel       _propsPanel;
+        private Panel       _previewPanel;
         private Label       _lblSpriteHeader;
+        private Label       _lblPreviewInfo;
+        private CheckBox    _chkShowContext;
+        private CheckBox    _chkShowPath;
+        private CheckBox    _chkShowGhosts;
+        private CheckBox    _chkFocusSelected;
+        private ComboBox    _cmbFocusDim;
         private Label       _lblStatus;
         private Timer       _playTimer;
         private Button      _btnPlay;
@@ -33,6 +41,7 @@ namespace SESpriteLCDLayoutTool
         private TrackBar    _speedBar;
         private Label       _lblSpeed;
         private bool        _isPlaying;
+        private int         _selectedSpriteIdx = -1;
 
         // ── Callbacks to main form ───────────────────────────────────────────────
 
@@ -117,7 +126,120 @@ namespace SESpriteLCDLayoutTool
             timelineContainer.Controls.Add(timelineScroll);
             timelineContainer.Controls.Add(timelineBar);
 
-            // ── Properties panel (right side) ──
+            // ── Preview + properties (right side) ──
+            _previewPanel = new DoubleBufferedPanel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Black,
+            };
+            _previewPanel.Paint += OnPreviewPaint;
+
+            _lblPreviewInfo = new Label
+            {
+                Dock = DockStyle.Bottom,
+                Height = 20,
+                BackColor = Color.FromArgb(20, 20, 24),
+                ForeColor = Color.FromArgb(130, 150, 170),
+                Font = new Font("Consolas", 7.5f),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Text = "Preview idle",
+            };
+
+            var previewHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 20,
+                BackColor = Color.FromArgb(28, 30, 38),
+            };
+
+            var lblPreviewTitle = new Label
+            {
+                Dock = DockStyle.Left,
+                Width = 70,
+                Text = "   Preview",
+                ForeColor = Color.FromArgb(130, 160, 200),
+                Font = new Font("Segoe UI", 8f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft,
+            };
+
+            _chkShowContext = new CheckBox
+            {
+                Dock = DockStyle.Right,
+                Width = 72,
+                Text = "Context",
+                Checked = true,
+                ForeColor = Color.FromArgb(185, 200, 215),
+                Font = new Font("Segoe UI", 7.5f),
+                FlatStyle = FlatStyle.Flat,
+            };
+            _chkShowContext.FlatAppearance.BorderSize = 0;
+
+            _chkShowPath = new CheckBox
+            {
+                Dock = DockStyle.Right,
+                Width = 54,
+                Text = "Path",
+                Checked = true,
+                ForeColor = Color.FromArgb(185, 200, 215),
+                Font = new Font("Segoe UI", 7.5f),
+                FlatStyle = FlatStyle.Flat,
+            };
+            _chkShowPath.FlatAppearance.BorderSize = 0;
+
+            _chkShowGhosts = new CheckBox
+            {
+                Dock = DockStyle.Right,
+                Width = 62,
+                Text = "Ghosts",
+                Checked = true,
+                ForeColor = Color.FromArgb(185, 200, 215),
+                Font = new Font("Segoe UI", 7.5f),
+                FlatStyle = FlatStyle.Flat,
+            };
+            _chkShowGhosts.FlatAppearance.BorderSize = 0;
+
+            _chkFocusSelected = new CheckBox
+            {
+                Dock = DockStyle.Right,
+                Width = 56,
+                Text = "Focus",
+                Checked = true,
+                ForeColor = Color.FromArgb(185, 200, 215),
+                Font = new Font("Segoe UI", 7.5f),
+                FlatStyle = FlatStyle.Flat,
+            };
+            _chkFocusSelected.FlatAppearance.BorderSize = 0;
+
+            _cmbFocusDim = new ComboBox
+            {
+                Dock = DockStyle.Right,
+                Width = 58,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(40, 42, 48),
+                ForeColor = Color.FromArgb(220, 220, 220),
+                Font = new Font("Segoe UI", 7.5f),
+            };
+            _cmbFocusDim.Items.AddRange(new object[] { "20%", "35%", "50%" });
+            _cmbFocusDim.SelectedIndex = 1;
+
+            _chkShowContext.CheckedChanged += (s, e) => InvalidatePreview();
+            _chkShowPath.CheckedChanged += (s, e) => InvalidatePreview();
+            _chkShowGhosts.CheckedChanged += (s, e) => InvalidatePreview();
+            _chkFocusSelected.CheckedChanged += (s, e) => InvalidatePreview();
+            _cmbFocusDim.SelectedIndexChanged += (s, e) => InvalidatePreview();
+
+            previewHeader.Controls.Add(_chkShowContext);
+            previewHeader.Controls.Add(_chkShowPath);
+            previewHeader.Controls.Add(_chkShowGhosts);
+            previewHeader.Controls.Add(_cmbFocusDim);
+            previewHeader.Controls.Add(_chkFocusSelected);
+            previewHeader.Controls.Add(lblPreviewTitle);
+
+            var previewContainer = new Panel { Dock = DockStyle.Fill };
+            previewContainer.Controls.Add(_previewPanel);
+            previewContainer.Controls.Add(_lblPreviewInfo);
+            previewContainer.Controls.Add(previewHeader);
+
             _lblSpriteHeader = new Label
             {
                 Dock      = DockStyle.Top,
@@ -137,15 +259,18 @@ namespace SESpriteLCDLayoutTool
                 Padding    = new Padding(6),
             };
 
-            var rightPanel = new Panel
+            var rightSplit = new SplitContainer
             {
-                Dock  = DockStyle.Right,
-                Width = 280,
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                BackColor = Color.FromArgb(24, 24, 28),
+                SplitterWidth = 3,
             };
-            rightPanel.Controls.Add(_propsPanel);
-            rightPanel.Controls.Add(_lblSpriteHeader);
+            rightSplit.Panel1.Controls.Add(previewContainer);
+            rightSplit.Panel2.Controls.Add(_propsPanel);
+            rightSplit.Panel2.Controls.Add(_lblSpriteHeader);
 
-            // ── Split: left timeline | right props ──
+            // ── Split: left timeline | right preview+props ──
             var split = new SplitContainer
             {
                 Dock         = DockStyle.Fill,
@@ -154,8 +279,7 @@ namespace SESpriteLCDLayoutTool
                 BackColor    = Color.FromArgb(24, 24, 28),
             };
             split.Panel1.Controls.Add(timelineContainer);
-            split.Panel2.Controls.Add(_propsPanel);
-            split.Panel2.Controls.Add(_lblSpriteHeader);
+            split.Panel2.Controls.Add(rightSplit);
 
             Controls.Add(split);
             Controls.Add(bottomBar);
@@ -163,7 +287,12 @@ namespace SESpriteLCDLayoutTool
 
             Load += (s, e) =>
             {
-                try { split.SplitterDistance = Math.Max(300, (int)(Width * 0.72)); } catch { }
+                try
+                {
+                    split.SplitterDistance = Math.Max(300, (int)(Width * 0.70));
+                    rightSplit.SplitterDistance = Math.Max(180, (int)(rightSplit.Height * 0.62));
+                }
+                catch { }
             };
 
             _playTimer = new Timer { Interval = 33 };
@@ -308,6 +437,7 @@ namespace SESpriteLCDLayoutTool
         {
             _timeline.SetSprites(_animatedSprites);
             _timeline.ZoomToFit();
+            InvalidatePreview();
 
             if (_animatedSprites.Count == 0)
             {
@@ -327,19 +457,23 @@ namespace SESpriteLCDLayoutTool
         private void OnTimelineSpriteSelected(int idx)
         {
             if (idx < 0 || idx >= _animatedSprites.Count) return;
+            _selectedSpriteIdx = idx;
             var sprite = _animatedSprites[idx];
             _lblSpriteHeader.Text = $"   {sprite.DisplayName}  —  {sprite.KeyframeAnimation?.Keyframes?.Count ?? 0} keyframes";
             ShowSpriteKeyframeList(idx);
+            InvalidatePreview();
         }
 
         private void OnTimelineKeyframeSelected(int spriteIdx, int kfIdx)
         {
             if (spriteIdx < 0 || spriteIdx >= _animatedSprites.Count) return;
             ShowKeyframeProperties(spriteIdx, kfIdx);
+            InvalidatePreview();
         }
 
         private void OnTimelineKeyframeMoved(int spriteIdx, int kfIdx, int newTick)
         {
+            InvalidatePreview();
             SetStatus($"Keyframe moved to tick {newTick}");
         }
 
@@ -372,6 +506,7 @@ namespace SESpriteLCDLayoutTool
 
             kfs.Add(newKf);
             _timeline.RefreshDisplay();
+            InvalidatePreview();
             SetStatus($"Added keyframe at tick {tick} for '{_animatedSprites[spriteIdx].DisplayName}'");
             ShowSpriteKeyframeList(spriteIdx);
         }
@@ -379,6 +514,7 @@ namespace SESpriteLCDLayoutTool
         private void OnPlayheadChanged(int tick)
         {
             _lblTick.Text = $"Tick: {tick}";
+            InvalidatePreview();
             PlayheadTick?.Invoke(tick);
         }
 
@@ -408,6 +544,7 @@ namespace SESpriteLCDLayoutTool
             kfs.RemoveAt(ki);
             _timeline.SelectSprite(si, -1);
             _timeline.RefreshDisplay();
+            InvalidatePreview();
             ShowSpriteKeyframeList(si);
             SetStatus("Keyframe removed");
         }
@@ -443,6 +580,7 @@ namespace SESpriteLCDLayoutTool
             _btnPlay.BackColor = Color.FromArgb(20, 100, 40);
             _timeline.Playhead = 0;
             _lblTick.Text      = "Tick: 0";
+            InvalidatePreview();
             PlayheadTick?.Invoke(0);
             SetStatus("Stopped");
         }
@@ -460,6 +598,7 @@ namespace SESpriteLCDLayoutTool
             int next = (_timeline.Playhead + 1) % maxTick;
             _timeline.Playhead = next;
             _lblTick.Text      = $"Tick: {next}";
+            InvalidatePreview();
             PlayheadTick?.Invoke(next);
         }
 
@@ -537,6 +676,7 @@ namespace SESpriteLCDLayoutTool
                     int kfIdx = kfs.IndexOf(sorted[li]);
                     _timeline.SelectSprite(spriteIdx, kfIdx);
                     ShowKeyframeProperties(spriteIdx, kfIdx);
+                    InvalidatePreview();
                 }
             };
 
@@ -574,7 +714,7 @@ namespace SESpriteLCDLayoutTool
                 var l = new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.FromArgb(190, 190, 200), Font = new Font("Segoe UI", 8f) };
                 decimal safe = (decimal)Math.Max((float)min, Math.Min((float)max, val));
                 var n = new NumericUpDown { Dock = DockStyle.Fill, Minimum = min, Maximum = max, DecimalPlaces = dps, Increment = inc, Value = safe, BackColor = Color.FromArgb(40, 42, 48), ForeColor = Color.FromArgb(220, 220, 220) };
-                n.ValueChanged += (s, e) => { set((float)n.Value); _timeline.RefreshDisplay(); };
+                n.ValueChanged += (s, e) => { set((float)n.Value); _timeline.RefreshDisplay(); InvalidatePreview(); };
                 tbl.RowCount = row + 1;
                 tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
                 tbl.Controls.Add(l, 0, row);
@@ -586,7 +726,7 @@ namespace SESpriteLCDLayoutTool
             {
                 var l = new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.FromArgb(190, 190, 200), Font = new Font("Segoe UI", 8f) };
                 var n = new NumericUpDown { Dock = DockStyle.Fill, Minimum = min, Maximum = max, Value = Math.Max(min, Math.Min(max, val)), BackColor = Color.FromArgb(40, 42, 48), ForeColor = Color.FromArgb(220, 220, 220) };
-                n.ValueChanged += (s, e) => { set((int)n.Value); _timeline.RefreshDisplay(); };
+                n.ValueChanged += (s, e) => { set((int)n.Value); _timeline.RefreshDisplay(); InvalidatePreview(); };
                 tbl.RowCount = row + 1;
                 tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
                 tbl.Controls.Add(l, 0, row);
@@ -600,7 +740,7 @@ namespace SESpriteLCDLayoutTool
                 var c = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(40, 42, 48), ForeColor = Color.FromArgb(220, 220, 220) };
                 c.Items.AddRange(items);
                 if (sel >= 0 && sel < items.Length) c.SelectedIndex = sel;
-                c.SelectedIndexChanged += (s, e) => { set(c.SelectedIndex); _timeline.RefreshDisplay(); };
+                c.SelectedIndexChanged += (s, e) => { set(c.SelectedIndex); _timeline.RefreshDisplay(); InvalidatePreview(); };
                 tbl.RowCount = row + 1;
                 tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
                 tbl.Controls.Add(l, 0, row);
@@ -628,6 +768,392 @@ namespace SESpriteLCDLayoutTool
 
             _propsPanel.Controls.Add(tbl);
             tbl.BringToFront();
+        }
+
+        // ── Embedded preview ───────────────────────────────────────────────────
+
+        private sealed class DoubleBufferedPanel : Panel
+        {
+            public DoubleBufferedPanel()
+            {
+                DoubleBuffered = true;
+                SetStyle(ControlStyles.AllPaintingInWmPaint
+                       | ControlStyles.OptimizedDoubleBuffer
+                       | ControlStyles.UserPaint, true);
+            }
+        }
+
+        private void InvalidatePreview()
+        {
+            if (_previewPanel == null) return;
+            UpdatePreviewInfo();
+            _previewPanel.Invalidate();
+        }
+
+        private void UpdatePreviewInfo()
+        {
+            if (_lblPreviewInfo == null) return;
+
+            if (_animatedSprites.Count == 0)
+            {
+                _lblPreviewInfo.Text = "No animated sprites to preview";
+                return;
+            }
+
+            int tick = _timeline?.Playhead ?? 0;
+            int previewCount = (_chkShowContext != null && _chkShowContext.Checked) ? _allSprites.Count : _animatedSprites.Count;
+            if (_selectedSpriteIdx >= 0 && _selectedSpriteIdx < _animatedSprites.Count)
+            {
+                var sprite = _animatedSprites[_selectedSpriteIdx];
+                var state = InterpolateSpriteAtTick(sprite, tick);
+                float x = state.X ?? sprite.X;
+                float y = state.Y ?? sprite.Y;
+                float w = state.Width ?? sprite.Width;
+                float h = state.Height ?? sprite.Height;
+                _lblPreviewInfo.Text = $"T={tick}  Selected={sprite.DisplayName}  Pos({x:F0},{y:F0})  Size({w:F0},{h:F0})  View={previewCount}";
+                return;
+            }
+
+            _lblPreviewInfo.Text = $"T={tick}  Previewing {previewCount} sprite(s)";
+        }
+
+        private void OnPreviewPaint(object sender, PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.FromArgb(10, 10, 14));
+
+            float panelW = _previewPanel.Width;
+            float panelH = _previewPanel.Height;
+            if (panelW <= 0 || panelH <= 0) return;
+
+            float surfaceW = 512f;
+            float surfaceH = 512f;
+            float scale = Math.Min(panelW / surfaceW, panelH / surfaceH) * 0.9f;
+            float offsetX = (panelW - surfaceW * scale) / 2f;
+            float offsetY = (panelH - surfaceH * scale) / 2f;
+
+            using (var surfaceBrush = new SolidBrush(Color.FromArgb(20, 25, 35)))
+                g.FillRectangle(surfaceBrush, offsetX, offsetY, surfaceW * scale, surfaceH * scale);
+            using (var borderPen = new Pen(Color.FromArgb(50, 55, 65), 1f))
+                g.DrawRectangle(borderPen, offsetX, offsetY, surfaceW * scale, surfaceH * scale);
+
+            if (_allSprites.Count == 0) return;
+
+            int tick = _timeline?.Playhead ?? 0;
+            var selectedAnimated = (_selectedSpriteIdx >= 0 && _selectedSpriteIdx < _animatedSprites.Count)
+                ? _animatedSprites[_selectedSpriteIdx]
+                : null;
+
+            var previewSprites = (_chkShowContext != null && _chkShowContext.Checked)
+                ? _allSprites
+                : _animatedSprites;
+
+            for (int i = 0; i < previewSprites.Count; i++)
+            {
+                var sprite = previewSprites[i];
+                bool isSelected = selectedAnimated != null && ReferenceEquals(sprite, selectedAnimated);
+                bool dimOthers = selectedAnimated != null && _chkFocusSelected != null && _chkFocusSelected.Checked;
+                var state = sprite.KeyframeAnimation != null
+                    ? InterpolateSpriteAtTick(sprite, tick)
+                    : Keyframe.FromSprite(sprite, tick);
+
+                float x = state.X ?? sprite.X;
+                float y = state.Y ?? sprite.Y;
+                float w = state.Width ?? sprite.Width;
+                float h = state.Height ?? sprite.Height;
+                int r = state.ColorR ?? sprite.ColorR;
+                int gr = state.ColorG ?? sprite.ColorG;
+                int b = state.ColorB ?? sprite.ColorB;
+                int a = state.ColorA ?? sprite.ColorA;
+                float rotation = state.Rotation ?? sprite.Rotation;
+                float textScale = state.Scale ?? sprite.Scale;
+
+                Color spriteColor = Color.FromArgb(
+                    Math.Max(0, Math.Min(255, a)),
+                    Math.Max(0, Math.Min(255, r)),
+                    Math.Max(0, Math.Min(255, gr)),
+                    Math.Max(0, Math.Min(255, b)));
+
+                if (dimOthers && !isSelected)
+                {
+                    int dimPercent = GetFocusDimPercent();
+                    float keep = (100f - dimPercent) / 100f;
+                    int fadedA = Math.Max(20, (int)(spriteColor.A * keep));
+                    spriteColor = Color.FromArgb(fadedA, spriteColor.R, spriteColor.G, spriteColor.B);
+                }
+
+                float sx = offsetX + x * scale;
+                float sy = offsetY + y * scale;
+                float sw = w * scale;
+                float sh = h * scale;
+
+                if (sprite.Type == SpriteEntryType.Text)
+                {
+                    using (var brush = new SolidBrush(spriteColor))
+                    using (var font = new Font("Segoe UI", Math.Max(6, textScale * 12 * scale)))
+                    {
+                        g.DrawString(sprite.Text ?? "Text", font, brush, sx, sy);
+                    }
+                }
+                else
+                {
+                    var saved = g.Save();
+                    g.TranslateTransform(sx, sy);
+                    if (Math.Abs(rotation) > 0.001f)
+                        g.RotateTransform(rotation * 180f / (float)Math.PI);
+
+                    var rect = new RectangleF(-sw / 2f, -sh / 2f, sw, sh);
+                    DrawPreviewSprite(g, rect, sprite.SpriteName, spriteColor);
+
+                    if (isSelected)
+                    {
+                        using (var pen = new Pen(Color.FromArgb(220, 255, 230, 120), 2f))
+                            g.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+                    }
+
+                    g.Restore(saved);
+                }
+            }
+
+            if (selectedAnimated?.KeyframeAnimation?.Keyframes != null && selectedAnimated.KeyframeAnimation.Keyframes.Count > 0)
+            {
+                DrawSelectedMotionOverlay(g, selectedAnimated, offsetX, offsetY, scale);
+            }
+        }
+
+        private void DrawSelectedMotionOverlay(Graphics g, SpriteEntry sprite, float offsetX, float offsetY, float scale)
+        {
+            var keyframes = sprite.KeyframeAnimation?.Keyframes;
+            if (keyframes == null || keyframes.Count == 0) return;
+
+            bool drawGhosts = _chkShowGhosts != null && _chkShowGhosts.Checked;
+            bool drawPath = _chkShowPath != null && _chkShowPath.Checked;
+
+            var sorted = keyframes.OrderBy(k => k.Tick).ToList();
+
+            if (drawGhosts)
+            {
+                using (var ghostPen = new Pen(Color.FromArgb(140, 130, 200, 255), 1.2f))
+                {
+                    ghostPen.DashStyle = DashStyle.Dot;
+                    foreach (var kf in sorted)
+                    {
+                        float gx = offsetX + (kf.X ?? sprite.X) * scale;
+                        float gy = offsetY + (kf.Y ?? sprite.Y) * scale;
+                        g.DrawEllipse(ghostPen, gx - 4, gy - 4, 8, 8);
+                    }
+                }
+            }
+
+            if (drawPath && sorted.Count >= 2)
+            {
+                int maxTick = sorted[sorted.Count - 1].Tick;
+                if (maxTick > 0)
+                {
+                    var points = new List<PointF>();
+                    int step = Math.Max(1, maxTick / 120);
+                    for (int t = 0; t <= maxTick; t += step)
+                    {
+                        var interp = InterpolateSpriteAtTick(sprite, t);
+                        points.Add(new PointF(
+                            offsetX + (interp.X ?? sprite.X) * scale,
+                            offsetY + (interp.Y ?? sprite.Y) * scale));
+                    }
+
+                    if (points.Count >= 2)
+                    {
+                        using (var pathPen = new Pen(Color.FromArgb(120, 100, 200, 255), 1.2f))
+                        {
+                            pathPen.DashStyle = DashStyle.Dash;
+                            g.DrawLines(pathPen, points.ToArray());
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void DrawPreviewSprite(Graphics g, RectangleF r, string spriteName, Color color)
+        {
+            using (var brush = new SolidBrush(color))
+            {
+                string key = (spriteName ?? string.Empty).ToLowerInvariant();
+                switch (key)
+                {
+                    case "circle":
+                        g.FillEllipse(brush, r);
+                        break;
+
+                    case "semicircle":
+                        g.FillPie(brush, r.X, r.Y, r.Width, r.Height, 180f, 180f);
+                        break;
+
+                    case "triangle":
+                        g.FillPolygon(brush, new[]
+                        {
+                            new PointF(0f, r.Top),
+                            new PointF(r.Right, r.Bottom),
+                            new PointF(r.Left, r.Bottom),
+                        });
+                        break;
+
+                    case "righttriangle":
+                        g.FillPolygon(brush, new[]
+                        {
+                            new PointF(r.Left, r.Top),
+                            new PointF(r.Right, r.Bottom),
+                            new PointF(r.Left, r.Bottom),
+                        });
+                        break;
+
+                    case "dot":
+                        float d = Math.Min(r.Width, r.Height) * 0.45f;
+                        g.FillEllipse(brush, -d / 2f, -d / 2f, d, d);
+                        break;
+
+                    case "squaresimple":
+                        g.FillRectangle(brush, r);
+                        break;
+
+                    default:
+                        g.FillRectangle(brush, r);
+                        if (r.Width > 18 && r.Height > 12)
+                        {
+                            int lum = (color.R * 299 + color.G * 587 + color.B * 114) / 1000;
+                            var textColor = lum > 128
+                                ? Color.FromArgb(200, 0, 0, 0)
+                                : Color.FromArgb(200, 255, 255, 255);
+                            float fs = Math.Max(7f, Math.Min(r.Width * 0.14f, 12f));
+                            using (var lFont = new Font("Segoe UI", fs, FontStyle.Bold, GraphicsUnit.Pixel))
+                            using (var lb = new SolidBrush(textColor))
+                            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                                g.DrawString(spriteName ?? string.Empty, lFont, lb, r, sf);
+                        }
+                        break;
+                }
+            }
+        }
+
+        private int GetFocusDimPercent()
+        {
+            if (_cmbFocusDim == null || _cmbFocusDim.SelectedItem == null)
+                return 35;
+
+            string text = _cmbFocusDim.SelectedItem.ToString();
+            if (string.IsNullOrEmpty(text)) return 35;
+            text = text.Replace("%", "").Trim();
+            if (int.TryParse(text, out int value))
+                return Math.Max(0, Math.Min(90, value));
+            return 35;
+        }
+
+        private static Keyframe CloneKeyframe(Keyframe src)
+        {
+            if (src == null) return null;
+            return new Keyframe
+            {
+                Tick = src.Tick,
+                X = src.X,
+                Y = src.Y,
+                Width = src.Width,
+                Height = src.Height,
+                ColorR = src.ColorR,
+                ColorG = src.ColorG,
+                ColorB = src.ColorB,
+                ColorA = src.ColorA,
+                Rotation = src.Rotation,
+                Scale = src.Scale,
+                EasingToNext = src.EasingToNext,
+            };
+        }
+
+        private static float Lerp(float a, float b, float t) => a + (b - a) * t;
+        private static int LerpInt(int a, int b, float t) => (int)Math.Round(a + (b - a) * t);
+
+        private static float ApplyEasing(float t, EasingType easing)
+        {
+            switch (easing)
+            {
+                case EasingType.Linear: return t;
+                case EasingType.SineInOut: return (float)(0.5 - 0.5 * Math.Cos(t * Math.PI));
+                case EasingType.EaseIn: return t * t;
+                case EasingType.EaseOut: return 1f - (1f - t) * (1f - t);
+                case EasingType.EaseInOut:
+                    return t < 0.5f ? 2f * t * t : 1f - 2f * (1f - t) * (1f - t);
+                case EasingType.Bounce:
+                    if (t < 1f / 2.75f) return 7.5625f * t * t;
+                    if (t < 2f / 2.75f) { t -= 1.5f / 2.75f; return 7.5625f * t * t + 0.75f; }
+                    if (t < 2.5f / 2.75f) { t -= 2.25f / 2.75f; return 7.5625f * t * t + 0.9375f; }
+                    t -= 2.625f / 2.75f; return 7.5625f * t * t + 0.984375f;
+                case EasingType.Elastic:
+                    if (t == 0f || t == 1f) return t;
+                    return (float)(Math.Pow(2, -10 * t) * Math.Sin((t - 0.075f) * (2 * Math.PI) / 0.3f) + 1);
+                default:
+                    return t;
+            }
+        }
+
+        private static Keyframe InterpolateSpriteAtTick(SpriteEntry sprite, int tick)
+        {
+            if (sprite?.KeyframeAnimation?.Keyframes == null || sprite.KeyframeAnimation.Keyframes.Count == 0)
+                return sprite == null ? null : Keyframe.FromSprite(sprite, tick);
+
+            var animation = sprite.KeyframeAnimation;
+            var sorted = animation.Keyframes.OrderBy(k => k.Tick).ToList();
+            int maxTick = sorted.Count > 0 ? sorted[sorted.Count - 1].Tick : 1;
+            int effectiveTick = tick;
+
+            if (maxTick > 0)
+            {
+                switch (animation.Loop)
+                {
+                    case LoopMode.Loop:
+                        effectiveTick = tick % maxTick;
+                        break;
+                    case LoopMode.PingPong:
+                        int raw = tick % (maxTick * 2);
+                        effectiveTick = raw < maxTick ? raw : maxTick * 2 - raw;
+                        break;
+                    case LoopMode.Once:
+                        effectiveTick = Math.Min(tick, maxTick);
+                        break;
+                }
+            }
+
+            if (effectiveTick <= sorted[0].Tick)
+                return CloneKeyframe(sorted[0]);
+
+            if (effectiveTick >= sorted[sorted.Count - 1].Tick)
+                return CloneKeyframe(sorted[sorted.Count - 1]);
+
+            int segIdx = 0;
+            for (int i = 1; i < sorted.Count; i++)
+            {
+                if (effectiveTick >= sorted[i].Tick) segIdx = i;
+            }
+
+            var a = sorted[segIdx];
+            var b = segIdx + 1 < sorted.Count ? sorted[segIdx + 1] : a;
+
+            float span = b.Tick - a.Tick;
+            float frac = span > 0 ? (effectiveTick - a.Tick) / span : 0f;
+            float ef = ApplyEasing(frac, a.EasingToNext);
+
+            return new Keyframe
+            {
+                Tick = effectiveTick,
+                X = Lerp(a.X ?? sprite.X, b.X ?? sprite.X, ef),
+                Y = Lerp(a.Y ?? sprite.Y, b.Y ?? sprite.Y, ef),
+                Width = Lerp(a.Width ?? sprite.Width, b.Width ?? sprite.Width, ef),
+                Height = Lerp(a.Height ?? sprite.Height, b.Height ?? sprite.Height, ef),
+                ColorR = LerpInt(a.ColorR ?? sprite.ColorR, b.ColorR ?? sprite.ColorR, ef),
+                ColorG = LerpInt(a.ColorG ?? sprite.ColorG, b.ColorG ?? sprite.ColorG, ef),
+                ColorB = LerpInt(a.ColorB ?? sprite.ColorB, b.ColorB ?? sprite.ColorB, ef),
+                ColorA = LerpInt(a.ColorA ?? sprite.ColorA, b.ColorA ?? sprite.ColorA, ef),
+                Rotation = Lerp(a.Rotation ?? sprite.Rotation, b.Rotation ?? sprite.Rotation, ef),
+                Scale = Lerp(a.Scale ?? sprite.Scale, b.Scale ?? sprite.Scale, ef),
+                EasingToNext = EasingType.Linear,
+            };
         }
 
         // ── Utilities ────────────────────────────────────────────────────────────

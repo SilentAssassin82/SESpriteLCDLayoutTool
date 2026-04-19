@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Windows.Forms;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -15,6 +19,21 @@ namespace SESpriteLCDLayoutTool.Services
     /// </summary>
     internal static class SyntaxHighlighter
     {
+        private sealed class DiagnosticMarker
+        {
+            public int Start;
+            public int Length;
+            public DiagnosticSeverity Severity;
+            public string Id;
+            public string Message;
+        }
+
+        private static readonly ConditionalWeakTable<RichTextBox, List<DiagnosticMarker>> _diagnosticCache =
+            new ConditionalWeakTable<RichTextBox, List<DiagnosticMarker>>();
+
+        private static readonly object _semanticRefLock = new object();
+        private static List<MetadataReference> _semanticReferences;
+
         // ── Colour palette (VS Dark / VS Code-inspired) ───────────────────────
         private static readonly Color ColDefault  = Color.FromArgb(212, 212, 212); // light grey
         private static readonly Color ColKeyword  = Color.FromArgb(86,  156, 214); // blue
@@ -60,7 +79,11 @@ namespace SESpriteLCDLayoutTool.Services
             if (rtb == null) return;
 
             string source = rtb.Text;
-            if (string.IsNullOrEmpty(source)) return;
+            if (string.IsNullOrEmpty(source))
+            {
+                SetDiagnosticCache(rtb, new List<DiagnosticMarker>());
+                return;
+            }
 
             // Parse as Regular (not Script) so class/namespace structure is valid.
             // Preprocessor symbols are defined so all #if branches are included in
@@ -69,6 +92,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             int selStart  = rtb.SelectionStart;
             int selLength = rtb.SelectionLength;
+            var scrollPos = rtb.GetScrollPos();
 
             rtb.SuspendLayout();
             rtb.BeginUpdate();
@@ -78,6 +102,10 @@ namespace SESpriteLCDLayoutTool.Services
                 // Reset all text to the default colour in one pass.
                 rtb.SelectAll();
                 rtb.SelectionColor = ColDefault;
+
+                // Clear stale diagnostic underline formatting from previous passes.
+                // RichTextBox keeps underline char-format until explicitly reset.
+                NativeMethods.ClearDiagnosticUnderline(rtb);
 
                 // Walk every token in document order, colouring leading trivia,
                 // the token itself, then trailing trivia.
@@ -102,7 +130,7 @@ namespace SESpriteLCDLayoutTool.Services
                         ApplyTrivia(rtb, trivia);
                 }
 
-                // ── Wavy red underlines on syntax errors ─────────────────────
+                // ── Diagnostic underlines (errors + warnings + info) ─────────
                 // SE PB scripts write class members at file scope (no "class Program"
                 // wrapper) — Roslyn Regular mode reports these as syntax errors even
                 // though they're valid PB code.  Wrap bare scripts in a dummy class
@@ -126,12 +154,32 @@ namespace SESpriteLCDLayoutTool.Services
                     diagOffset = 0;
                 }
 
-                // Cap at 50 so large broken files don't stall the UI thread.
-                int errCount = 0;
-                foreach (var diag in diagTree.GetDiagnostics())
+                // Cap total underlines so large broken files don't stall the UI thread.
+                const int maxSquiggles = 80;
+                int squiggleCount = 0;
+                var markers = new List<DiagnosticMarker>();
+                var diagnostics = diagTree.GetDiagnostics()
+                    .Concat(GetSemanticDiagnostics(diagTree))
+                    .Where(d => d.Location != null && d.Location.IsInSource)
+                    .GroupBy(d => new
+                    {
+                        Start = d.Location.SourceSpan.Start,
+                        Length = d.Location.SourceSpan.Length,
+                        d.Id,
+                        d.Severity,
+                    })
+                    .Select(g => g.First())
+                    .OrderByDescending(d => d.Severity)
+                    .ThenBy(d => d.Location.SourceSpan.Start);
+
+                foreach (var diag in diagnostics)
                 {
-                    if (diag.Severity != DiagnosticSeverity.Error) continue;
-                    if (++errCount > 50) break;
+                    if (diag.Severity != DiagnosticSeverity.Error &&
+                        diag.Severity != DiagnosticSeverity.Warning &&
+                        diag.Severity != DiagnosticSeverity.Info)
+                        continue;
+
+                    if (++squiggleCount > maxSquiggles) break;
 
                     var span    = diag.Location.SourceSpan;
                     int eStart  = span.Start - diagOffset;
@@ -139,9 +187,20 @@ namespace SESpriteLCDLayoutTool.Services
                     if (eStart < 0 || eStart >= rtb.TextLength) continue;
                     eLen = Math.Min(eLen, rtb.TextLength - eStart);
 
+                    markers.Add(new DiagnosticMarker
+                    {
+                        Start = eStart,
+                        Length = eLen,
+                        Severity = diag.Severity,
+                        Id = diag.Id,
+                        Message = BuildDiagnosticMessage(diag, diagTree),
+                    });
+
                     rtb.Select(eStart, eLen);
-                    NativeMethods.ApplyWavyUnderline(rtb);
+                    NativeMethods.ApplyDiagnosticUnderline(rtb, diag.Severity);
                 }
+
+                SetDiagnosticCache(rtb, markers);
             }
             finally
             {
@@ -154,7 +213,301 @@ namespace SESpriteLCDLayoutTool.Services
 
                 if (selStart >= 0 && selStart <= rtb.TextLength)
                     rtb.Select(selStart, selLength);
+
+                // Keep viewport stable after recolouring; restoring selection alone
+                // can still snap the control to caret/top in some RichEdit builds.
+                rtb.SetScrollPos(scrollPos);
             }
+        }
+
+        /// <summary>
+        /// Returns tooltip text for the diagnostic (if any) covering <paramref name="charIndex"/>.
+        /// </summary>
+        public static bool TryGetDiagnosticTooltip(RichTextBox rtb, int charIndex, out string tooltipText)
+        {
+            tooltipText = null;
+            if (rtb == null || charIndex < 0) return false;
+
+            if (!_diagnosticCache.TryGetValue(rtb, out var markers) || markers == null || markers.Count == 0)
+                return false;
+
+            DiagnosticMarker best = null;
+            foreach (var m in markers)
+            {
+                if (charIndex < m.Start || charIndex >= m.Start + m.Length) continue;
+
+                if (best == null)
+                {
+                    best = m;
+                    continue;
+                }
+
+                // Prefer higher severity, then tighter span for overlapping diagnostics.
+                if (m.Severity > best.Severity ||
+                    (m.Severity == best.Severity && m.Length < best.Length))
+                {
+                    best = m;
+                }
+            }
+
+            if (best == null) return false;
+
+            string sev = best.Severity.ToString().ToUpperInvariant();
+            tooltipText = string.IsNullOrWhiteSpace(best.Id)
+                ? $"{sev}: {best.Message}"
+                : $"{sev} {best.Id}: {best.Message}";
+            return true;
+        }
+
+        /// <summary>
+        /// Clears cached diagnostics for a RichTextBox. Useful while text is being edited
+        /// before the next debounced highlight pass runs.
+        /// </summary>
+        public static void ClearDiagnosticCache(RichTextBox rtb)
+        {
+            SetDiagnosticCache(rtb, new List<DiagnosticMarker>());
+        }
+
+        private static void SetDiagnosticCache(RichTextBox rtb, List<DiagnosticMarker> markers)
+        {
+            if (rtb == null) return;
+
+            if (_diagnosticCache.TryGetValue(rtb, out var existing))
+            {
+                existing.Clear();
+                if (markers != null) existing.AddRange(markers);
+                return;
+            }
+
+            _diagnosticCache.Add(rtb, markers ?? new List<DiagnosticMarker>());
+        }
+
+        // Semantic diagnostics are used for editor-only typo feedback such as
+        // "name does not exist in the current context" (CS0103).
+        private static IEnumerable<Diagnostic> GetSemanticDiagnostics(SyntaxTree tree)
+        {
+            try
+            {
+                var refs = GetSemanticReferences();
+                if (refs == null || refs.Count == 0)
+                    return Enumerable.Empty<Diagnostic>();
+
+                var compilation = CSharpCompilation.Create(
+                    assemblyName: "SESpriteLCDLayoutTool.EditorAnalysis",
+                    syntaxTrees: new[] { tree },
+                    references: refs,
+                    options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+                return compilation.GetDiagnostics()
+                    .Where(d => d.Severity == DiagnosticSeverity.Error)
+                    .Where(d => d.Id == "CS0103")
+                    .Where(d => d.Location != null && d.Location.IsInSource)
+                    .Where(d => HasTypoSuggestion(d, tree))
+                    .ToList();
+            }
+            catch
+            {
+                // Diagnostics are a best-effort editor aid. If semantic analysis
+                // fails in this environment, keep syntax highlighting functional.
+                return Enumerable.Empty<Diagnostic>();
+            }
+        }
+
+        private static List<MetadataReference> GetSemanticReferences()
+        {
+            if (_semanticReferences != null)
+                return _semanticReferences;
+
+            lock (_semanticRefLock)
+            {
+                if (_semanticReferences != null)
+                    return _semanticReferences;
+
+                var refs = new List<MetadataReference>();
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    if (asm == null || asm.IsDynamic) continue;
+                    string loc = null;
+                    try { loc = asm.Location; }
+                    catch { continue; }
+                    if (string.IsNullOrWhiteSpace(loc)) continue;
+                    if (!seen.Add(loc)) continue;
+
+                    try { refs.Add(MetadataReference.CreateFromFile(loc)); }
+                    catch { /* ignore assemblies Roslyn cannot load as metadata refs */ }
+                }
+
+                _semanticReferences = refs;
+                return _semanticReferences;
+            }
+        }
+
+        private static string BuildDiagnosticMessage(Diagnostic diag, SyntaxTree tree)
+        {
+            string msg = diag.GetMessage();
+            if (diag == null || tree == null) return msg;
+
+            if (diag.Id != "CS0103" || diag.Location == null || !diag.Location.IsInSource)
+                return msg;
+
+            if (!TryGetUndefinedNameSuggestion(diag, tree, out _, out string suggestion))
+                return msg;
+
+            return msg + " Did you mean '" + suggestion + "'?";
+        }
+
+        private static bool HasTypoSuggestion(Diagnostic diag, SyntaxTree tree)
+        {
+            if (!TryGetUndefinedNameSuggestion(diag, tree, out string missing, out _))
+                return false;
+
+            if (IsLikelyImplicitSeSymbol(missing))
+                return false;
+
+            return true;
+        }
+
+        private static bool TryGetUndefinedNameSuggestion(
+            Diagnostic diag,
+            SyntaxTree tree,
+            out string missing,
+            out string suggestion)
+        {
+            missing = null;
+            suggestion = null;
+
+            if (diag == null || tree == null)
+                return false;
+
+            if (diag.Id != "CS0103" || diag.Location == null || !diag.Location.IsInSource)
+                return false;
+
+            var span = diag.Location.SourceSpan;
+            var text = tree.GetText().ToString();
+            if (span.Start < 0 || span.Start >= text.Length || span.Length <= 0)
+                return false;
+
+            int len = Math.Min(span.Length, text.Length - span.Start);
+            missing = text.Substring(span.Start, len).Trim();
+            if (string.IsNullOrWhiteSpace(missing))
+                return false;
+
+            suggestion = FindClosestIdentifierSuggestion(tree, missing);
+            return !string.IsNullOrEmpty(suggestion);
+        }
+
+        // Symbols that are often implicitly available in SE/PB/Mod/Torch/Pulsar
+        // execution contexts and can appear unresolved in lightweight editor-only
+        // semantic analysis when the host assemblies are not loaded as metadata refs.
+        private static bool IsLikelyImplicitSeSymbol(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+
+            switch (name)
+            {
+                // PB / shared sprite API
+                case "SpriteType":
+                case "TextAlignment":
+                case "ContentType":
+                case "UpdateType":
+                case "UpdateFrequency":
+                case "IMyTextSurface":
+                case "IMyTextPanel":
+                case "MySprite":
+                case "Vector2":
+                case "Color":
+                // Common SE / mod / plugin namespace roots
+                case "VRage":
+                case "VRageMath":
+                case "Sandbox":
+                case "Torch":
+                case "Pulsar":
+                // Common framework types seen in mod / Torch / Pulsar code
+                case "MyLog":
+                case "MyAPIGateway":
+                case "MySessionComponentBase":
+                case "TorchPluginBase":
+                case "IPlugin":
+                case "RenderContext":
+                case "LcdSpriteRow":
+                case "IMyCubeGrid":
+                case "IMyTerminalBlock":
+                case "IMyInventory":
+                case "IMyInventoryItem":
+                case "MyInventoryItem":
+                case "MyItemType":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static string FindClosestIdentifierSuggestion(SyntaxTree tree, string missing)
+        {
+            if (tree == null || string.IsNullOrWhiteSpace(missing))
+                return null;
+
+            var root = tree.GetRoot();
+            var candidates = root.DescendantTokens()
+                .Where(t => t.IsKind(SyntaxKind.IdentifierToken))
+                .Select(t => t.ValueText)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(s => !string.Equals(s, missing, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (candidates.Count == 0)
+                return null;
+
+            int maxDistance = missing.Length <= 4 ? 1 : (missing.Length <= 8 ? 2 : 3);
+
+            string best = null;
+            int bestDist = int.MaxValue;
+            int bestLenDelta = int.MaxValue;
+
+            foreach (var c in candidates)
+            {
+                int d = LevenshteinDistanceIgnoreCase(missing, c);
+                if (d > maxDistance) continue;
+
+                int lenDelta = Math.Abs(c.Length - missing.Length);
+                if (d < bestDist || (d == bestDist && lenDelta < bestLenDelta))
+                {
+                    best = c;
+                    bestDist = d;
+                    bestLenDelta = lenDelta;
+                }
+            }
+
+            return best;
+        }
+
+        private static int LevenshteinDistanceIgnoreCase(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a)) return string.IsNullOrEmpty(b) ? 0 : b.Length;
+            if (string.IsNullOrEmpty(b)) return a.Length;
+
+            a = a.ToLowerInvariant();
+            b = b.ToLowerInvariant();
+
+            int[,] dp = new int[a.Length + 1, b.Length + 1];
+            for (int i = 0; i <= a.Length; i++) dp[i, 0] = i;
+            for (int j = 0; j <= b.Length; j++) dp[0, j] = j;
+
+            for (int i = 1; i <= a.Length; i++)
+            {
+                for (int j = 1; j <= b.Length; j++)
+                {
+                    int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                    dp[i, j] = Math.Min(
+                        Math.Min(dp[i - 1, j] + 1, dp[i, j - 1] + 1),
+                        dp[i - 1, j - 1] + cost);
+                }
+            }
+
+            return dp[a.Length, b.Length];
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────────
@@ -322,6 +675,9 @@ namespace SESpriteLCDLayoutTool.Services
     internal static class RichTextBoxExtensions
     {
         private const int WM_SETREDRAW = 0x000B;
+        private const int WM_USER = 0x0400;
+        private const int EM_GETSCROLLPOS = WM_USER + 221;
+        private const int EM_SETSCROLLPOS = WM_USER + 222;
 
         public static void BeginUpdate(this RichTextBox rtb)
         {
@@ -333,12 +689,27 @@ namespace SESpriteLCDLayoutTool.Services
             NativeMethods.SendMessage(rtb.Handle, WM_SETREDRAW, new IntPtr(1), IntPtr.Zero);
             rtb.Invalidate();
         }
+
+        public static Point GetScrollPos(this RichTextBox rtb)
+        {
+            var pt = new Point();
+            NativeMethods.SendMessage(rtb.Handle, EM_GETSCROLLPOS, IntPtr.Zero, ref pt);
+            return pt;
+        }
+
+        public static void SetScrollPos(this RichTextBox rtb, Point pos)
+        {
+            NativeMethods.SendMessage(rtb.Handle, EM_SETSCROLLPOS, IntPtr.Zero, ref pos);
+        }
     }
 
     internal static class NativeMethods
     {
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref Point lParam);
 
         [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
         internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref CHARFORMAT2 lParam);
@@ -354,7 +725,10 @@ namespace SESpriteLCDLayoutTool.Services
         internal const uint CFM_UNDERLINECOLOR  = 0x00400000;  // RichEdit 3.0+
         internal const uint CFE_UNDERLINE       = 0x00000004;
 
+        internal const byte CFU_UNDERLINE       = 0x01;
+        internal const byte CFU_UNDERLINEDOTTED = 0x04;
         internal const byte CFU_UNDERLINEWAVE   = 0x08;
+        internal const byte CFU_UNDERLINENONE   = 0x00;
         internal const byte CFU_COLOR_RED       = 0x06;        // built-in red index
 
         // Layout matches Windows SDK CHARFORMAT2W with default packing.
@@ -388,18 +762,56 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
-        /// Applies a wavy red underline to the current RichTextBox selection
-        /// using the native RichEdit CHARFORMAT2 structure.  Text colours are
-        /// left untouched so syntax highlighting is preserved.
+        /// Applies an underline style based on diagnostic severity while leaving
+        /// text colours untouched so syntax highlighting is preserved.
         /// </summary>
-        internal static void ApplyWavyUnderline(RichTextBox rtb)
+        internal static void ApplyDiagnosticUnderline(RichTextBox rtb, DiagnosticSeverity severity)
+        {
+            byte underlineType = CFU_UNDERLINEWAVE;
+
+            switch (severity)
+            {
+                case DiagnosticSeverity.Error:
+                    underlineType = CFU_UNDERLINEWAVE;
+                    break;
+                case DiagnosticSeverity.Warning:
+                    underlineType = CFU_UNDERLINEDOTTED;
+                    break;
+                case DiagnosticSeverity.Info:
+                    underlineType = CFU_UNDERLINE;
+                    break;
+            }
+
+            ApplyUnderline(rtb, underlineType);
+        }
+
+        /// <summary>
+        /// Applies an underline type to the current RichTextBox selection using
+        /// the native RichEdit CHARFORMAT2 structure.
+        /// </summary>
+        private static void ApplyUnderline(RichTextBox rtb, byte underlineType)
         {
             var cf = new CHARFORMAT2();
             cf.cbSize         = (uint)System.Runtime.InteropServices.Marshal.SizeOf(cf);
             cf.dwMask         = CFM_UNDERLINE | CFM_UNDERLINETYPE | CFM_UNDERLINECOLOR;
             cf.dwEffects      = CFE_UNDERLINE;
-            cf.bUnderlineType = CFU_UNDERLINEWAVE;
+            cf.bUnderlineType = underlineType;
             cf.bUnderlineColor = CFU_COLOR_RED;
+            SendMessage(rtb.Handle, EM_SETCHARFORMAT, new IntPtr(SCF_SELECTION), ref cf);
+        }
+
+        /// <summary>
+        /// Clears diagnostic underline formatting on the current RichTextBox selection.
+        /// Caller should select target range first (typically SelectAll()).
+        /// </summary>
+        internal static void ClearDiagnosticUnderline(RichTextBox rtb)
+        {
+            var cf = new CHARFORMAT2();
+            cf.cbSize         = (uint)System.Runtime.InteropServices.Marshal.SizeOf(cf);
+            cf.dwMask         = CFM_UNDERLINE | CFM_UNDERLINETYPE | CFM_UNDERLINECOLOR;
+            cf.dwEffects      = 0;
+            cf.bUnderlineType = CFU_UNDERLINENONE;
+            cf.bUnderlineColor = 0;
             SendMessage(rtb.Handle, EM_SETCHARFORMAT, new IntPtr(SCF_SELECTION), ref cf);
         }
     }

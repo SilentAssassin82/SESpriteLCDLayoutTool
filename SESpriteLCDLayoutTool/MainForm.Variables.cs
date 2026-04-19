@@ -25,18 +25,18 @@ namespace SESpriteLCDLayoutTool
         /// <summary>
         /// Tests the variable inspector MVP by compiling the current code as an animation
         /// and displaying all instance fields using reflection.
-        /// 
+        ///
         /// USAGE:
         /// 1. Paste/write code with class-level fields (e.g., int counter; float angle;)
         /// 2. Click "🔍 Inspect Variables" in the code panel toolbar
         /// 3. See all instance fields and their initial values after constructor runs
-        /// 
+        ///
         /// EXAMPLE CODE TO TEST:
         /// <code>
         /// int counter = 0;
         /// float angle = 0f;
         /// string[] items = new string[] { "foo", "bar", "baz" };
-        /// 
+        ///
         /// public void DrawHUD(IMyTextSurface surface) {
         ///     counter++;
         ///     angle += 0.1f;
@@ -1189,6 +1189,13 @@ namespace SESpriteLCDLayoutTool
                 HideSelection = false,
                 AcceptsTab    = true,
             };
+            _codeDiagTooltip = new ToolTip
+            {
+                InitialDelay = 250,
+                ReshowDelay = 100,
+                AutoPopDelay = 10000,
+                ShowAlways = true,
+            };
             // ── Syntax-highlight debounce timer ───────────────────────────────
             _syntaxTimer = new System.Windows.Forms.Timer { Interval = 900 };
             _syntaxTimer.Tick += (s, e) =>
@@ -1220,6 +1227,8 @@ namespace SESpriteLCDLayoutTool
                 if (_suppressCodeBoxEvents) return;
                 if (!_codeUndo.IsUndoRedoing)
                     _codeUndo.Push(_codeBox.Text, _codeBox.SelectionStart);
+                SyntaxHighlighter.ClearDiagnosticCache(_codeBox);
+                HideCodeDiagnosticTooltip();
                 _codeBoxDirty = true;
                 _lblCodeTitle.Text = "✏ Code (edited)";
                 _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);
@@ -1230,6 +1239,8 @@ namespace SESpriteLCDLayoutTool
                 _syntaxTimer.Start();
             };
             _codeBox.LostFocus += (s, e) => _autoComplete?.Hide();
+            _codeBox.MouseMove += (s, e) => UpdateCodeDiagnosticTooltip(e.Location);
+            _codeBox.MouseLeave += (s, e) => HideCodeDiagnosticTooltip();
 
             // ── Code editor right-click context menu ──
             var ctxCode = new ContextMenuStrip();
@@ -1972,6 +1983,9 @@ namespace SESpriteLCDLayoutTool
                 SplitterDistance = 300,
                 SplitterWidth    = 4,
             };
+            diffSplit.Panel1MinSize = 140;
+            diffSplit.Panel2MinSize = 140;
+            diffSplit.Resize += (s, e) => EnsureDiffSplitCentered(diffSplit);
 
             // Left panel: Before
             var lblBefore = new Label
@@ -1994,6 +2008,8 @@ namespace SESpriteLCDLayoutTool
                 BorderStyle = BorderStyle.None,
                 WordWrap    = false,
             };
+            _rtbDiffBefore.VScroll += (s, e) => SyncDiffScroll(_rtbDiffBefore, _rtbDiffAfter);
+            _rtbDiffBefore.HScroll += (s, e) => SyncDiffScroll(_rtbDiffBefore, _rtbDiffAfter);
             diffSplit.Panel1.Controls.Add(_rtbDiffBefore);
             diffSplit.Panel1.Controls.Add(lblBefore);
 
@@ -2018,6 +2034,8 @@ namespace SESpriteLCDLayoutTool
                 BorderStyle = BorderStyle.None,
                 WordWrap    = false,
             };
+            _rtbDiffAfter.VScroll += (s, e) => SyncDiffScroll(_rtbDiffAfter, _rtbDiffBefore);
+            _rtbDiffAfter.HScroll += (s, e) => SyncDiffScroll(_rtbDiffAfter, _rtbDiffBefore);
             diffSplit.Panel2.Controls.Add(_rtbDiffAfter);
             diffSplit.Panel2.Controls.Add(lblAfter);
 

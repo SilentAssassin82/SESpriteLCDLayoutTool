@@ -389,6 +389,11 @@ namespace SESpriteLCDLayoutTool
 
         private void OnAnimFrame(List<SpriteEntry> sprites, int tick)
         {
+            // Suppress the syntax-highlight debounce timer while the animation is running.
+            // The timer only fires when the text changes, but holding it stopped during
+            // playback avoids any accidental Roslyn parse triggered by other code paths.
+            _syntaxTimer?.Stop();
+
             _layout.Sprites.Clear();
 
             // Isolation mode: when a specific method is isolated (via Execute & Isolate),
@@ -483,9 +488,15 @@ namespace SESpriteLCDLayoutTool
             }
             _lblAnimTick.Text = $"{typeTag}  Tick: {tick}  ({ms:F1} ms){focusTag}{heatTag}";
 
-            // Update Variables tab with current field values during animation
-            if (!_isScrubbing)
+            // Update Variables tab with current field values during animation.
+            // Throttled to ~4 Hz so reflection + ListView updates don't stall the UI thread
+            // on every tick (especially costly for complex Pulsar/Torch plugin scenes).
+            if (!_isScrubbing &&
+                (DateTime.UtcNow - _lastVariablesUpdateTime).TotalMilliseconds >= 250)
+            {
+                _lastVariablesUpdateTime = DateTime.UtcNow;
                 UpdateVariablesDuringAnimation(tick);
+            }
 
             // Keep timeline scrubber in sync
             UpdateTimelineScrubber(tick);
@@ -574,6 +585,11 @@ namespace SESpriteLCDLayoutTool
 
         private void OnAnimStopped()
         {
+            // Reset per-frame throttle timestamps so the first inspection/scrub
+            // after stopping is always immediate.
+            _lastVariablesUpdateTime = DateTime.MinValue;
+            _lastHeatmapPaintTime    = DateTime.MinValue;
+
             // Clear focused animation state
             _animFocusCall = null;
             _animFocusSprites = null;
@@ -770,7 +786,7 @@ namespace SESpriteLCDLayoutTool
             }
             if (depth != 0) return false;
 
-            // ci is now past the closing }.  Look for ); 
+            // ci is now past the closing }.  Look for );
             int end = ci;
             while (end < code.Length && (code[end] == ' ' || code[end] == '\t')) end++;
             if (end < code.Length && code[end] == ')') end++;
@@ -1141,12 +1157,10 @@ namespace SESpriteLCDLayoutTool
         /// it into the code panel using a 3-tier strategy: block replace → array merge → append.
         /// Now tries the Roslyn-based injector first for clean structural injection.
         /// </summary>
-        private void MergeAnimationCodeIntoPanel(SpriteEntry sprite)
+        private void PrepareSpriteForKeyframeInjection(SpriteEntry sprite)
         {
-            if (_codeBox == null || sprite?.KeyframeAnimation == null) return;
+            if (sprite?.KeyframeAnimation == null) return;
 
-            // ── Roslyn injector path (preferred) ──
-            // Populate the sprite's AnimationEffects from its KeyframeAnimation
             var kfEffect = new KeyframeEffect
             {
                 Keyframes = sprite.KeyframeAnimation.Keyframes,
@@ -1154,11 +1168,9 @@ namespace SESpriteLCDLayoutTool
             };
             AddOrReplaceEffect(sprite, kfEffect);
 
-            // ── Populate GroupFollowerEffect on group followers ──
             string leaderGroupId = sprite.AnimationGroupId;
             if (!string.IsNullOrEmpty(leaderGroupId) && _layout != null)
             {
-                // Leader base values from first keyframe
                 var kf0 = sprite.KeyframeAnimation.Keyframes.Count > 0
                     ? sprite.KeyframeAnimation.Keyframes[0] : null;
                 float leaderBaseX = kf0?.X ?? sprite.X;
@@ -1175,7 +1187,7 @@ namespace SESpriteLCDLayoutTool
                     var followerFx = new GroupFollowerEffect
                     {
                         LeaderEffect = kfEffect,
-                        LeaderSuffix = "", // will be resolved by injector (leader is first animated sprite)
+                        LeaderSuffix = "",
                         LeaderBaseX = leaderBaseX,
                         LeaderBaseY = leaderBaseY,
                         LeaderBaseW = leaderBaseW,
@@ -1188,6 +1200,65 @@ namespace SESpriteLCDLayoutTool
                     AddOrReplaceEffect(f, followerFx);
                 }
             }
+        }
+
+        private void ApplyAnimationCodeUpdate(string existing, string newCode, string status)
+        {
+            if (existing == null || newCode == null) return;
+
+            SetCodeText(newCode);
+            _codeBoxDirty = true;
+            ShowPatchDiff(existing, newCode);
+            if (_layout != null)
+                _layout.OriginalSourceCode = _codeBox.Text;
+            WriteBackToWatchedFile(_codeBox.Text);
+            SetStatus(status);
+        }
+
+        private void MergeAnimationsIntoPanel(IEnumerable<SpriteEntry> sprites)
+        {
+            if (_codeBox == null || sprites == null) return;
+
+            var uniqueSprites = sprites
+                .Where(s => s?.KeyframeAnimation != null)
+                .GroupBy(s => s.Id)
+                .Select(g => g.First())
+                .ToList();
+
+            if (uniqueSprites.Count == 0) return;
+
+            foreach (var sprite in uniqueSprites)
+                PrepareSpriteForKeyframeInjection(sprite);
+
+            string existing = _codeBox.Text;
+            bool existingIsComplete = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
+                                   || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0;
+            bool hasLegacyKeyframeBlock = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
+
+            if (existingIsComplete && !hasLegacyKeyframeBlock)
+            {
+                var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
+                var injResult = RoslynAnimationInjector.InjectAnimations(existing, allSprites);
+                if (injResult.Success && injResult.Code != existing)
+                {
+                    ApplyAnimationCodeUpdate(existing, injResult.Code,
+                        $"✅ Updated {uniqueSprites.Count} animation(s) in code panel");
+                    return;
+                }
+            }
+
+            foreach (var sprite in uniqueSprites)
+                MergeAnimationCodeIntoPanel(sprite);
+
+            SetStatus($"✅ Updated {uniqueSprites.Count} animation(s) in code panel");
+        }
+
+        private void MergeAnimationCodeIntoPanel(SpriteEntry sprite)
+        {
+            if (_codeBox == null || sprite?.KeyframeAnimation == null) return;
+
+            // ── Roslyn injector path (preferred) ──
+            PrepareSpriteForKeyframeInjection(sprite);
 
             string existing = _codeBox.Text;
 
@@ -1196,21 +1267,17 @@ namespace SESpriteLCDLayoutTool
             // Only use Roslyn injection when the existing code is a complete PB program.
             bool existingIsComplete = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
                                    || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0;
+            bool hasLegacyKeyframeBlock = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
 
             // Pass all sprites so ordinal matching works for duplicates
             var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
 
             // Try Roslyn injection (only for complete programs)
             var injResult = RoslynAnimationInjector.InjectAnimations(existing, allSprites);
-            if (injResult.Success && injResult.Code != existing && existingIsComplete)
+            if (injResult.Success && injResult.Code != existing && existingIsComplete && !hasLegacyKeyframeBlock)
             {
-                SetCodeText(injResult.Code);
-                _codeBoxDirty = true;
-                ShowPatchDiff(existing, injResult.Code);
-                if (_layout != null)
-                    _layout.OriginalSourceCode = _codeBox.Text;
-                WriteBackToWatchedFile(_codeBox.Text);
-                SetStatus($"✅ Keyframe animation injected ({injResult.SpritesAnimated} sprite(s))");
+                ApplyAnimationCodeUpdate(existing, injResult.Code,
+                    $"✅ Keyframe animation injected ({injResult.SpritesAnimated} sprite(s))");
                 return;
             }
 
@@ -1293,6 +1360,7 @@ namespace SESpriteLCDLayoutTool
                 sprite.AnimationIndex = MultiAnimationRegistry.GetAnimationIndex(sprite.SourceLineNumber);
 
             string newCode = null;
+            string finalStatus = "✅ Animation code updated";
             // 'existing' already declared above (Roslyn injector path)
 
             System.Diagnostics.Debug.WriteLine($"[MergeAnim] START sprite={sprite.SpriteName}, sourceLine={sprite.SourceLineNumber}, existingLen={existing?.Length ?? 0}, snippetLen={snippetCode?.Length ?? 0}, completeLen={completeCode?.Length ?? 0}");
@@ -1447,7 +1515,7 @@ namespace SESpriteLCDLayoutTool
                             // Case A: group — regenerate entire program with all members
                             System.Diagnostics.Debug.WriteLine("[MergeAnim] → Case A: group replace");
                             newCode = completeCode;
-                            SetStatus("✅ Animation group program generated");
+                            finalStatus = "✅ Animation group program generated";
                         }
                         else if (animationExistsInCode)
                         {
@@ -1458,7 +1526,7 @@ namespace SESpriteLCDLayoutTool
                             if (merged != null)
                             {
                                 newCode = merged;
-                                SetStatus("✅ Animation arrays updated in existing program");
+                                finalStatus = "✅ Animation arrays updated in existing program";
                             }
                         }
 
@@ -1470,7 +1538,7 @@ namespace SESpriteLCDLayoutTool
                             if (merged != null)
                             {
                                 newCode = merged;
-                                SetStatus("✅ New animation merged into existing program");
+                                finalStatus = "✅ New animation merged into existing program";
                             }
                             else
                             {
@@ -1479,12 +1547,12 @@ namespace SESpriteLCDLayoutTool
                                 if (merged != null)
                                 {
                                     newCode = merged;
-                                    SetStatus("✅ Animation merged via universal engine");
+                                    finalStatus = "✅ Animation merged via universal engine";
                                 }
                                 else
                                 {
                                     newCode = existing;
-                                    SetStatus("Could not safely merge animation into existing program; original code preserved.");
+                                    finalStatus = "Could not safely merge animation into existing program; original code preserved.";
                                 }
                             }
                         }
@@ -1496,7 +1564,7 @@ namespace SESpriteLCDLayoutTool
                         if (merged != null)
                         {
                             newCode = merged;
-                            SetStatus("✅ Animation arrays merged into existing code");
+                            finalStatus = "✅ Animation arrays merged into existing code";
                         }
                         else
                         {
@@ -1505,12 +1573,12 @@ namespace SESpriteLCDLayoutTool
                             if (uniMerged != null)
                             {
                                 newCode = uniMerged;
-                                SetStatus("✅ Animation merged via universal engine");
+                                finalStatus = "✅ Animation merged via universal engine";
                             }
                             else
                             {
                                 newCode = existing;
-                                SetStatus("Could not safely merge this animation into existing keyframe blocks; original code preserved.");
+                                finalStatus = "Could not safely merge this animation into existing keyframe blocks; original code preserved.";
                             }
                         }
                     }
@@ -1554,7 +1622,7 @@ namespace SESpriteLCDLayoutTool
                         if (merged != null)
                         {
                             newCode = merged;
-                            SetStatus("✅ Animation arrays updated in existing program");
+                            finalStatus = "✅ Animation arrays updated in existing program";
                         }
                     }
 
@@ -1565,7 +1633,7 @@ namespace SESpriteLCDLayoutTool
                         if (merged != null)
                         {
                             newCode = merged;
-                            SetStatus("✅ New animation merged into existing program");
+                            finalStatus = "✅ New animation merged into existing program";
                         }
                         else
                         {
@@ -1574,12 +1642,12 @@ namespace SESpriteLCDLayoutTool
                             if (uniMerged != null)
                             {
                                 newCode = uniMerged;
-                                SetStatus("✅ Animation merged via universal engine");
+                                finalStatus = "✅ Animation merged via universal engine";
                             }
                             else
                             {
                                 newCode = existing;
-                                SetStatus("Could not safely merge animation; original code preserved.");
+                                finalStatus = "Could not safely merge animation; original code preserved.";
                             }
                         }
                     }
@@ -1597,19 +1665,7 @@ namespace SESpriteLCDLayoutTool
             // SetCodeText handles suppression, highlighting, and dirty-flag reset
             // in one place — avoids the grey-text bug caused by bypassing the
             // TextChanged handler while _suppressCodeBoxEvents is true.
-            SetCodeText(newCode);
-            _codeBoxDirty = true;   // Protect animation code from RefreshCode overwrite
-
-            // Update the in-app diff panel so the Diff tab reflects what changed.
-            ShowPatchDiff(existing, newCode);
-
-            // Sync OriginalSourceCode so the Play button uses the updated code
-            if (_layout != null)
-                _layout.OriginalSourceCode = _codeBox.Text;
-
-            // Write the updated code back to the watched file (script sync) so
-            // the external diff/editor sees the change immediately.
-            WriteBackToWatchedFile(_codeBox.Text);
+            ApplyAnimationCodeUpdate(existing, newCode, finalStatus);
         }
 
         // ── Keyframe animation dialog ──────────────────────────────────────────
@@ -1758,8 +1814,39 @@ namespace SESpriteLCDLayoutTool
 
         private MultiSpriteTimelineDialog _multiTimelineDlg;
 
+        private int RecoverKeyframedAnimationsFromCode()
+        {
+            if (_layout?.Sprites == null || string.IsNullOrEmpty(_codeBox?.Text)) return 0;
+
+            AutoLabelAndDetectAnimationIndices(_codeBox.Text);
+
+            int recovered = 0;
+            foreach (var sprite in _layout.Sprites)
+            {
+                if (sprite == null || sprite.KeyframeAnimation != null) continue;
+
+                if (sprite.AnimationIndex == 0)
+                {
+                    int detected = DetectSpriteAnimationIndex(_codeBox.Text, sprite);
+                    if (detected > 0)
+                        sprite.AnimationIndex = detected;
+                }
+
+                if (sprite.AnimationIndex == 0) continue;
+
+                var parsed = AnimationSnippetGenerator.TryParseKeyframed(_codeBox.Text, sprite.AnimationIndex);
+                if (parsed == null) continue;
+
+                sprite.KeyframeAnimation = parsed;
+                recovered++;
+            }
+
+            return recovered;
+        }
+
         internal void OpenMultiSpriteTimeline()
         {
+            int recovered = RecoverKeyframedAnimationsFromCode();
             var animated = _layout?.Sprites?.Where(s => s.KeyframeAnimation != null).ToList();
             if (animated == null || animated.Count == 0)
             {
@@ -1777,14 +1864,15 @@ namespace SESpriteLCDLayoutTool
 
             dlg.UpdateCodeRequested += sprites =>
             {
-                foreach (var sp in sprites)
-                    MergeAnimationCodeIntoPanel(sp);
+                MergeAnimationsIntoPanel(sprites);
             };
 
             dlg.FormClosed += (s, e) => _multiTimelineDlg = null;
             _multiTimelineDlg = dlg;
             dlg.Show(this);
-            SetStatus($"Multi-sprite timeline opened — {animated.Count} animated sprite(s)");
+            SetStatus(recovered > 0
+                ? $"Multi-sprite timeline opened — recovered {recovered} animation(s) from code"
+                : $"Multi-sprite timeline opened — {animated.Count} animated sprite(s)");
         }
 
         // ── Animation snippet dialog ──────────────────────────────────────────
@@ -2006,14 +2094,53 @@ namespace SESpriteLCDLayoutTool
                 // holds a generated method-body snippet, build the complete program first.
                 bool simpleExistingIsComplete = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
                                             || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0;
+                bool simpleHasLegacyKeyframeBlock = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
                 string codeToInject = existing;
                 if (string.IsNullOrWhiteSpace(existing) || !simpleExistingIsComplete)
                 {
                     codeToInject = AnimationSnippetGenerator.GenerateSimpleComplete(sprite, animType, p);
                 }
 
+                // Legacy keyframe blocks already contain keyframe vars/compute code.
+                // When applying simple effects (e.g. color cycle), exclude keyframe/group
+                // effects from Roslyn injection to avoid duplicating kfTick/kfEase vars and
+                // segment locals in Main().
+                IEnumerable<SpriteEntry> injectionSprites = allSprites;
+                if (simpleHasLegacyKeyframeBlock)
+                {
+                    var filtered = new List<SpriteEntry>();
+                    foreach (var sp in allSprites)
+                    {
+                        var fx = (sp.AnimationEffects ?? new List<IAnimationEffect>())
+                            .Where(a => !(a is KeyframeEffect) && !(a is GroupFollowerEffect))
+                            .ToList();
+
+                        filtered.Add(new SpriteEntry
+                        {
+                            Type = sp.Type,
+                            SpriteName = sp.SpriteName,
+                            Text = sp.Text,
+                            X = sp.X,
+                            Y = sp.Y,
+                            Width = sp.Width,
+                            Height = sp.Height,
+                            ColorR = sp.ColorR,
+                            ColorG = sp.ColorG,
+                            ColorB = sp.ColorB,
+                            ColorA = sp.ColorA,
+                            Rotation = sp.Rotation,
+                            SourceLineNumber = sp.SourceLineNumber,
+                            SourceStart = sp.SourceStart,
+                            SourceEnd = sp.SourceEnd,
+                            AnimationEffects = fx,
+                        });
+                    }
+
+                    injectionSprites = filtered;
+                }
+
                 // Inject all animations via Roslyn
-                var result = RoslynAnimationInjector.InjectAnimations(codeToInject, allSprites);
+                var result = RoslynAnimationInjector.InjectAnimations(codeToInject, injectionSprites);
                 string newCode;
 
                 if (result.Success)

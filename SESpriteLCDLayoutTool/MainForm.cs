@@ -79,15 +79,25 @@ namespace SESpriteLCDLayoutTool
         private RichTextBox _rtbDiffBefore;
         private RichTextBox _rtbDiffAfter;
         private string      _lastPatchOriginal;
+        private bool        _syncingDiffScroll;
 
         // ── Code heatmap / profiling ──────────────────────────────────────────
         private Dictionary<string, double> _lastHeatmapTimings;
         private bool _heatmapEnabled = true;
+        private DateTime _lastHeatmapPaintTime;
 
         // ── Syntax highlighting ───────────────────────────────────────────────
         private System.Windows.Forms.Timer _syntaxTimer;
         private string _lastHighlightedCode;
         private bool _highlightInProgress;
+        private ToolTip _codeDiagTooltip;
+        private string _lastCodeDiagTooltipText;
+        private int _lastCodeDiagTooltipChar = -1;
+        private ToolTip _layerListTooltip;
+        private System.Windows.Forms.Timer _layerListTooltipTimer;
+        private string _lastLayerTooltipText;
+        private int _lastLayerTooltipIndex = -1;
+        private Point _lastLayerTooltipLocation;
         private const int LiveHighlightMaxChars = 14000;
         private const int InitialHighlightMaxChars = 120000;
 
@@ -154,6 +164,7 @@ namespace SESpriteLCDLayoutTool
 
         // ── Animation playback ────────────────────────────────────────────────
         private AnimationPlayer _animPlayer;
+        private DateTime _lastVariablesUpdateTime;
         private string _animFocusCall;                // non-null = focused animation mode
         private HashSet<string> _animFocusSprites;    // Type+Data keys of the focused method's sprites
         private Panel  _animBar;
@@ -474,18 +485,33 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
-            // Avoid redundant re-paints when timings haven't changed meaningfully
+            // Throttle: at most once per 300 ms during playback to avoid killing the UI thread.
+            var now = DateTime.UtcNow;
+            bool throttled = (now - _lastHeatmapPaintTime).TotalMilliseconds < 300;
+
+            // Avoid redundant re-paints when timings haven't changed meaningfully.
+            // Use a coarser threshold (5 % relative OR 0.5 ms absolute) because
+            // Pulsar/Torch timing numbers fluctuate slightly every frame; the old
+            // 0.01 ms threshold caused a full repaint on almost every tick.
             if (_lastHeatmapTimings != null && _lastHeatmapTimings.Count == timings.Count)
             {
                 bool same = true;
                 foreach (var kv in timings)
                 {
-                    if (!_lastHeatmapTimings.TryGetValue(kv.Key, out double prev) ||
-                        Math.Abs(prev - kv.Value) > 0.01)
+                    if (!_lastHeatmapTimings.TryGetValue(kv.Key, out double prev))
+                    { same = false; break; }
+                    double delta = Math.Abs(prev - kv.Value);
+                    if (delta > Math.Max(0.5, prev * 0.05))
                     { same = false; break; }
                 }
-                if (same) return;
+                if (same || throttled) return;
             }
+            else if (throttled)
+            {
+                return;
+            }
+
+            _lastHeatmapPaintTime = now;
             _lastHeatmapTimings = new Dictionary<string, double>(timings);
 
             string code = _codeBox.Text;
@@ -523,32 +549,41 @@ namespace SESpriteLCDLayoutTool
             int savedLen = _codeBox.SelectionLength;
             var scrollPos = GetScrollPos(_codeBox);
 
-            _codeBox.SuspendLayout();
-
-            // First, clear all backgrounds to default
-            _codeBox.SelectAll();
-            _codeBox.SelectionBackColor = _codeBox.BackColor;
-
-            // Apply heatmap colors per method region (absolute thresholds)
-            foreach (var kv in methodRanges)
+            // Suppress all repaints while applying batch SelectionBackColor changes.
+            // SuspendLayout() only stops layout calculations, not WM_PAINT — without
+            // WM_SETREDRAW the control visually "streams" through every matched range.
+            SendMessage(_codeBox.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+            try
             {
-                if (!timings.TryGetValue(kv.Key, out double ms)) continue;
+                // First, clear all backgrounds to default
+                _codeBox.SelectAll();
+                _codeBox.SelectionBackColor = _codeBox.BackColor;
 
-                Color bg = HeatmapColor(ms);
-
-                int start = kv.Value.start;
-                int end = Math.Min(kv.Value.end, code.Length);
-                if (end > start)
+                // Apply heatmap colors per method region (absolute thresholds)
+                foreach (var kv in methodRanges)
                 {
-                    _codeBox.Select(start, end - start);
-                    _codeBox.SelectionBackColor = bg;
-                }
-            }
+                    if (!timings.TryGetValue(kv.Key, out double ms)) continue;
 
-            // Restore scroll and cursor
-            _codeBox.Select(savedSel, savedLen);
-            SetScrollPos(_codeBox, scrollPos);
-            _codeBox.ResumeLayout();
+                    Color bg = HeatmapColor(ms);
+
+                    int start = kv.Value.start;
+                    int end = Math.Min(kv.Value.end, code.Length);
+                    if (end > start)
+                    {
+                        _codeBox.Select(start, end - start);
+                        _codeBox.SelectionBackColor = bg;
+                    }
+                }
+
+                // Restore scroll and cursor
+                _codeBox.Select(savedSel, savedLen);
+                SetScrollPos(_codeBox, scrollPos);
+            }
+            finally
+            {
+                SendMessage(_codeBox.Handle, WM_SETREDRAW, (IntPtr)1, IntPtr.Zero);
+                _codeBox.Invalidate();
+            }
         }
 
         /// <summary>Clears heatmap highlighting from the code editor.</summary>
@@ -561,12 +596,19 @@ namespace SESpriteLCDLayoutTool
             int savedLen = _codeBox.SelectionLength;
             var scrollPos = GetScrollPos(_codeBox);
 
-            _codeBox.SuspendLayout();
-            _codeBox.SelectAll();
-            _codeBox.SelectionBackColor = _codeBox.BackColor;
-            _codeBox.Select(savedSel, savedLen);
-            SetScrollPos(_codeBox, scrollPos);
-            _codeBox.ResumeLayout();
+            SendMessage(_codeBox.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+            try
+            {
+                _codeBox.SelectAll();
+                _codeBox.SelectionBackColor = _codeBox.BackColor;
+                _codeBox.Select(savedSel, savedLen);
+                SetScrollPos(_codeBox, scrollPos);
+            }
+            finally
+            {
+                SendMessage(_codeBox.Handle, WM_SETREDRAW, (IntPtr)1, IntPtr.Zero);
+                _codeBox.Invalidate();
+            }
         }
 
         /// <summary>
@@ -630,6 +672,36 @@ namespace SESpriteLCDLayoutTool
         private static void SetScrollPos(RichTextBox rtb, Point pos)
         {
             SendMessage(rtb.Handle, EM_SETSCROLLPOS, IntPtr.Zero, ref pos);
+        }
+
+        private void SyncDiffScroll(RichTextBox source, RichTextBox target)
+        {
+            if (_syncingDiffScroll || source == null || target == null) return;
+
+            try
+            {
+                _syncingDiffScroll = true;
+                var pos = GetScrollPos(source);
+                SetScrollPos(target, pos);
+            }
+            finally
+            {
+                _syncingDiffScroll = false;
+            }
+        }
+
+        private void EnsureDiffSplitCentered(SplitContainer diffSplit)
+        {
+            if (diffSplit == null || diffSplit.Width <= 0) return;
+
+            int minPane = 140;
+            int available = diffSplit.ClientSize.Width - diffSplit.SplitterWidth;
+            if (available <= 0) return;
+
+            int centered = available / 2;
+            int min = minPane;
+            int max = Math.Max(minPane, available - minPane);
+            diffSplit.SplitterDistance = Math.Max(min, Math.Min(max, centered));
         }
 
         // ── Sprite tree population ────────────────────────────────────────────────
@@ -765,15 +837,200 @@ namespace SESpriteLCDLayoutTool
                 selected.Add(_canvas.SelectedSprite);
             if (selected.Count == 0) return;
 
+            string priorSource = _layout?.OriginalSourceCode ?? _codeBox?.Text;
+
             PushUndo();
-            InvalidateOriginalSourceIfSet();
+
+            bool sourcePatched = false;
+            string patchedSource;
+            if (TryRemoveSelectedSpritesFromSource(selected, out patchedSource))
+            {
+                _layout.OriginalSourceCode = patchedSource;
+                SetCodeText(patchedSource);
+                _codeBoxDirty = true;
+                _lblCodeTitle.Text = "✏ Code (edited)";
+                _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);
+                WriteBackToWatchedFile(patchedSource);
+                sourcePatched = true;
+            }
+            else
+            {
+                InvalidateOriginalSourceIfSet();
+            }
+
             foreach (var sp in selected)
                 _layout.Sprites.Remove(sp);
             _canvas.SelectedSprite = null;
             RefreshLayerList();
-            ClearCodeDirty();
-            RefreshCode();
+
+            if (sourcePatched)
+            {
+                CleanupInjectedAnimationAfterDeletion();
+                RefreshSourceTracking();
+            }
+            else
+            {
+                ClearCodeDirty();
+                RefreshCode();
+            }
+
+            string finalSource = _layout?.OriginalSourceCode ?? _codeBox?.Text;
+            if (!string.IsNullOrEmpty(priorSource) &&
+                !string.IsNullOrEmpty(finalSource) &&
+                !string.Equals(priorSource, finalSource, StringComparison.Ordinal))
+            {
+                ShowPatchDiff(priorSource, finalSource);
+            }
+
             SetStatus(selected.Count == 1 ? "Deleted sprite" : $"Deleted {selected.Count} sprites");
+        }
+
+        /// <summary>
+        /// Removes selected tracked sprite blocks directly from OriginalSourceCode.
+        /// Returns false when any selected sprite lacks reliable source offsets.
+        /// </summary>
+        private bool TryRemoveSelectedSpritesFromSource(List<SpriteEntry> selected, out string patched)
+        {
+            patched = _layout?.OriginalSourceCode;
+            if (string.IsNullOrEmpty(patched) || selected == null || selected.Count == 0)
+                return false;
+
+            var ranges = new List<Tuple<int, int>>();
+            foreach (var sp in selected)
+            {
+                if (sp == null || sp.SourceStart < 0 || sp.SourceEnd <= sp.SourceStart || sp.SourceEnd > patched.Length)
+                    return false;
+
+                int start = sp.SourceStart;
+                int end = sp.SourceEnd;
+
+                // If SourceStart points into the argument of a call (e.g. "new MySprite{…}" inside
+                // "frame.Add(new MySprite{…})"), expand backwards to include the "frame.Add(" prefix
+                // plus its leading indentation so we don't leave an orphan "frame.Add();" behind.
+                {
+                    int scan = start - 1;
+                    while (scan >= 0 && (patched[scan] == ' ' || patched[scan] == '\t'))
+                        scan--;
+                    if (scan >= 0 && patched[scan] == '(')
+                    {
+                        // Include the whole line (indentation + call up to and including '(')
+                        int lineBegin = scan;
+                        while (lineBegin > 0 && patched[lineBegin - 1] != '\n')
+                            lineBegin--;
+                        start = lineBegin;
+                    }
+                }
+
+                // Expand end forwards over ");"-suffix left by the object-initializer pattern,
+                // then consume ';' and any trailing whitespace on the same line.
+                {
+                    int scan = end;
+                    while (scan < patched.Length && (patched[scan] == ' ' || patched[scan] == '\t'))
+                        scan++;
+                    if (scan < patched.Length && patched[scan] == ')')
+                    {
+                        scan++; // consume ')'
+                        while (scan < patched.Length && (patched[scan] == ' ' || patched[scan] == '\t'))
+                            scan++;
+                        if (scan < patched.Length && patched[scan] == ';')
+                            scan++; // consume ';'
+                        end = scan;
+                    }
+                }
+
+                // Remove trailing newline(s) so we don't leave ragged blank lines.
+                while (end < patched.Length && (patched[end] == '\r' || patched[end] == '\n'))
+                    end++;
+
+                ranges.Add(Tuple.Create(start, end));
+            }
+
+            // Apply removals from back to front to keep offsets valid.
+            ranges.Sort((a, b) => b.Item1.CompareTo(a.Item1));
+            foreach (var r in ranges)
+            {
+                if (r.Item1 < 0 || r.Item2 > patched.Length || r.Item2 <= r.Item1)
+                    return false;
+                patched = patched.Substring(0, r.Item1) + patched.Substring(r.Item2);
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Rebuilds Roslyn-injected animation regions from the remaining sprites after deletion.
+        /// This removes orphan injected vars/compute blocks while preserving shared ones.
+        /// </summary>
+        private void CleanupInjectedAnimationAfterDeletion()
+        {
+            if (_layout?.OriginalSourceCode == null)
+            {
+                System.Diagnostics.Debug.WriteLine("[DeleteCleanup] Skipped: OriginalSourceCode is null.");
+                return;
+            }
+
+            string existing = _layout.OriginalSourceCode;
+            var allSprites = _layout.Sprites?.ToList() ?? new List<SpriteEntry>();
+            bool hasLegacyKeyframeBlock = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
+
+            IEnumerable<SpriteEntry> injectionSprites = allSprites;
+            if (hasLegacyKeyframeBlock)
+            {
+                // Keep full sprite order for duplicate-name targeting; strip only keyframe/group
+                // effects so legacy keyframe snippets aren't duplicated by Roslyn reinjection.
+                var filtered = new List<SpriteEntry>();
+                foreach (var sp in allSprites)
+                {
+                    var fx = (sp.AnimationEffects ?? new List<IAnimationEffect>())
+                        .Where(a => !(a is KeyframeEffect) && !(a is GroupFollowerEffect))
+                        .ToList();
+
+                    filtered.Add(new SpriteEntry
+                    {
+                        Type = sp.Type,
+                        SpriteName = sp.SpriteName,
+                        Text = sp.Text,
+                        X = sp.X,
+                        Y = sp.Y,
+                        Width = sp.Width,
+                        Height = sp.Height,
+                        ColorR = sp.ColorR,
+                        ColorG = sp.ColorG,
+                        ColorB = sp.ColorB,
+                        ColorA = sp.ColorA,
+                        Rotation = sp.Rotation,
+                        SourceLineNumber = sp.SourceLineNumber,
+                        SourceStart = sp.SourceStart,
+                        SourceEnd = sp.SourceEnd,
+                        AnimationEffects = fx,
+                    });
+                }
+
+                injectionSprites = filtered;
+            }
+
+            var inj = RoslynAnimationInjector.InjectAnimations(existing, injectionSprites);
+            if (!inj.Success)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[DeleteCleanup] Skipped: InjectAnimations failed. Error='{inj.Error ?? "(none)"}'.");
+                return;
+            }
+            if (inj.Code == existing)
+            {
+                System.Diagnostics.Debug.WriteLine("[DeleteCleanup] No changes: reinjection produced identical code.");
+                return;
+            }
+
+            _layout.OriginalSourceCode = inj.Code;
+            SetCodeText(inj.Code);
+            _codeBoxDirty = true;
+            _lblCodeTitle.Text = "✏ Code (edited)";
+            _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);
+            WriteBackToWatchedFile(inj.Code);
+
+            System.Diagnostics.Debug.WriteLine(
+                $"[DeleteCleanup] Applied: rewritten code after deletion. AnimatedSprites={inj.SpritesAnimated}.");
         }
 
         private void AddSelectedTreeSprite()
@@ -1265,6 +1522,9 @@ namespace SESpriteLCDLayoutTool
                 System.Diagnostics.Debug.WriteLine($"[OnLayerListSelectionChanged] SKIPPED — _updatingProps={_updatingProps}, _layout={((_layout == null) ? "null" : "ok")}");
                 return;
             }
+
+            HideLayerListTooltip();
+
             // In multi-select mode, set canvas to the focused item (last clicked)
             // SelectedIndex still returns the most recently toggled item
             int idx = _lstLayers.SelectedIndex;
@@ -1276,6 +1536,7 @@ namespace SESpriteLCDLayoutTool
 
         private void OnLayerListDoubleClick(object sender, MouseEventArgs e)
         {
+            HideLayerListTooltip();
             System.Diagnostics.Debug.WriteLine("[OnLayerListDoubleClick] Event triggered");
 
             if (_layout == null || _codeBox.TextLength == 0)
@@ -1333,6 +1594,143 @@ namespace SESpriteLCDLayoutTool
                     _codeBox.ScrollToCaret();
                 }));
             }
+        }
+
+        private void OnLayerListMouseMove(object sender, MouseEventArgs e)
+        {
+            if (_lstLayers == null || _layerListTooltip == null)
+                return;
+
+            int idx = _lstLayers.IndexFromPoint(e.Location);
+            if (idx < 0)
+            {
+                HideLayerListTooltip();
+                return;
+            }
+
+            Rectangle itemBounds;
+            try
+            {
+                itemBounds = _lstLayers.GetItemRectangle(idx);
+            }
+            catch
+            {
+                HideLayerListTooltip();
+                return;
+            }
+
+            if (!itemBounds.Contains(e.Location))
+            {
+                HideLayerListTooltip();
+                return;
+            }
+
+            string tip = BuildLayerTooltip(SpriteFromLayerIndex(idx));
+            if (string.IsNullOrWhiteSpace(tip))
+            {
+                HideLayerListTooltip();
+                return;
+            }
+
+            if (idx == _lastLayerTooltipIndex &&
+                string.Equals(tip, _lastLayerTooltipText, StringComparison.Ordinal))
+                return;
+
+            _lastLayerTooltipIndex = idx;
+            _lastLayerTooltipText = tip;
+            _lastLayerTooltipLocation = e.Location;
+
+            if (_layerListTooltipTimer != null)
+            {
+                _layerListTooltipTimer.Stop();
+                _layerListTooltipTimer.Start();
+            }
+        }
+
+        private void OnLayerListTooltipTimerTick(object sender, EventArgs e)
+        {
+            if (_layerListTooltipTimer != null)
+                _layerListTooltipTimer.Stop();
+
+            if (_lstLayers == null || _layerListTooltip == null || string.IsNullOrWhiteSpace(_lastLayerTooltipText))
+                return;
+
+            if (_lastLayerTooltipIndex < 0 || _lastLayerTooltipIndex >= _lstLayers.Items.Count)
+                return;
+
+            _layerListTooltip.SetToolTip(_lstLayers, _lastLayerTooltipText);
+            _layerListTooltip.Show(_lastLayerTooltipText, _lstLayers, _lastLayerTooltipLocation.X + 18, _lastLayerTooltipLocation.Y + 18, 7000);
+        }
+
+        private void HideLayerListTooltip()
+        {
+            if (_layerListTooltip == null || _lstLayers == null)
+                return;
+
+            _layerListTooltipTimer?.Stop();
+
+            _layerListTooltip.Hide(_lstLayers);
+            _layerListTooltip.SetToolTip(_lstLayers, string.Empty);
+            _lastLayerTooltipText = null;
+            _lastLayerTooltipIndex = -1;
+            _lastLayerTooltipLocation = Point.Empty;
+        }
+
+        private string BuildLayerTooltip(SpriteEntry sprite)
+        {
+            if (sprite == null)
+                return null;
+
+            var lines = new List<string>();
+            lines.Add(sprite.DisplayName);
+
+            var badges = new List<string>();
+            if (sprite.IsHidden) badges.Add("Hidden");
+            if (sprite.IsLocked) badges.Add("Locked");
+            if (sprite.IsReferenceLayout) badges.Add("Reference");
+            if (sprite.IsSnapshotData) badges.Add("Game data");
+            if (sprite.SourceStart < 0) badges.Add("Untracked");
+            if (sprite.KeyframeAnimation != null) badges.Add($"Animated ({sprite.KeyframeAnimation.Keyframes.Count} keyframes)");
+            if (!string.IsNullOrEmpty(sprite.AnimationGroupId)) badges.Add($"Group: {sprite.AnimationGroupId}");
+            if (badges.Count > 0)
+                lines.Add(string.Join(" | ", badges));
+
+            string source = CodeNavigationService.GetSourceLocationDescription(sprite);
+            if (!string.IsNullOrWhiteSpace(source))
+                lines.Add(source);
+
+            if (!string.IsNullOrWhiteSpace(sprite.VariableName))
+                lines.Add("Variable: " + sprite.VariableName);
+
+            if (sprite.Type == SpriteEntryType.Text)
+            {
+                if (!string.IsNullOrWhiteSpace(sprite.Text))
+                    lines.Add("Text: " + TrimTooltipText(sprite.Text, 120));
+            }
+            else if (!string.IsNullOrWhiteSpace(sprite.SpriteName))
+            {
+                lines.Add("Sprite: " + sprite.SpriteName);
+            }
+
+            if (!string.IsNullOrWhiteSpace(sprite.RuntimeDataNote))
+                lines.Add("Data: " + TrimTooltipText(sprite.RuntimeDataNote, 120));
+
+            if (!string.IsNullOrWhiteSpace(sprite.SourceCodeSnippet))
+                lines.Add("Code: " + TrimTooltipText(sprite.SourceCodeSnippet, 180));
+
+            return string.Join(Environment.NewLine, lines.Where(l => !string.IsNullOrWhiteSpace(l)));
+        }
+
+        private static string TrimTooltipText(string text, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return text;
+
+            string normalized = text.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (normalized.Length <= maxLength)
+                return normalized;
+
+            return normalized.Substring(0, Math.Max(0, maxLength - 3)).TrimEnd() + "...";
         }
 
         /// <summary>
@@ -1393,6 +1791,8 @@ namespace SESpriteLCDLayoutTool
             _updatingProps = true;
             try
             {
+                HideLayerListTooltip();
+
                 // Preserve multi-selection state before clearing
                 var prevSelected = GetSelectedSprites();
 
@@ -1460,7 +1860,7 @@ namespace SESpriteLCDLayoutTool
                         prefix += s.KeyframeAnimation != null ? "⟐ " : "⟡ ";
 
                     // Append variable name annotation when present (shows code structure)
-                    string suffix = !string.IsNullOrEmpty(s.VariableName) 
+                    string suffix = !string.IsNullOrEmpty(s.VariableName)
                         ? $"  // {s.VariableName}"
                         : "";
 
@@ -1943,6 +2343,10 @@ namespace SESpriteLCDLayoutTool
         private void SetCodeText(string text)
         {
             _suppressCodeBoxEvents = true;
+            int savedSel = _codeBox.SelectionStart;
+            int savedLen = _codeBox.SelectionLength;
+            var scrollPos = GetScrollPos(_codeBox);
+
             // Normalise to \n for comparison — RichTextBox.Text always returns \r\n
             string normNew  = text.Replace("\r\n", "\n").Replace("\r", "\n");
             string normCur  = _codeBox.Text.Replace("\r\n", "\n").Replace("\r", "\n");
@@ -1959,7 +2363,56 @@ namespace SESpriteLCDLayoutTool
                 _codeUndo.Clear();
                 _codeUndo.Push(_codeBox.Text, 0);
             }
+
+            if (_codeBox.TextLength > 0)
+            {
+                int ss = Math.Max(0, Math.Min(savedSel, _codeBox.TextLength));
+                int maxLen = _codeBox.TextLength - ss;
+                int sl = Math.Max(0, Math.Min(savedLen, maxLen));
+                _codeBox.Select(ss, sl);
+            }
+            SetScrollPos(_codeBox, scrollPos);
+
             _suppressCodeBoxEvents = false;
+        }
+
+        private void UpdateCodeDiagnosticTooltip(Point mousePoint)
+        {
+            if (_codeBox == null || _codeDiagTooltip == null || _codeBox.TextLength == 0)
+            {
+                HideCodeDiagnosticTooltip();
+                return;
+            }
+
+            int charIndex = _codeBox.GetCharIndexFromPosition(mousePoint);
+            if (charIndex < 0 || charIndex >= _codeBox.TextLength)
+            {
+                HideCodeDiagnosticTooltip();
+                return;
+            }
+
+            if (!SyntaxHighlighter.TryGetDiagnosticTooltip(_codeBox, charIndex, out string tip))
+            {
+                HideCodeDiagnosticTooltip();
+                return;
+            }
+
+            if (charIndex == _lastCodeDiagTooltipChar &&
+                string.Equals(tip, _lastCodeDiagTooltipText, StringComparison.Ordinal))
+                return;
+
+            _lastCodeDiagTooltipChar = charIndex;
+            _lastCodeDiagTooltipText = tip;
+            _codeDiagTooltip.SetToolTip(_codeBox, tip);
+        }
+
+        private void HideCodeDiagnosticTooltip()
+        {
+            if (_codeDiagTooltip == null || _codeBox == null) return;
+            _codeDiagTooltip.Hide(_codeBox);
+            _codeDiagTooltip.SetToolTip(_codeBox, string.Empty);
+            _lastCodeDiagTooltipText = null;
+            _lastCodeDiagTooltipChar = -1;
         }
 
         /// <summary>
@@ -2318,6 +2771,8 @@ namespace SESpriteLCDLayoutTool
         {
             if (_layout == null) { SetStatus("No layout loaded."); return; }
 
+            string priorSource = _layout.OriginalSourceCode ?? _codeBox.Text;
+
             string sourceCode = _codeBox.Text;
             if (string.IsNullOrWhiteSpace(sourceCode))
             {
@@ -2397,6 +2852,11 @@ namespace SESpriteLCDLayoutTool
             RefreshLayerList();
             ClearCodeDirty();
             RefreshCode();
+            if (!string.IsNullOrEmpty(priorSource) &&
+                !string.Equals(priorSource, sourceCode, StringComparison.Ordinal))
+            {
+                ShowPatchDiff(priorSource, sourceCode);
+            }
             RefreshDebugStats();
             if (warnings.Count > 0)
                 SetStatus($"Applied {sprites.Count} sprite(s) — {warnings.Count} value(s) corrected: {string.Join("; ", warnings)}");

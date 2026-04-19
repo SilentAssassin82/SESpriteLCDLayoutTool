@@ -488,17 +488,34 @@ namespace SESpriteLCDLayoutTool
                 Font          = new Font("Segoe UI", 8.5f),
                 SelectionMode = SelectionMode.MultiExtended,
             };
-            var layerTooltip = new ToolTip();
-            layerTooltip.SetToolTip(_lstLayers,
+            _layerListTooltip = new ToolTip
+            {
+                InitialDelay = 250,
+                ReshowDelay = 150,
+                AutoPopDelay = 7000,
+                ShowAlways = false,
+                UseAnimation = false,
+                UseFading = false,
+            };
+            _layerListTooltipTimer = new System.Windows.Forms.Timer { Interval = 350 };
+            _layerListTooltipTimer.Tick += OnLayerListTooltipTimerTick;
+            string layerTooltipText =
                 "Layer order (bottom \u2192 top)\n" +
-                "\u25CE = visible  |  \u29B8 = hidden  |  [REF] = reference layout  |  \u26A0 = game data  |  \u00B7 = untracked\n" +
-                "Left-click left edge to toggle visibility\n" +
-                "// variable = code variable name\n" +
-                "Double-click to jump to code definition");
+                "\u25CE visible  |  \u29B8 hidden  |  [REF] reference  |  \u26A0 game data  |  \u00B7 untracked\n" +
+                "Left-click icon area to toggle visibility\n" +
+                "Double-click a row to jump to code";
+
+            // Keep guidance discoverable on header hover, but avoid popping over
+            // the list body while the user is navigating rows.
+            _layerListTooltip.SetToolTip(lblLayers, layerTooltipText);
+            _layerListTooltip.SetToolTip(_lstLayers, string.Empty);
             _lstLayers.SelectedIndexChanged += OnLayerListSelectionChanged;
             _lstLayers.MouseDoubleClick  += OnLayerListDoubleClick;
+            _lstLayers.MouseMove += OnLayerListMouseMove;
+            _lstLayers.MouseLeave += (s, e) => HideLayerListTooltip();
             _lstLayers.MouseDown += (s, e) =>
             {
+                HideLayerListTooltip();
                 int idx = _lstLayers.IndexFromPoint(e.Location);
 
                 // Left-click on icon gutter toggles visibility for that row

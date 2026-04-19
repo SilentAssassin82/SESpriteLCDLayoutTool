@@ -366,6 +366,11 @@ namespace SESpriteLCDLayoutTool.Services
 
             if (creation.Initializer != null)
             {
+                // Build all value replacements from the current syntax tree, then apply
+                // them from end-to-start so offsets remain valid and assignments cannot
+                // be accidentally spliced together.
+                var valueReplacements = new List<Tuple<int, int, string>>();
+
                 foreach (var expr in creation.Initializer.Expressions)
                 {
                     if (expr is AssignmentExpressionSyntax assign &&
@@ -374,25 +379,17 @@ namespace SESpriteLCDLayoutTool.Services
                         string propName = propId.Identifier.Text;
                         if (allOverrides.ContainsKey(propName))
                         {
-                            string oldValue = assign.Right.ToString();
                             string newValue = allOverrides[propName];
-                            // Replace this specific assignment's value
-                            int valueStart = assign.Right.SpanStart;
-                            int valueEnd = assign.Right.Span.End;
-                            result = result.Substring(0, valueStart)
-                                   + newValue
-                                   + result.Substring(valueEnd);
-
-                            // Re-parse after each replacement to keep positions valid
-                            tree = CSharpSyntaxTree.ParseText(result);
-                            root = tree.GetRoot();
-                            addNode = FindSpriteAddNode(root, loc.SpriteName, loc.Ordinal);
-                            if (addNode == null) return result;
-                            creation = addNode.DescendantNodes()
-                                .OfType<ObjectCreationExpressionSyntax>()
-                                .First(c => c.Type.ToString().Contains("MySprite"));
+                            valueReplacements.Add(Tuple.Create(assign.Right.SpanStart, assign.Right.Span.End, newValue));
                         }
                     }
+                }
+
+                foreach (var rep in valueReplacements.OrderByDescending(r => r.Item1))
+                {
+                    result = result.Substring(0, rep.Item1)
+                           + rep.Item3
+                           + result.Substring(rep.Item2);
                 }
             }
 
@@ -552,9 +549,40 @@ namespace SESpriteLCDLayoutTool.Services
                     insertPos = LineStartOf(code, mainMethod.SpanStart);
                     indent = GetIndent(code, mainMethod.SpanStart);
                 }
+                else
+                {
+                    // Fallback: any method containing .DrawFrame() — handles DrawLayout(IMyTextSurface)
+                    // style methods from CodeGenerator.Generate(); insert Ease before the method.
+                    var drawFrameMethod = root.DescendantNodes()
+                        .OfType<MethodDeclarationSyntax>()
+                        .FirstOrDefault(m =>
+                            m.Body?.DescendantNodes()
+                                .OfType<InvocationExpressionSyntax>()
+                                .Any(inv =>
+                                    inv.Expression is MemberAccessExpressionSyntax ma &&
+                                    ma.Name.Identifier.Text == "DrawFrame") == true);
+                    if (drawFrameMethod != null)
+                    {
+                        insertPos = LineStartOf(code, drawFrameMethod.SpanStart);
+                        indent = GetIndent(code, drawFrameMethod.SpanStart);
+                    }
+                    else
+                    {
+                        // Last resort: before the first method declaration of any kind
+                        var firstMethod = root.DescendantNodes()
+                            .OfType<MethodDeclarationSyntax>()
+                            .FirstOrDefault();
+                        if (firstMethod != null)
+                        {
+                            insertPos = LineStartOf(code, firstMethod.SpanStart);
+                            indent = GetIndent(code, firstMethod.SpanStart);
+                        }
+                    }
+                }
             }
 
-            if (insertPos < 0) return code;
+            if (insertPos < 0)
+                return code;
 
             var sb = new StringBuilder();
             sb.AppendLine($"{indent}{EaseStart}");
@@ -590,6 +618,20 @@ namespace SESpriteLCDLayoutTool.Services
                         m.ParameterList.Parameters.Any(p =>
                             p.Type?.ToString().Contains("List<MySprite>") == true ||
                             p.Type?.ToString().Contains("MySpriteDrawFrame") == true));
+            }
+
+            // Fallback: any method containing .DrawFrame() — handles DrawLayout(IMyTextSurface)
+            // style methods generated by CodeGenerator.Generate().
+            if (renderMethod == null)
+            {
+                renderMethod = root.DescendantNodes()
+                    .OfType<MethodDeclarationSyntax>()
+                    .FirstOrDefault(m =>
+                        m.Body?.DescendantNodes()
+                            .OfType<InvocationExpressionSyntax>()
+                            .Any(inv =>
+                                inv.Expression is MemberAccessExpressionSyntax ma &&
+                                ma.Name.Identifier.Text == "DrawFrame") == true);
             }
 
             if (renderMethod?.Body == null || renderMethod.Body.Statements.Count == 0)
@@ -787,32 +829,65 @@ namespace SESpriteLCDLayoutTool.Services
                 string name = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
                 if (string.IsNullOrEmpty(name)) continue;
                 int ord = ordinalMap.TryGetValue(sp, out int o) ? o : 0;
-                if (FindSpriteAddNode(root, name, ord) == null)
+                var exactNode = FindSpriteAddNode(root, name, ord);
+                if (exactNode == null)
+                {
+                    // If any Add block for this sprite name already exists, do not
+                    // synthesize another static block. Ordinal mismatches can occur
+                    // between code and layout ordering and would otherwise duplicate sprites.
+                    var anyNode = FindSpriteAddNode(root, name, 0);
+                    if (anyNode != null)
+                        continue;
+
                     missing.Add(sp);
+                }
             }
 
             if (missing.Count == 0) return code;
 
-            // Find insertion point: before frame.Dispose(), or before the last } in Main()
+            // Find insertion point: prefer frame.Dispose(), then the DrawFrame using-block's
+            // closing brace (DrawLayout style), then end of Main() body.
             int insertPos = -1;
             string indent = "    ";
 
-            // Try frame.Dispose()
+            // 1. Try frame.Dispose() — explicit disposal in PB scripts
             int disposeIdx = code.IndexOf("frame.Dispose()", StringComparison.Ordinal);
             if (disposeIdx >= 0)
             {
                 insertPos = LineStartOf(code, disposeIdx);
                 indent = GetIndent(code, disposeIdx);
             }
-            else
+
+            // 2. Try the using block that contains DrawFrame() — DrawLayout style
+            //    Insert before the using block's closing brace so the new Add block
+            //    is correctly inside the frame scope.
+            if (insertPos < 0)
             {
-                // Try end of Main() body
+                var drawFrameUsing = root.DescendantNodes()
+                    .OfType<UsingStatementSyntax>()
+                    .FirstOrDefault(u =>
+                        u.DescendantNodes()
+                            .OfType<InvocationExpressionSyntax>()
+                            .Any(inv =>
+                                inv.Expression is MemberAccessExpressionSyntax ma &&
+                                ma.Name.Identifier.Text == "DrawFrame"));
+
+                if (drawFrameUsing?.Statement is BlockSyntax usingBlock)
+                {
+                    int closeBrace = usingBlock.CloseBraceToken.SpanStart;
+                    insertPos = LineStartOf(code, closeBrace);
+                    indent = GetIndent(code, closeBrace) + "    ";
+                }
+            }
+
+            // 3. Try end of Main() body — fallback for scripts without DrawFrame usage
+            if (insertPos < 0)
+            {
                 var mainMethod = root.DescendantNodes()
                     .OfType<MethodDeclarationSyntax>()
                     .FirstOrDefault(m => m.Identifier.Text == "Main");
                 if (mainMethod?.Body != null)
                 {
-                    // Insert before the closing brace
                     int closeBrace = mainMethod.Body.CloseBraceToken.SpanStart;
                     insertPos = LineStartOf(code, closeBrace);
                     indent = GetIndent(code, closeBrace) + "    ";

@@ -1774,7 +1774,11 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 // Inject observable stub fields so the Variables panel and sparklines
                 // have numeric data even when the user's bare mod script has no class-level fields.
-                sb.AppendLine("        public int _tick = 0;");
+                // Skip any stub that the user's code already declares to avoid CS0102 duplicates.
+                bool userHasTick = System.Text.RegularExpressions.Regex.IsMatch(stripped,
+                    @"\b(?:int|float)\s+_tick\b");
+                if (!userHasTick)
+                    sb.AppendLine("        public int _tick = 0;");
                 sb.AppendLine("        public float _h2 = 0.5f;");
                 sb.AppendLine("        public float _o2 = 0.8f;");
                 sb.AppendLine("        public float _power = 0.75f;");
