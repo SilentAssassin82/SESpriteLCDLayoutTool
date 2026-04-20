@@ -14,6 +14,14 @@ All notable changes to SE Sprite LCD Layout Tool will be documented in this file
 - **Autocomplete mouse-click selection** — clicking an item in the autocomplete popup now correctly commits the selection; previously the popup would close without inserting because the editor's `LostFocus` handler was hiding it before the click registered.
 - **Autocomplete focus management** — after committing an autocomplete selection via mouse click, focus is correctly returned to the code editor so you can continue typing immediately.
 
+## v3.4.0 - 2026-05-15
+
+### Changed
+- **Complete code editor refactor** — replaced RichTextBox-based code editor with Scintilla (ScintillaNET), providing professional-grade syntax highlighting, line numbers, code folding, and improved performance for large scripts.
+- **Enhanced syntax highlighting** — Scintilla editor now provides C# lexer-based syntax highlighting with proper tokenization for keywords, strings, comments, operators, and identifiers.
+- **Improved code editing experience** — added line number margins, smooth scrolling, better selection handling, and standard code editor keyboard shortcuts.
+- **Performance improvements** — Scintilla's native implementation provides significantly better performance when editing large code blocks compared to the previous RichTextBox implementation.
+
 ## v3.3.0 - 2026-04-19
 
 ### Added
