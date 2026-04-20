@@ -498,12 +498,12 @@ namespace SESpriteLCDLayoutTool
                         executedSprites = null;
                         lblExecResult.Text = "✗ Error";
                         lblExecResult.ForeColor = Color.FromArgb(220, 80, 80);
-                        MessageBox.Show(execResult.Error, "Execution Error",
-                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        ShowAnimationErrorWithDiagnostics(execResult.Error, "Execution Error");
                         return;
                     }
 
                     executedSprites = execResult.Sprites;
+                    ClearEditorDiagnosticsAfterSuccessfulRun();
                     string typeTag = execResult.ScriptType == ScriptType.ProgrammableBlock ? " [PB]"
                                    : execResult.ScriptType == ScriptType.ModSurface        ? " [Mod]"
                                    : execResult.ScriptType == ScriptType.PulsarPlugin      ? " [Pulsar]"

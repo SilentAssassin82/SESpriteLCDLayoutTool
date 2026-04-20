@@ -55,14 +55,14 @@ namespace SESpriteLCDLayoutTool
                 string pbError = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
                 if (pbError != null)
                 {
-                    MessageBox.Show(pbError, "Animation Error",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    ShowAnimationErrorWithDiagnostics(pbError);
                     _animPositionSnapshot = null;
                     UpdateAnimButtonStates();
                     return;
                 }
 
                 _animPlayer.Play();
+                ClearEditorDiagnosticsAfterSuccessfulRun();
                 UpdateAnimButtonStates();
                 SetStatus("Animation playing…");
                 return;
@@ -198,8 +198,7 @@ namespace SESpriteLCDLayoutTool
             string error = _animPlayer.Prepare(code, execCall, execRows);
             if (error != null)
             {
-                MessageBox.Show(error, "Animation Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowAnimationErrorWithDiagnostics(error);
                 _animPositionSnapshot = null;
                 _animFocusCall = null;
                 _animFocusSprites = null;
@@ -208,6 +207,7 @@ namespace SESpriteLCDLayoutTool
             }
 
             _animPlayer.Play();
+            ClearEditorDiagnosticsAfterSuccessfulRun();
             UpdateAnimButtonStates();
             SetStatus(_animFocusCall != null
                 ? $"Animation playing — focused on: {_animFocusCall}"
@@ -288,14 +288,14 @@ namespace SESpriteLCDLayoutTool
             string error = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
             if (error != null)
             {
-                MessageBox.Show(error, "Animation Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowAnimationErrorWithDiagnostics(error);
                 _animPositionSnapshot = null;
                 UpdateAnimButtonStates();
                 return;
             }
 
             _animPlayer.Play();
+            ClearEditorDiagnosticsAfterSuccessfulRun();
             UpdateAnimButtonStates();
             SetStatus("Animation playing…");
         }
@@ -304,9 +304,14 @@ namespace SESpriteLCDLayoutTool
         {
             if (_animPlayer == null) return;
             if (_animPlayer.IsPaused)
+            {
                 _animPlayer.Play();
+            }
             else
+            {
                 _animPlayer.Pause();
+                RestoreCodeDiagnosticsAfterPlayback();
+            }
             UpdateAnimButtonStates();
         }
 
@@ -375,8 +380,7 @@ namespace SESpriteLCDLayoutTool
                 string error = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
                 if (error != null)
                 {
-                    MessageBox.Show(error, "Animation Error",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    ShowAnimationErrorWithDiagnostics(error);
                     _animPositionSnapshot = null;
                     UpdateAnimButtonStates();
                     return;
@@ -384,6 +388,7 @@ namespace SESpriteLCDLayoutTool
             }
 
             _animPlayer.StepForward();
+            ClearEditorDiagnosticsAfterSuccessfulRun();
             UpdateAnimButtonStates();
         }
 
@@ -527,8 +532,45 @@ namespace SESpriteLCDLayoutTool
             SetStatus("Animation error: " + error);
             AppendConsoleError(error, _animPlayer?.CurrentTick ?? -1);
             UpdateAnimButtonStates();
-            MessageBox.Show(error, "Animation Error",
+            ShowAnimationErrorWithDiagnostics(error);
+        }
+
+        private void ShowAnimationErrorWithDiagnostics(string error, string caption = "Animation Error")
+        {
+            if (_codeBox != null && !string.IsNullOrWhiteSpace(error))
+            {
+                try
+                {
+                    int count = SyntaxHighlighter.ApplyCompilerDiagnosticsFromText(_codeBox, error);
+                    if (count > 0)
+                    {
+                        // Freeze live re-highlight until the next text edit so compiler
+                        // diagnostics remain visible instead of being immediately replaced
+                        // by lightweight live diagnostics.
+                        _syntaxTimer?.Stop();
+                        _lastHighlightedCode = _codeBox.Text;
+                        _codeDiagnosticsMode = CodeDiagnosticsMode.Compile;
+                        _compileDiagnosticsCodeSnapshot = _codeBox.Text;
+                        SetStatus($"Animation error ({count} diagnostic(s) highlighted in code).");
+                    }
+                }
+                catch
+                {
+                    // Keep error dialog reliable even if diagnostic overlay fails.
+                }
+            }
+
+            MessageBox.Show(error, caption,
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private void ClearEditorDiagnosticsAfterSuccessfulRun()
+        {
+            if (_codeBox == null) return;
+
+            SyntaxHighlighter.ClearDiagnosticsVisual(_codeBox);
+            _codeDiagnosticsMode = CodeDiagnosticsMode.None;
+            _compileDiagnosticsCodeSnapshot = null;
         }
 
         /// <summary>
@@ -626,10 +668,44 @@ namespace SESpriteLCDLayoutTool
                     SetStatus("Animation stopped.  Use timeline slider to scrub history.");
             }
 
-            // Force garbage collection to immediately reclaim the thousands of
-            // temporary SpriteEntry objects created during animation frames.
-            // Without this, GC pressure accumulates and causes lingering UI lag.
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false);
+            RestoreCodeDiagnosticsAfterPlayback();
+
+            // Let the runtime schedule GC naturally; explicit collection here can
+            // cause visible UI hitches right when playback stops.
+        }
+
+        private void RestoreCodeDiagnosticsAfterPlayback()
+        {
+            // Re-enable diagnostics/squiggles after playback.
+            // OnAnimFrame stops the debounce timer every tick; without restarting and
+            // forcing one pass here, plugin-script diagnostics can appear "stuck".
+            if (_codeBox == null || _highlightInProgress)
+                return;
+
+            _lastHighlightedCode = null;
+            if (_codeBox.TextLength <= LiveHighlightMaxChars)
+            {
+                try
+                {
+                    _highlightInProgress = true;
+                    // Keep restore path lightweight; the debounce pass will add
+                    // semantic markers asynchronously.
+                    SyntaxHighlighter.Highlight(_codeBox, includeSemantics: false, skipDiagnostics: true);
+                    _lastHighlightedCode = _codeBox.Text;
+                }
+                finally
+                {
+                    _highlightInProgress = false;
+                }
+
+                _syntaxTimer?.Stop();
+                _syntaxTimer?.Start();
+            }
+            else
+            {
+                _syntaxTimer?.Stop();
+                _syntaxTimer?.Start();
+            }
         }
 
         private void EnsureAnimPlayer()

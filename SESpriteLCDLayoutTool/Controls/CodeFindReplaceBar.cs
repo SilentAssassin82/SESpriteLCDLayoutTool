@@ -11,7 +11,7 @@ namespace SESpriteLCDLayoutTool.Controls
     /// </summary>
     internal sealed class CodeFindReplaceBar : Panel
     {
-        private readonly RichTextBox _codeBox;
+        private readonly ScintillaCodeBox _codeBox;
         private readonly TextBox _txtFind;
         private readonly TextBox _txtReplace;
         private readonly Label _lblStatus;
@@ -22,7 +22,7 @@ namespace SESpriteLCDLayoutTool.Controls
 
         private int _lastMatchStart = -1;
 
-        public CodeFindReplaceBar(RichTextBox codeBox)
+        public CodeFindReplaceBar(ScintillaCodeBox codeBox)
         {
             _codeBox = codeBox ?? throw new ArgumentNullException(nameof(codeBox));
 

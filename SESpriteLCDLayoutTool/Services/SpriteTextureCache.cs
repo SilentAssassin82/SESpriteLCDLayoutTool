@@ -6,6 +6,7 @@ using System.Drawing.Drawing2D;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace SESpriteLCDLayoutTool.Services
@@ -260,111 +261,195 @@ namespace SESpriteLCDLayoutTool.Services
 
         private void ParseSbcFile(string path, string textureRoot)
         {
-            XDocument doc;
-            using (var stream = File.OpenRead(path))
-                doc = XDocument.Load(stream);
-
-            var root = doc.Root;
-            if (root == null) return;
-
-            // Walk all elements looking for sprite/texture definitions.
-            // SE uses several definition types, but they all follow the pattern:
-            //   <Id><SubtypeId>SpriteName</SubtypeId></Id>
-            //   + a texture path in SpritePath, TexturePath, Texture, or Icon.
-            foreach (var def in root.Descendants())
+            var settings = new XmlReaderSettings
             {
-                string localName = def.Name.LocalName;
+                IgnoreComments = true,
+                IgnoreWhitespace = true,
+                DtdProcessing = DtdProcessing.Ignore,
+                XmlResolver = null,
+            };
 
-                // LCDTextureDefinition entries
-                if (localName == "LCDTextureDefinition")
+            using (var stream = File.OpenRead(path))
+            using (var reader = XmlReader.Create(stream, settings))
+            {
+                while (reader.Read())
                 {
-                    TryExtractMapping(def, textureRoot, "SpritePath", "TexturePath");
-                    continue;
-                }
+                    if (reader.NodeType != XmlNodeType.Element)
+                        continue;
 
-                // TransparentMaterial entries (many SE sprites are these)
-                if (localName == "TransparentMaterial")
-                {
-                    TryExtractMapping(def, textureRoot, "Texture");
-                    continue;
-                }
+                    string localName = reader.LocalName;
 
-                // Generic definitions with xsi:type containing "Sprite" or "LCD"
-                var xsiType = def.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"));
-                if (xsiType != null)
-                {
-                    string typeVal = xsiType.Value;
-                    if (typeVal.IndexOf("LCDTexture", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        typeVal.IndexOf("Sprite", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (localName == "LCDTextureDefinition")
                     {
-                        TryExtractMapping(def, textureRoot, "SpritePath", "TexturePath", "Texture", "Icon");
+                        using (var sub = reader.ReadSubtree())
+                        {
+                            string name, texPath;
+                            ReadSubtypeAndTexture(sub, out name, out texPath,
+                                "SpritePath", "TexturePath");
+                            AddMappingIfValid(name, texPath, textureRoot);
+                        }
                         continue;
                     }
-                }
 
-                // Definitions with an Icon element (blocks, items, components — MyObjectBuilder_ sprites)
-                TryExtractObjectBuilderMapping(def, textureRoot);
-            }
-        }
-
-        private void TryExtractMapping(XElement def, string textureRoot, params string[] texElementNames)
-        {
-            string name = GetSubtypeId(def);
-            if (string.IsNullOrWhiteSpace(name)) return;
-
-            foreach (string elName in texElementNames)
-            {
-                string texRelPath = GetDescendantValue(def, elName);
-                if (!string.IsNullOrWhiteSpace(texRelPath))
-                {
-                    _spriteToPath[name] = Path.Combine(textureRoot, texRelPath.Replace('/', '\\'));
-                    return;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Parses definitions that have an Icon element and builds
-        /// "MyObjectBuilder_{TypeId}/{SubtypeId}" → icon path mappings.
-        /// This covers block, item, component, ammo, and tool sprites.
-        /// </summary>
-        private void TryExtractObjectBuilderMapping(XElement def, string textureRoot)
-        {
-            string typeId = null;
-            string subtypeId = null;
-            string iconPath = null;
-
-            foreach (var child in def.Elements())
-            {
-                string ln = child.Name.LocalName;
-                if (ln == "Id")
-                {
-                    foreach (var idChild in child.Elements())
+                    if (localName == "TransparentMaterial")
                     {
-                        if (idChild.Name.LocalName == "TypeId")
-                            typeId = idChild.Value?.Trim();
-                        else if (idChild.Name.LocalName == "SubtypeId")
-                            subtypeId = idChild.Value?.Trim();
+                        using (var sub = reader.ReadSubtree())
+                        {
+                            string name, texPath;
+                            ReadSubtypeAndTexture(sub, out name, out texPath, "Texture");
+                            AddMappingIfValid(name, texPath, textureRoot);
+                        }
+                        continue;
                     }
-                    // Attribute form: <Id Type="..." Subtype="..." />
-                    if (typeId == null)
-                        typeId = (child.Attribute("Type") ?? child.Attribute("TypeId"))?.Value?.Trim();
-                    if (subtypeId == null)
-                        subtypeId = (child.Attribute("Subtype") ?? child.Attribute("SubtypeId"))?.Value?.Trim();
-                }
-                else if (ln == "Icon" && iconPath == null)
-                {
-                    iconPath = child.Value?.Trim();
+
+                    if (localName != "Definition")
+                        continue;
+
+                    string xsiType = reader.GetAttribute("type", "http://www.w3.org/2001/XMLSchema-instance");
+                    bool hasSpriteLikeType = !string.IsNullOrEmpty(xsiType)
+                        && (xsiType.IndexOf("LCDTexture", StringComparison.OrdinalIgnoreCase) >= 0
+                            || xsiType.IndexOf("Sprite", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    using (var sub = reader.ReadSubtree())
+                    {
+                        if (hasSpriteLikeType)
+                        {
+                            string name, texPath;
+                            ReadSubtypeAndTexture(sub, out name, out texPath,
+                                "SpritePath", "TexturePath", "Texture", "Icon");
+                            AddMappingIfValid(name, texPath, textureRoot);
+                        }
+                        else
+                        {
+                            string typeId, subtypeId, iconPath;
+                            ReadObjectBuilderInfo(sub, out typeId, out subtypeId, out iconPath);
+                            if (!string.IsNullOrEmpty(typeId) && !string.IsNullOrEmpty(subtypeId) && !string.IsNullOrEmpty(iconPath))
+                            {
+                                string spriteName = "MyObjectBuilder_" + typeId + "/" + subtypeId;
+                                if (!_spriteToPath.ContainsKey(spriteName))
+                                    _spriteToPath[spriteName] = Path.Combine(textureRoot, iconPath.Replace('/', '\\'));
+                            }
+                        }
+                    }
                 }
             }
+        }
 
-            if (string.IsNullOrEmpty(typeId) || string.IsNullOrEmpty(subtypeId) || string.IsNullOrEmpty(iconPath))
+        private void AddMappingIfValid(string name, string texRelPath, string textureRoot)
+        {
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(texRelPath))
                 return;
 
-            // SE exposes these as "MyObjectBuilder_TypeId/SubtypeId"
-            string spriteName = $"MyObjectBuilder_{typeId}/{subtypeId}";
-            if (!_spriteToPath.ContainsKey(spriteName))
-                _spriteToPath[spriteName] = Path.Combine(textureRoot, iconPath.Replace('/', '\\'));
+            _spriteToPath[name] = Path.Combine(textureRoot, texRelPath.Replace('/', '\\'));
+        }
+
+        private static void ReadSubtypeAndTexture(XmlReader reader, out string subtypeId, out string texturePath, params string[] texElementNames)
+        {
+            subtypeId = null;
+            texturePath = null;
+            var texNames = new HashSet<string>(texElementNames, StringComparer.Ordinal);
+
+            while (reader.Read())
+            {
+                if (reader.NodeType != XmlNodeType.Element)
+                    continue;
+
+                string ln = reader.LocalName;
+
+                if (ln == "Id")
+                {
+                    if (string.IsNullOrWhiteSpace(subtypeId))
+                    {
+                        var attr = reader.GetAttribute("Subtype") ?? reader.GetAttribute("SubtypeId");
+                        if (!string.IsNullOrWhiteSpace(attr))
+                            subtypeId = attr.Trim();
+                    }
+                    continue;
+                }
+
+                if (ln == "SubtypeId" && string.IsNullOrWhiteSpace(subtypeId))
+                {
+                    string value = ReadElementValue(reader);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        subtypeId = value.Trim();
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(texturePath) && texNames.Contains(ln))
+                {
+                    string value = ReadElementValue(reader);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        texturePath = value.Trim();
+                }
+            }
+        }
+
+        private static void ReadObjectBuilderInfo(XmlReader reader, out string typeId, out string subtypeId, out string iconPath)
+        {
+            typeId = null;
+            subtypeId = null;
+            iconPath = null;
+
+            while (reader.Read())
+            {
+                if (reader.NodeType != XmlNodeType.Element)
+                    continue;
+
+                string ln = reader.LocalName;
+
+                if (ln == "Id")
+                {
+                    if (string.IsNullOrWhiteSpace(typeId))
+                    {
+                        var t = reader.GetAttribute("Type") ?? reader.GetAttribute("TypeId");
+                        if (!string.IsNullOrWhiteSpace(t))
+                            typeId = t.Trim();
+                    }
+
+                    if (string.IsNullOrWhiteSpace(subtypeId))
+                    {
+                        var s = reader.GetAttribute("Subtype") ?? reader.GetAttribute("SubtypeId");
+                        if (!string.IsNullOrWhiteSpace(s))
+                            subtypeId = s.Trim();
+                    }
+                    continue;
+                }
+
+                if (ln == "TypeId" && string.IsNullOrWhiteSpace(typeId))
+                {
+                    string value = ReadElementValue(reader);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        typeId = value.Trim();
+                    continue;
+                }
+
+                if (ln == "SubtypeId" && string.IsNullOrWhiteSpace(subtypeId))
+                {
+                    string value = ReadElementValue(reader);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        subtypeId = value.Trim();
+                    continue;
+                }
+
+                if (ln == "Icon" && string.IsNullOrWhiteSpace(iconPath))
+                {
+                    string value = ReadElementValue(reader);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        iconPath = value.Trim();
+                }
+            }
+        }
+
+        private static string ReadElementValue(XmlReader reader)
+        {
+            if (reader == null || reader.NodeType != XmlNodeType.Element)
+                return null;
+
+            if (reader.IsEmptyElement)
+                return string.Empty;
+
+            try { return reader.ReadElementContentAsString(); }
+            catch { return null; }
         }
 
         private static bool IsTexturePath(string name)
@@ -429,28 +514,45 @@ namespace SESpriteLCDLayoutTool.Services
 
         private static string GetSubtypeId(XElement def)
         {
-            // Try <Id><SubtypeId>...</SubtypeId></Id>
-            foreach (var id in def.Descendants())
+            // Fast path: direct <Id> child
+            foreach (var child in def.Elements())
             {
-                if (id.Name.LocalName == "Id")
+                if (child.Name.LocalName != "Id")
+                    continue;
+
+                foreach (var idChild in child.Elements())
                 {
-                    foreach (var child in id.Elements())
-                    {
-                        if (child.Name.LocalName == "SubtypeId")
-                            return child.Value?.Trim();
-                    }
-                    // Some defs use <Id Subtype="...">
-                    var subtypeAttr = id.Attribute("Subtype") ?? id.Attribute("SubtypeId");
-                    if (subtypeAttr != null)
-                        return subtypeAttr.Value?.Trim();
+                    if (idChild.Name.LocalName == "SubtypeId")
+                        return idChild.Value?.Trim();
                 }
+
+                var subtypeAttr = child.Attribute("Subtype") ?? child.Attribute("SubtypeId");
+                if (subtypeAttr != null)
+                    return subtypeAttr.Value?.Trim();
             }
 
-            // Direct SubtypeId element (without Id wrapper)
+            // Fast path: direct <SubtypeId> child
             foreach (var child in def.Elements())
             {
                 if (child.Name.LocalName == "SubtypeId")
                     return child.Value?.Trim();
+            }
+
+            // Fallback: search descendants for uncommon layouts
+            foreach (var id in def.Descendants())
+            {
+                if (id.Name.LocalName != "Id")
+                    continue;
+
+                foreach (var child in id.Elements())
+                {
+                    if (child.Name.LocalName == "SubtypeId")
+                        return child.Value?.Trim();
+                }
+
+                var subtypeAttr = id.Attribute("Subtype") ?? id.Attribute("SubtypeId");
+                if (subtypeAttr != null)
+                    return subtypeAttr.Value?.Trim();
             }
 
             return null;
@@ -458,6 +560,14 @@ namespace SESpriteLCDLayoutTool.Services
 
         private static string GetDescendantValue(XElement parent, string localName)
         {
+            // Fast path: direct child lookup
+            foreach (var el in parent.Elements())
+            {
+                if (el.Name.LocalName == localName)
+                    return el.Value?.Trim();
+            }
+
+            // Fallback: deep lookup
             foreach (var el in parent.Descendants())
             {
                 if (el.Name.LocalName == localName)

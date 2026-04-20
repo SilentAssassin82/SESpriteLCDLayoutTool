@@ -23,135 +23,143 @@ namespace SESpriteLCDLayoutTool
         // ── UI construction ───────────────────────────────────────────────────────
         private void BuildUI()
         {
-            // Menu bar
-            var menuStrip = BuildMenuStrip();
-            Controls.Add(menuStrip);
-            MainMenuStrip = menuStrip;
-
-            // Status bar
-            var statusStrip = new StatusStrip { BackColor = Color.FromArgb(45, 45, 48) };
-            _statusLabel = new ToolStripStatusLabel("Ready") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
-            statusStrip.Items.Add(_statusLabel);
-            Controls.Add(statusStrip);
-
-            // Debug stats panel (above status bar, hidden by default)
-            _debugPanel = new Panel
+            SuspendLayout();
+            try
             {
-                Dock      = DockStyle.Bottom,
-                Height    = 48,
-                BackColor = Color.FromArgb(22, 28, 22),
-                Visible   = false,
-                Padding   = new Padding(8, 4, 8, 4),
-            };
-            _lblDebugStats = new Label
+                // Menu bar
+                var menuStrip = BuildMenuStrip();
+                Controls.Add(menuStrip);
+                MainMenuStrip = menuStrip;
+
+                // Status bar
+                var statusStrip = new StatusStrip { BackColor = Color.FromArgb(45, 45, 48) };
+                _statusLabel = new ToolStripStatusLabel("Ready") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+                statusStrip.Items.Add(_statusLabel);
+                Controls.Add(statusStrip);
+
+                // Debug stats panel (above status bar, hidden by default)
+                _debugPanel = new Panel
+                {
+                    Dock      = DockStyle.Bottom,
+                    Height    = 48,
+                    BackColor = Color.FromArgb(22, 28, 22),
+                    Visible   = false,
+                    Padding   = new Padding(8, 4, 8, 4),
+                };
+                _lblDebugStats = new Label
+                {
+                    Dock      = DockStyle.Fill,
+                    ForeColor = Color.FromArgb(170, 220, 170),
+                    Font      = new Font("Consolas", 8.5f),
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Text      = "No sprites",
+                };
+                _debugPanel.Controls.Add(_lblDebugStats);
+                Controls.Add(_debugPanel);
+
+                // Main horizontal split: sprite tree | work area
+                var mainSplit = new SplitContainer
+                {
+                    Dock        = DockStyle.Fill,
+                    Orientation = Orientation.Vertical,
+                    BackColor   = Color.FromArgb(30, 30, 30),
+                    BorderStyle = BorderStyle.None,
+                };
+                Controls.Add(mainSplit);
+                mainSplit.BringToFront();   // Ensure Fill is laid out after Top/Bottom docked controls
+
+                mainSplit.Panel1.Controls.Add(BuildLeftPanel());
+
+                // Work area: vertical split — top (canvas+props) | bottom (code)
+                var workSplit = new SplitContainer
+                {
+                    Dock        = DockStyle.Fill,
+                    Orientation = Orientation.Horizontal,
+                    BackColor   = Color.FromArgb(30, 30, 30),
+                    BorderStyle = BorderStyle.None,
+                };
+                mainSplit.Panel2.Controls.Add(workSplit);
+
+                // Top work area: canvas | properties
+                var topSplit = new SplitContainer
+                {
+                    Dock        = DockStyle.Fill,
+                    Orientation = Orientation.Vertical,
+                    BackColor   = Color.FromArgb(30, 30, 30),
+                    BorderStyle = BorderStyle.None,
+                };
+                workSplit.Panel1.Controls.Add(topSplit);
+
+                // Store splits for Load-time sizing
+                _mainSplit = mainSplit;
+                _workSplit = workSplit;
+                _topSplit  = topSplit;
+
+                // Canvas + rulers container
+                _canvas = new LcdCanvas { Dock = DockStyle.Fill };
+                _canvas.SelectionChanged += OnSelectionChanged;
+                _canvas.SpriteModified   += OnSpriteModified;
+                _canvas.DragStarting     += (ss, ee) => PushUndo();
+                _canvas.DragCompleted    += OnDragCompleted;
+                _canvas.ContextMenuStrip  = BuildCanvasContextMenu();
+
+                // Rulers
+                _rulerH = new CanvasRuler(CanvasRuler.Orientation.Horizontal);
+                _rulerV = new CanvasRuler(CanvasRuler.Orientation.Vertical);
+                _rulerCorner = new Panel
+                {
+                    Width     = CanvasRuler.Thickness,
+                    Height    = CanvasRuler.Thickness,
+                    Dock      = DockStyle.None,
+                    BackColor = Color.FromArgb(32, 32, 36),
+                };
+
+                // Panel that hosts canvas + rulers using TableLayoutPanel
+                var canvasTable = new TableLayoutPanel
+                {
+                    Dock        = DockStyle.Fill,
+                    ColumnCount = 2,
+                    RowCount    = 2,
+                    Padding     = new Padding(0),
+                    Margin      = new Padding(0),
+                    BackColor   = Color.FromArgb(28, 28, 28),
+                };
+                canvasTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, CanvasRuler.Thickness));
+                canvasTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+                canvasTable.RowStyles.Add(new RowStyle(SizeType.Absolute, CanvasRuler.Thickness));
+                canvasTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+                canvasTable.Controls.Add(_rulerCorner, 0, 0);
+                canvasTable.Controls.Add(_rulerH, 1, 0);
+                canvasTable.Controls.Add(_rulerV, 0, 1);
+                canvasTable.Controls.Add(_canvas, 1, 1);
+
+                // Wire ruler updates: mouse move fires hairline tracking + transform sync
+                _canvas.SurfaceMouseMoved += (mx, my) =>
+                {
+                    _rulerH.SetCursorPos(mx);
+                    _rulerV.SetCursorPos(my);
+                };
+
+                // Sync transform to rulers after every repaint (zoom/pan/resize)
+                _canvas.Paint += (ss, ee) =>
+                {
+                    if (_canvas.CanvasLayout == null) return;
+                    _canvas.GetCurrentTransform(out float sc, out PointF orig);
+                    _rulerH.SetTransform(sc, orig, _canvas.CanvasLayout.SurfaceWidth);
+                    _rulerV.SetTransform(sc, orig, _canvas.CanvasLayout.SurfaceHeight);
+                };
+
+                topSplit.Panel1.Controls.Add(canvasTable);
+
+                topSplit.Panel2.Controls.Add(BuildPropertiesPanel());
+
+                // Code output
+                workSplit.Panel2.Controls.Add(BuildCodePanel());
+            }
+            finally
             {
-                Dock      = DockStyle.Fill,
-                ForeColor = Color.FromArgb(170, 220, 170),
-                Font      = new Font("Consolas", 8.5f),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Text      = "No sprites",
-            };
-            _debugPanel.Controls.Add(_lblDebugStats);
-            Controls.Add(_debugPanel);
-
-            // Main horizontal split: sprite tree | work area
-            var mainSplit = new SplitContainer
-            {
-                Dock        = DockStyle.Fill,
-                Orientation = Orientation.Vertical,
-                BackColor   = Color.FromArgb(30, 30, 30),
-                BorderStyle = BorderStyle.None,
-            };
-            Controls.Add(mainSplit);
-            mainSplit.BringToFront();   // Ensure Fill is laid out after Top/Bottom docked controls
-
-            mainSplit.Panel1.Controls.Add(BuildLeftPanel());
-
-            // Work area: vertical split — top (canvas+props) | bottom (code)
-            var workSplit = new SplitContainer
-            {
-                Dock        = DockStyle.Fill,
-                Orientation = Orientation.Horizontal,
-                BackColor   = Color.FromArgb(30, 30, 30),
-                BorderStyle = BorderStyle.None,
-            };
-            mainSplit.Panel2.Controls.Add(workSplit);
-
-            // Top work area: canvas | properties
-            var topSplit = new SplitContainer
-            {
-                Dock        = DockStyle.Fill,
-                Orientation = Orientation.Vertical,
-                BackColor   = Color.FromArgb(30, 30, 30),
-                BorderStyle = BorderStyle.None,
-            };
-            workSplit.Panel1.Controls.Add(topSplit);
-
-            // Store splits for Load-time sizing
-            _mainSplit = mainSplit;
-            _workSplit = workSplit;
-            _topSplit  = topSplit;
-
-            // Canvas + rulers container
-            _canvas = new LcdCanvas { Dock = DockStyle.Fill };
-            _canvas.SelectionChanged += OnSelectionChanged;
-            _canvas.SpriteModified   += OnSpriteModified;
-            _canvas.DragStarting     += (ss, ee) => PushUndo();
-            _canvas.DragCompleted    += OnDragCompleted;
-            _canvas.ContextMenuStrip  = BuildCanvasContextMenu();
-
-            // Rulers
-            _rulerH = new CanvasRuler(CanvasRuler.Orientation.Horizontal);
-            _rulerV = new CanvasRuler(CanvasRuler.Orientation.Vertical);
-            _rulerCorner = new Panel
-            {
-                Width     = CanvasRuler.Thickness,
-                Height    = CanvasRuler.Thickness,
-                Dock      = DockStyle.None,
-                BackColor = Color.FromArgb(32, 32, 36),
-            };
-
-            // Panel that hosts canvas + rulers using TableLayoutPanel
-            var canvasTable = new TableLayoutPanel
-            {
-                Dock        = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount    = 2,
-                Padding     = new Padding(0),
-                Margin      = new Padding(0),
-                BackColor   = Color.FromArgb(28, 28, 28),
-            };
-            canvasTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, CanvasRuler.Thickness));
-            canvasTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            canvasTable.RowStyles.Add(new RowStyle(SizeType.Absolute, CanvasRuler.Thickness));
-            canvasTable.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-            canvasTable.Controls.Add(_rulerCorner, 0, 0);
-            canvasTable.Controls.Add(_rulerH, 1, 0);
-            canvasTable.Controls.Add(_rulerV, 0, 1);
-            canvasTable.Controls.Add(_canvas, 1, 1);
-
-            // Wire ruler updates: mouse move fires hairline tracking + transform sync
-            _canvas.SurfaceMouseMoved += (mx, my) =>
-            {
-                _rulerH.SetCursorPos(mx);
-                _rulerV.SetCursorPos(my);
-            };
-
-            // Sync transform to rulers after every repaint (zoom/pan/resize)
-            _canvas.Paint += (ss, ee) =>
-            {
-                if (_canvas.CanvasLayout == null) return;
-                _canvas.GetCurrentTransform(out float sc, out PointF orig);
-                _rulerH.SetTransform(sc, orig, _canvas.CanvasLayout.SurfaceWidth);
-                _rulerV.SetTransform(sc, orig, _canvas.CanvasLayout.SurfaceHeight);
-            };
-
-            topSplit.Panel1.Controls.Add(canvasTable);
-
-            topSplit.Panel2.Controls.Add(BuildPropertiesPanel());
-
-            // Code output
-            workSplit.Panel2.Controls.Add(BuildCodePanel());
+                ResumeLayout(true);
+            }
         }
 
         private MenuStrip BuildMenuStrip()
@@ -858,13 +866,13 @@ namespace SESpriteLCDLayoutTool
                 _execResultLabel.Text      = "✗ Error";
                 _execResultLabel.ForeColor = Color.FromArgb(220, 80, 80);
                 AppendConsoleError(result.Error);
-                MessageBox.Show(result.Error, "Execution Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowAnimationErrorWithDiagnostics(result.Error, "Execution Error");
                 return;
             }
 
             // Show Echo output in Console tab
             AppendConsoleOutput(result.OutputLines);
+            ClearEditorDiagnosticsAfterSuccessfulRun();
 
             string typeTag = result.ScriptType == ScriptType.ProgrammableBlock ? " [PB]"
                            : result.ScriptType == ScriptType.ModSurface        ? " [Mod]"

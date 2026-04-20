@@ -31,6 +31,7 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public static List<SpriteEntry> Parse(string code)
         {
+            var perfSw = System.Diagnostics.Stopwatch.StartNew();
             var results = new List<SpriteEntry>();
             if (string.IsNullOrWhiteSpace(code)) return results;
 
@@ -153,6 +154,10 @@ namespace SESpriteLCDLayoutTool.Services
             // ── Pass 5: Statement-by-statement property assignment ──
             // var sprite = new MySprite();  sprite.Data = "...";  sprite.Type = ...;
             results.AddRange(ParseStatementAssignments(code, consumed));
+
+            perfSw.Stop();
+            if (perfSw.ElapsedMilliseconds >= 60)
+                System.Diagnostics.Debug.WriteLine($"[Perf][CodeParser.Parse] {perfSw.ElapsedMilliseconds} ms | len={code.Length} | sprites={results.Count}");
 
             return results;
         }
@@ -788,7 +793,7 @@ namespace SESpriteLCDLayoutTool.Services
         // ── Value extraction helpers ──────────────────────────────────────────
 
         /// <summary>
-        /// Extracts the raw value text for a property assignment like "Name = value,"
+        /// Extracts the raw value text for a property assignment like "Name = value,
         /// </summary>
         private static string ExtractValue(string body, string propertyName)
         {

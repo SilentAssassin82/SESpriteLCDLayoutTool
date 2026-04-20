@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Windows.Forms;
+using SESpriteLCDLayoutTool.Controls;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
@@ -115,7 +116,7 @@ namespace SESpriteLCDLayoutTool.Services
         /// <param name="sprite">The sprite to navigate to (uses SourceStart or SourceMethodName/SourceMethodIndex)</param>
         /// <param name="codeBox">The RichTextBox containing the source code</param>
         /// <returns>True if navigation was successful, false if sprite not found</returns>
-        public static bool NavigateToSprite(SpriteEntry sprite, RichTextBox codeBox)
+        public static bool NavigateToSprite(SpriteEntry sprite, ScintillaCodeBox codeBox)
         {
             if (sprite == null || codeBox == null)
                 return false;
@@ -1182,7 +1183,7 @@ namespace SESpriteLCDLayoutTool.Services
         private static int NavigateToNearestLoopAdd(
             string currentCode, string methodName, string spriteText,
             System.Collections.Generic.List<SpriteAddMapper.AddCallInfo> calls,
-            RichTextBox codeBox)
+            ScintillaCodeBox codeBox)
         {
             try
             {
@@ -1313,7 +1314,7 @@ namespace SESpriteLCDLayoutTool.Services
         /// <param name="currentCode">The current source code (if different from codeBox.Text)</param>
         /// <param name="spriteMapping">Optional sprite mapping to determine which method created the sprite</param>
         /// <returns>True if navigation was successful</returns>
-        public static bool JumpToSpriteSource(SpriteEntry sprite, RichTextBox codeBox, string currentCode = null, ElementSpriteMapping spriteMapping = null)
+        public static bool JumpToSpriteSource(SpriteEntry sprite, ScintillaCodeBox codeBox, string currentCode = null, ElementSpriteMapping spriteMapping = null)
         {
             if (sprite == null || codeBox == null)
                 return false;

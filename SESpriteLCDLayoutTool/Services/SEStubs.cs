@@ -10,11 +10,12 @@
         //   using VRage.Game.GUI.TextPanel;
         //   using Sandbox.ModAPI.Ingame;
         // works without modification.
-        private const string StubsSource = @"
+        internal const string StubsSource = @"
 // ── Global sprite collector — captures sprites added via MySpriteDrawFrame ──
 namespace SELcdExec
 {
     using System.Collections.Generic;
+    using VRage.Game.GUI.TextPanel;
     using Sandbox.ModAPI.Ingame;
 
     public static class SpriteCollector
@@ -182,6 +183,64 @@ namespace VRage.Game.GUI.TextPanel
 {
     public enum SpriteType { TEXTURE = 0, TEXT = 1, CLIP_RECT = 2 }
     public enum ContentType { NONE = 0, TEXT_AND_IMAGE = 1, SCRIPT = 2 }
+    public enum TextAlignment { LEFT = 0, CENTER = 1, RIGHT = 2 }
+
+    public struct MySprite
+    {
+        public SpriteType    Type;
+        public string        Data;
+        public VRageMath.Vector2?      Position;
+        public VRageMath.Vector2?      Size;
+        public VRageMath.Color?        Color;
+        public string        FontId;
+        public float         RotationOrScale;
+        public TextAlignment Alignment;
+
+        public MySprite(SpriteType type, string data,
+                       VRageMath.Vector2? position = null, VRageMath.Vector2? size = null, VRageMath.Color? color = null,
+                       string fontId = null, TextAlignment alignment = TextAlignment.LEFT,
+                       float rotationOrScale = 0f)
+        {
+            Type=type; Data=data; Position=position; Size=size; Color=color;
+            FontId=fontId; RotationOrScale=rotationOrScale; Alignment=alignment;
+        }
+
+        public static MySprite CreateText(string text, string font, VRageMath.Color color,
+                                          float scale, TextAlignment alignment)
+        {
+            MySprite sp = new MySprite();
+            sp.Type=SpriteType.TEXT; sp.Data=text; sp.FontId=font;
+            sp.Color=color; sp.RotationOrScale=scale; sp.Alignment=alignment;
+            return sp;
+        }
+
+        public static MySprite CreateSprite(string sprite, VRageMath.Vector2 position, VRageMath.Vector2 size)
+        {
+            MySprite sp = new MySprite();
+            sp.Type=SpriteType.TEXTURE; sp.Data=sprite; sp.Position=position; sp.Size=size;
+            sp.Color=VRageMath.Color.White;
+            return sp;
+        }
+    }
+
+    public struct MySpriteDrawFrame : System.IDisposable
+    {
+        public void Add(MySprite sprite)
+        {
+            SELcdExec.SpriteCollector.Captured.Add(sprite);
+            SELcdExec.SpriteCollector.RecordSpriteMethod(-1);
+            SELcdExec.SpriteCollector._skipNextRecord = true;
+        }
+        public void AddRange(System.Collections.Generic.IEnumerable<MySprite> sprites)
+        {
+            foreach (var s in sprites)
+            {
+                SELcdExec.SpriteCollector.Captured.Add(s);
+                SELcdExec.SpriteCollector.RecordSpriteMethod(-1);
+            }
+        }
+        public void Dispose() { }
+    }
 }
 
 namespace VRageMath
@@ -234,8 +293,6 @@ namespace VRageMath
         public static Color Transparent { get { return new Color(0,0,0,0);    } }
         public static Color operator*(Color c, float f) { return new Color((int)(c.R*f),(int)(c.G*f),(int)(c.B*f),(int)c.A); }
     }
-
-    public enum TextAlignment { LEFT = 0, CENTER = 1, RIGHT = 2 }
 
     public struct Vector3D
     {
@@ -679,26 +736,7 @@ namespace Sandbox.ModAPI.Ingame
         void GetSprites(List<string> sprites);
     }
 
-    public struct MySpriteDrawFrame : IDisposable
-    {
-        public void Add(MySprite sprite)
-        {
-            SELcdExec.SpriteCollector.Captured.Add(sprite);
-            SELcdExec.SpriteCollector.RecordSpriteMethod(-1);
-            SELcdExec.SpriteCollector._skipNextRecord = true;
-        }
-        public void AddRange(IEnumerable<MySprite> sprites)
-        {
-            foreach (var s in sprites)
-            {
-                SELcdExec.SpriteCollector.Captured.Add(s);
-                SELcdExec.SpriteCollector.RecordSpriteMethod(-1);
-            }
-        }
-        public void Dispose() { }
-    }
-
-    public interface IMyProgrammableBlock : IMyTerminalBlock
+    public interface IMyProgrammableBlock
     {
         IMyTextSurface GetSurface(int index);
         int SurfaceCount { get; }
@@ -724,45 +762,7 @@ namespace Sandbox.ModAPI.Ingame
         protected virtual void Save() { }
     }
 
-    public struct MySprite
-    {
-        public SpriteType    Type;
-        public string        Data;
-        public Vector2?      Position;
-        public Vector2?      Size;
-        public Color?        Color;
-        public string        FontId;
-        public float         RotationOrScale;
-        public TextAlignment Alignment;
-
-        public MySprite(SpriteType type, string data,
-                       Vector2? position = null, Vector2? size = null, Color? color = null,
-                       string fontId = null, TextAlignment alignment = TextAlignment.LEFT,
-                       float rotationOrScale = 0f)
-        {
-            Type=type; Data=data; Position=position; Size=size; Color=color;
-            FontId=fontId; RotationOrScale=rotationOrScale; Alignment=alignment;
-        }
-
-        public static MySprite CreateText(string text, string font, Color color,
-                                          float scale, TextAlignment alignment)
-        {
-            MySprite sp = new MySprite();
-            sp.Type=SpriteType.TEXT; sp.Data=text; sp.FontId=font;
-            sp.Color=color; sp.RotationOrScale=scale; sp.Alignment=alignment;
-            return sp;
-        }
-
-        public static MySprite CreateSprite(string sprite, Vector2 position, Vector2 size)
-        {
-            MySprite sp = new MySprite();
-            sp.Type=SpriteType.TEXTURE; sp.Data=sprite; sp.Position=position; sp.Size=size;
-            sp.Color=VRageMath.Color.White;
-            return sp;
-        }
-    }
-
-    // ── Block interfaces ──────────────────────────────────────────────────
+    // ── Block interfaces
 
     public enum ChargeMode { Auto = 0, Recharge = 1, Discharge = 2 }
     public enum MyShipConnectorStatus { Unconnected = 0, Connectable = 1, Connected = 2 }

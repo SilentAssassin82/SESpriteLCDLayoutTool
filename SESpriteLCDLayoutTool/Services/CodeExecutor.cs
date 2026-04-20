@@ -37,6 +37,68 @@ namespace SESpriteLCDLayoutTool.Services
     /// </summary>
     public static partial class CodeExecutor
     {
+        /// <summary>Marker comment inserted before user code in generated sources.</summary>
+        internal const string UserCodeStartMarker = "// __USER_CODE_START__";
+        /// <summary>Marker prefix for the number of lines removed from the top of user code (usings, class wrapper, namespace).</summary>
+        internal const string UserLineOffsetMarker = "// __USER_LINE_OFFSET__=";
+
+        /// <summary>
+        /// Thread-static offset: number of lines removed from the top of user code
+        /// (usings, namespace, class wrapper) before embedding into the generated source.
+        /// Set by Build* methods before calling Compile, consumed by AdjustCompileErrorLineNumbers.
+        /// </summary>
+        [System.ThreadStatic]
+        private static int _userCodeTopLinesRemoved;
+
+        /// <summary>
+        /// Computes the number of lines at the top of <paramref name="originalUserCode"/>
+        /// that were removed (usings, namespace, class wrapper) before embedding into
+        /// the generated source. Used to adjust CSC error line numbers.
+        /// </summary>
+        private static int ComputeStrippedLineOffset(string originalUserCode, string generatedSource)
+        {
+            if (string.IsNullOrEmpty(originalUserCode) || string.IsNullOrEmpty(generatedSource))
+                return 0;
+
+            // Find the first substantial line after the marker in the generated source
+            bool pastMarker = false;
+            string firstContentLine = null;
+            using (var r = new StringReader(generatedSource))
+            {
+                string ln;
+                while ((ln = r.ReadLine()) != null)
+                {
+                    if (!pastMarker)
+                    {
+                        if (ln.TrimStart().StartsWith(UserCodeStartMarker))
+                            pastMarker = true;
+                        continue;
+                    }
+                    string t = ln.Trim();
+                    if (t.Length > 8 && !t.StartsWith("//") && !t.StartsWith("SpriteCollector."))
+                    {
+                        firstContentLine = t;
+                        break;
+                    }
+                }
+            }
+            if (firstContentLine == null) return 0;
+
+            // Find that line in the original user code
+            int lineNo = 0;
+            using (var r = new StringReader(originalUserCode))
+            {
+                string ln;
+                while ((ln = r.ReadLine()) != null)
+                {
+                    lineNo++;
+                    if (ln.Trim() == firstContentLine)
+                        return lineNo - 1; // 0-based: how many lines before this one
+                }
+            }
+            return 0;
+        }
+
         // ── Result type ───────────────────────────────────────────────────────
 
         public sealed class ExecutionResult
@@ -879,6 +941,7 @@ namespace SESpriteLCDLayoutTool.Services
                 try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "SELcd_LastGeneratedSource.cs"), source); }
                 catch { /* ignore */ }
 
+                _userCodeTopLinesRemoved = ComputeStrippedLineOffset(userCode, source);
                 Assembly asm = Compile(source);
                 var result = RunAndConvert(asm);
                 result.ScriptType = scriptType;
@@ -1065,6 +1128,7 @@ namespace SESpriteLCDLayoutTool.Services
             try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "SELcd_LastGeneratedSource.cs"), source); }
             catch { /* ignore */ }
 
+            _userCodeTopLinesRemoved = ComputeStrippedLineOffset(userCode, source);
             Assembly asm = Compile(source);
 
             Type runnerType = asm.GetType("SELcdExec.LcdRunner");
@@ -1346,6 +1410,7 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.AppendLine();
             }
 
+            sb.AppendLine(UserCodeStartMarker);
             sb.AppendLine(stripped);
             sb.AppendLine();
             sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
@@ -1434,6 +1499,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine();
 
             // User methods
+            sb.AppendLine(UserCodeStartMarker);
             sb.AppendLine(stripped);
             sb.AppendLine();
             sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
@@ -1521,6 +1587,7 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine();
 
             // User methods (including Main)
+            sb.AppendLine(UserCodeStartMarker);
             sb.AppendLine(stripped);
             sb.AppendLine();
             sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
@@ -1640,6 +1707,7 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.AppendLine();
             }
 
+            sb.AppendLine(UserCodeStartMarker);
             sb.AppendLine(stripped);
             sb.AppendLine();
             sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
@@ -1789,6 +1857,7 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.AppendLine();
             }
 
+            sb.AppendLine(UserCodeStartMarker);
             sb.AppendLine(stripped);
             sb.AppendLine();
             sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
@@ -1900,6 +1969,7 @@ namespace SESpriteLCDLayoutTool.Services
                 sb.AppendLine();
             }
 
+            sb.AppendLine(UserCodeStartMarker);
             sb.AppendLine(stripped);
             sb.AppendLine();
             sb.AppendLine("        private readonly System.Collections.Generic.List<string> _echoLog = new System.Collections.Generic.List<string>();");
@@ -2034,6 +2104,12 @@ namespace SESpriteLCDLayoutTool.Services
 
                     // Strip temp file path from error messages for readability
                     output = output.Replace(tempSrc, "<user code>");
+
+                    // Adjust line numbers: the generated source wraps user code in
+                    // boilerplate. Find the marker to compute the offset so error
+                    // line numbers map back to the user's original editor positions.
+                    output = AdjustCompileErrorLineNumbers(source, output);
+
                     throw new InvalidOperationException(
                         "Compilation errors:\n" + output.TrimEnd()
                         + "\n\n[Diagnostic: generated source saved to " + diagPath + "]");
@@ -2048,6 +2124,95 @@ namespace SESpriteLCDLayoutTool.Services
                 try { File.Delete(tempSrc); } catch { }
                 try { File.Delete(tempDll); } catch { }
             }
+        }
+
+        /// <summary>
+        /// Adjusts CSC error line numbers so they are relative to the user code
+        /// section (after the <see cref="UserCodeStartMarker"/>) instead of the
+        /// full generated source.
+        /// </summary>
+        private static string AdjustCompileErrorLineNumbers(string generatedSource, string compilerOutput)
+        {
+            if (string.IsNullOrEmpty(generatedSource) || string.IsNullOrEmpty(compilerOutput))
+                return compilerOutput;
+
+            // Find the marker line number (1-based) in the generated source
+            int markerLine = -1;
+            var genLines = new List<string>();
+            int lineNo = 0;
+            using (var reader = new StringReader(generatedSource))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    lineNo++;
+                    genLines.Add(line);
+                    if (markerLine < 0 && line.TrimStart().StartsWith(UserCodeStartMarker))
+                        markerLine = lineNo;
+                }
+            }
+            if (markerLine < 0) return compilerOutput; // no marker found
+
+            // Build a cumulative count of injected instrumentation lines after the marker.
+            // InstrumentRenderMethods injects: SpriteCollector.SetCurrentMethod(...),
+            //   sprites.BeginTrack(), sprites.EndTrack(), _swT stopwatches.
+            // InjectMethodTimings injects: _prev_/_sw_ Stopwatch.StartNew + try {,
+            //   } finally { _sw_.Stop(); _methodTimings[...] }.
+            // These lines don't exist in the user's original code and must be subtracted.
+            int injectedCount = 0;
+            var injectedBefore = new int[genLines.Count + 2]; // indexed by 1-based line number
+            for (int i = markerLine; i < genLines.Count; i++)
+            {
+                string t = genLines[i].Trim();
+                if (IsInjectedInstrumentationLine(t))
+                    injectedCount++;
+                injectedBefore[i + 1] = injectedCount; // line i+1 (1-based)
+            }
+
+            // The user code starts on the line AFTER the marker comment
+            int offset = markerLine; // subtract this from CSC line numbers
+            int topRemoved = _userCodeTopLinesRemoved; // lines removed from user code top (usings, class wrapper)
+
+            // Replace all (line,col) patterns, adjusting line numbers
+            return Regex.Replace(compilerOutput, @"\((\d+),(\d+)\)", m =>
+            {
+                int origLine = int.Parse(m.Groups[1].Value);
+                int col = int.Parse(m.Groups[2].Value);
+                int injected = origLine < injectedBefore.Length ? injectedBefore[origLine] : injectedCount;
+                int adjusted = origLine - offset + topRemoved - injected - 1;
+                if (adjusted < 1) adjusted = 1;
+                return "(" + adjusted + "," + col + ")";
+            });
+        }
+
+        /// <summary>
+        /// Returns true if <paramref name="trimmedLine"/> is a line injected by
+        /// <see cref="InstrumentRenderMethods"/> or <see cref="InjectMethodTimings"/>
+        /// and does not correspond to any line in the user's original code.
+        /// </summary>
+        private static bool IsInjectedInstrumentationLine(string trimmedLine)
+        {
+            if (trimmedLine.Length == 0) return false;
+
+            // InstrumentRenderMethods: SpriteCollector.SetCurrentMethod(...)
+            if (trimmedLine.StartsWith("SpriteCollector.SetCurrentMethod(")) return true;
+
+            // InstrumentRenderMethods: sprites.BeginTrack() / sprites.EndTrack()
+            if (trimmedLine.StartsWith("sprites.BeginTrack(")) return true;
+            if (trimmedLine.StartsWith("sprites.EndTrack(")) return true;
+
+            // InstrumentRenderMethods: _swTN stopwatch lines
+            if (trimmedLine.Contains("_swT") && trimmedLine.Contains(".Stop()")) return true;
+            if (trimmedLine.Contains("_swT") && trimmedLine.Contains("Stopwatch.StartNew()")) return true;
+            if (trimmedLine.Contains("_swT") && trimmedLine.Contains("_methodTimings[")) return true;
+
+            // InjectMethodTimings: var _prev_X = ...; var _sw_X = Stopwatch.StartNew(); try {
+            if (trimmedLine.StartsWith("var _prev_") && trimmedLine.Contains("Stopwatch.StartNew()")) return true;
+
+            // InjectMethodTimings: } finally { _sw_X.Stop(); _methodTimings["X"] = ... }
+            if (trimmedLine.StartsWith("} finally {") && trimmedLine.Contains("_methodTimings[")) return true;
+
+            return false;
         }
 
         // ── Execution + conversion ─────────────────────────────────────────────

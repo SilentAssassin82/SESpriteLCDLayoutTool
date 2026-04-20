@@ -888,8 +888,7 @@ namespace SESpriteLCDLayoutTool
             {
                 _execResultLabel.Text      = "✗ Error";
                 _execResultLabel.ForeColor = Color.FromArgb(220, 80, 80);
-                MessageBox.Show(result.Error, "Execution Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowAnimationErrorWithDiagnostics(result.Error, "Execution Error");
                 return;
             }
 
@@ -898,6 +897,8 @@ namespace SESpriteLCDLayoutTool
                 SetStatus($"Call returned 0 sprites — nothing to isolate.");
                 return;
             }
+
+            ClearEditorDiagnosticsAfterSuccessfulRun();
 
             TagSnapshotSprites(result.Sprites);
 

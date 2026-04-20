@@ -47,7 +47,7 @@ namespace SESpriteLCDLayoutTool
         private List<SpriteEntry> _layerListSprites = new List<SpriteEntry>();
 
         // ── Code panel ────────────────────────────────────────────────────────────
-        private RichTextBox _codeBox;
+        private Controls.ScintillaCodeBox _codeBox;
         private ComboBox    _cmbCodeStyle;
         private TextBox     _execCallBox;
         private Label       _execResultLabel;
@@ -90,7 +90,13 @@ namespace SESpriteLCDLayoutTool
         private System.Windows.Forms.Timer _syntaxTimer;
         private string _lastHighlightedCode;
         private bool _highlightInProgress;
+        private int _semanticHighlightGeneration;
+        private enum CodeDiagnosticsMode { None, Live, Compile }
+        private CodeDiagnosticsMode _codeDiagnosticsMode = CodeDiagnosticsMode.None;
+        private string _compileDiagnosticsCodeSnapshot;
+        private const int SyntaxHighlightDebounceMs = 500;
         private ToolTip _codeDiagTooltip;
+        private Controls.DiagnosticOverlay _diagnosticOverlay;
         private string _lastCodeDiagTooltipText;
         private int _lastCodeDiagTooltipChar = -1;
         private ToolTip _layerListTooltip;
@@ -98,7 +104,7 @@ namespace SESpriteLCDLayoutTool
         private string _lastLayerTooltipText;
         private int _lastLayerTooltipIndex = -1;
         private Point _lastLayerTooltipLocation;
-        private const int LiveHighlightMaxChars = 14000;
+        private const int LiveHighlightMaxChars = 120000;
         private const int InitialHighlightMaxChars = 120000;
 
         // ── Timeline scrubber ─────────────────────────────────────────────────
@@ -544,45 +550,34 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
-            // Save scroll and cursor position
-            int savedSel = _codeBox.SelectionStart;
-            int savedLen = _codeBox.SelectionLength;
-            var scrollPos = GetScrollPos(_codeBox);
-
-            // Suppress all repaints while applying batch SelectionBackColor changes.
-            // SuspendLayout() only stops layout calculations, not WM_PAINT — without
-            // WM_SETREDRAW the control visually "streams" through every matched range.
-            SendMessage(_codeBox.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+            // Suppress events and batch visual updates to avoid flash
+            _suppressCodeBoxEvents = true;
             try
             {
-                // First, clear all backgrounds to default
-                _codeBox.SelectAll();
-                _codeBox.SelectionBackColor = _codeBox.BackColor;
+                _codeBox.ClearBackColors();
 
-                // Apply heatmap colors per method region (absolute thresholds)
+                // Compute timing range for relative scaling
+                double minMs = double.MaxValue, maxMs = double.MinValue;
+                foreach (var kv in methodRanges)
+                {
+                    if (!timings.TryGetValue(kv.Key, out double v)) continue;
+                    if (v < minMs) minMs = v;
+                    if (v > maxMs) maxMs = v;
+                }
+                double range = maxMs - minMs;
+
                 foreach (var kv in methodRanges)
                 {
                     if (!timings.TryGetValue(kv.Key, out double ms)) continue;
-
-                    Color bg = HeatmapColor(ms);
-
-                    int start = kv.Value.start;
-                    int end = Math.Min(kv.Value.end, code.Length);
-                    if (end > start)
-                    {
-                        _codeBox.Select(start, end - start);
-                        _codeBox.SelectionBackColor = bg;
-                    }
+                    // Normalise to 0–1 within the observed range
+                    double t = range > 1e-9 ? (ms - minMs) / range : 0.0;
+                    var color = HeatmapColor(t);
+                    _codeBox.SetRangeBackColor(kv.Value.start, kv.Value.end - kv.Value.start, color);
                 }
-
-                // Restore scroll and cursor
-                _codeBox.Select(savedSel, savedLen);
-                SetScrollPos(_codeBox, scrollPos);
             }
             finally
             {
-                SendMessage(_codeBox.Handle, WM_SETREDRAW, (IntPtr)1, IntPtr.Zero);
-                _codeBox.Invalidate();
+                _suppressCodeBoxEvents = false;
             }
         }
 
@@ -591,61 +586,32 @@ namespace SESpriteLCDLayoutTool
         {
             if (_codeBox == null || _lastHeatmapTimings == null) return;
             _lastHeatmapTimings = null;
-
-            int savedSel = _codeBox.SelectionStart;
-            int savedLen = _codeBox.SelectionLength;
-            var scrollPos = GetScrollPos(_codeBox);
-
-            SendMessage(_codeBox.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
-            try
-            {
-                _codeBox.SelectAll();
-                _codeBox.SelectionBackColor = _codeBox.BackColor;
-                _codeBox.Select(savedSel, savedLen);
-                SetScrollPos(_codeBox, scrollPos);
-            }
-            finally
-            {
-                SendMessage(_codeBox.Handle, WM_SETREDRAW, (IntPtr)1, IntPtr.Zero);
-                _codeBox.Invalidate();
-            }
+            _codeBox.ClearBackColors();
         }
 
         /// <summary>
-        /// Maps an absolute execution time (ms) to a heatmap color.
-        /// 0–0.5 ms = dark green, 0.5–2 ms = yellow-green, 2–8 ms = orange, >8 ms = red.
-        /// Colors are kept dark/muted so white text remains readable.
+        /// Maps a normalised heat value (0 = fastest, 1 = slowest) to a heatmap color.
+        /// Green → yellow → orange → red.
         /// </summary>
-        private static Color HeatmapColor(double ms)
+        private static Color HeatmapColor(double t)
         {
-            // Map absolute ms to a 0–1 heat value via fixed thresholds
-            double t;
-            if (ms < 0.5)
-                t = 0.25 * (ms / 0.5);                               // 0.0–0.25  (dark green)
-            else if (ms < 2.0)
-                t = 0.25 + 0.25 * ((ms - 0.5) / 1.5);               // 0.25–0.5  (yellow-green)
-            else if (ms < 8.0)
-                t = 0.5 + 0.25 * ((ms - 2.0) / 6.0);                // 0.5–0.75  (orange)
-            else
-                t = 0.75 + 0.25 * Math.Min(1.0, (ms - 8.0) / 12.0); // 0.75–1.0 (dark red)
-
             t = Math.Max(0, Math.Min(1, t));
             int r, g, b;
             if (t < 0.5)
             {
                 // Green → Yellow
                 double f = t * 2.0;
-                r = (int)(30 + 50 * f);   // 30 → 80
-                g = (int)(60 + 20 * f);   // 60 → 80
-                b = 30;
+                r = (int)(40 + 100 * f);   // 40 → 140
+                g = (int)(120 + 20 * f);   // 120 → 140
+                b = 40;
             }
             else
             {
                 // Yellow → Red
                 double f = (t - 0.5) * 2.0;
-                r = (int)(80 + 50 * f);   // 80 → 130
-                g = (int)(80 - 50 * f);   // 80 → 30
-                b = 30;
+                r = (int)(140 + 80 * f);   // 140 → 220
+                g = (int)(140 - 90 * f);   // 140 → 50
+                b = 40;
             }
             return Color.FromArgb(r, g, b);
         }
@@ -1988,7 +1954,7 @@ namespace SESpriteLCDLayoutTool
         {
             if (_layout == null) { SetCodeText(""); RefreshDetectedCalls(); return; }
 
-            // CRITICAL: Respect user's manual code edits unless force=true.
+            // CRITICAL FIX: Respect user's manual code edits unless force=true.
             // This prevents templates, animation snippets, and other manual edits
             // from being overwritten by canvas interactions or other operations.
             if (_codeBoxDirty && !force)
@@ -2090,8 +2056,7 @@ namespace SESpriteLCDLayoutTool
                     // Update OriginalSourceCode so future patches work against the new baseline
                     _layout.OriginalSourceCode = patched;
 
-                    // Re-establish source tracking: SourceStart/SourceEnd may have shifted
-                    // if the patch changed code length, and ImportBaseline must reflect the
+                    // Re-establish source tracking: SourceStart/SourceEnd/ImportBaseline must reflect the
                     // current values so the NEXT edit diffs correctly.
                     RefreshSourceTracking();
 
@@ -2221,35 +2186,26 @@ namespace SESpriteLCDLayoutTool
                 return a.SourceStart.CompareTo(b.SourceStart);
             });
 
-            // ── Strategy 1: Type+content pool matching ──
-            var pool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
+            // ── Strategy 1: Type+content matching ──
+            // Text and texture sprites are matched by their exact content
+            var contentPool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
             foreach (var ps in parsedSprites)
             {
-                string key = ps.Type == SpriteEntryType.Text
-                    ? "TEXT|" + (ps.Text ?? "")
-                    : "TEXTURE|" + (ps.SpriteName ?? "");
-                if (!pool.ContainsKey(key))
-                    pool[key] = new Queue<SpriteEntry>();
-                pool[key].Enqueue(ps);
+                string key = (ps.Type == SpriteEntryType.Text ? "TEXT|" : "TEXTURE|") + (ps.SpriteName ?? ps.Text ?? "");
+                if (!contentPool.ContainsKey(key))
+                    contentPool[key] = new Queue<SpriteEntry>();
+                contentPool[key].Enqueue(ps);
             }
 
-            // Match layout sprites to parsed sprites and transfer updated offsets.
-            // IMPORTANT: Clear SourceLineNumber when updating SourceStart — the execution-time
-            // line number is stale after code patching (adding/removing sprites shifts lines).
-            // Navigation will use the fresh SourceStart (Strategy 0a) instead.
             int unmatched = 0;
             foreach (var sp in _layout.Sprites)
             {
-                string key = sp.Type == SpriteEntryType.Text
-                    ? "TEXT|" + (sp.Text ?? "")
-                    : "TEXTURE|" + (sp.SpriteName ?? "");
-
-                if (pool.TryGetValue(key, out var queue) && queue.Count > 0)
+                string key = (sp.Type == SpriteEntryType.Text ? "TEXT|" : "TEXTURE|") + (sp.SpriteName ?? sp.Text ?? "");
+                if (contentPool.TryGetValue(key, out var queue) && queue.Count > 0)
                 {
                     var parsed = queue.Dequeue();
                     sp.SourceStart = parsed.SourceStart;
                     sp.SourceEnd = parsed.SourceEnd;
-                    sp.SourceLineNumber = -1; // stale after code modification — let SourceStart navigate
                     sp.ImportBaseline = sp.CloneValues();
                 }
                 else
@@ -2290,7 +2246,6 @@ namespace SESpriteLCDLayoutTool
                     {
                         sp.SourceStart = bestMatch.SourceStart;
                         sp.SourceEnd = bestMatch.SourceEnd;
-                        sp.SourceLineNumber = -1; // stale after code modification
                         sp.ImportBaseline = sp.CloneValues();
                         lineNumberFallback++;
                     }
@@ -2325,7 +2280,6 @@ namespace SESpriteLCDLayoutTool
                     {
                         _layout.Sprites[i].SourceStart = parsedSprites[i].SourceStart;
                         _layout.Sprites[i].SourceEnd = parsedSprites[i].SourceEnd;
-                        _layout.Sprites[i].SourceLineNumber = -1; // stale after code modification
                         _layout.Sprites[i].ImportBaseline = _layout.Sprites[i].CloneValues();
                     }
                     System.Diagnostics.Debug.WriteLine($"[RefreshSourceTracking] Strategy 3 (index-based): {parsedSprites.Count} sprites matched by position");
@@ -2345,9 +2299,8 @@ namespace SESpriteLCDLayoutTool
             _suppressCodeBoxEvents = true;
             int savedSel = _codeBox.SelectionStart;
             int savedLen = _codeBox.SelectionLength;
-            var scrollPos = GetScrollPos(_codeBox);
+            int savedFirstLine = _codeBox.FirstVisibleLine;
 
-            // Normalise to \n for comparison — RichTextBox.Text always returns \r\n
             string normNew  = text.Replace("\r\n", "\n").Replace("\r", "\n");
             string normCur  = _codeBox.Text.Replace("\r\n", "\n").Replace("\r", "\n");
             if (normCur != normNew)
@@ -2356,8 +2309,17 @@ namespace SESpriteLCDLayoutTool
                 _lastHighlightedCode = null;
                 if (_codeBox.TextLength <= InitialHighlightMaxChars)
                 {
-                    SyntaxHighlighter.Highlight(_codeBox);
+                    _suppressCodeBoxEvents = true;
+                    try
+                    {
+                        SyntaxHighlighter.Highlight(_codeBox);
+                    }
+                    finally
+                    {
+                        _suppressCodeBoxEvents = false;
+                    }
                     _lastHighlightedCode = _codeBox.Text;
+                    _diagnosticOverlay?.InvalidateEditor();
                 }
                 // Seed the custom undo stack with the new content
                 _codeUndo.Clear();
@@ -2371,7 +2333,7 @@ namespace SESpriteLCDLayoutTool
                 int sl = Math.Max(0, Math.Min(savedLen, maxLen));
                 _codeBox.Select(ss, sl);
             }
-            SetScrollPos(_codeBox, scrollPos);
+            _codeBox.FirstVisibleLine = savedFirstLine;
 
             _suppressCodeBoxEvents = false;
         }
@@ -2403,14 +2365,17 @@ namespace SESpriteLCDLayoutTool
 
             _lastCodeDiagTooltipChar = charIndex;
             _lastCodeDiagTooltipText = tip;
-            _codeDiagTooltip.SetToolTip(_codeBox, tip);
+            // Use Show() with explicit position — SetToolTip() doesn't reliably
+            // display on RichEdit50W controls.
+            var screen = _codeBox.PointToScreen(mousePoint);
+            var client = _codeBox.Parent.PointToClient(screen);
+            _codeDiagTooltip.Show(tip, _codeBox, mousePoint.X, mousePoint.Y - 20, 10000);
         }
 
         private void HideCodeDiagnosticTooltip()
         {
             if (_codeDiagTooltip == null || _codeBox == null) return;
             _codeDiagTooltip.Hide(_codeBox);
-            _codeDiagTooltip.SetToolTip(_codeBox, string.Empty);
             _lastCodeDiagTooltipText = null;
             _lastCodeDiagTooltipChar = -1;
         }
@@ -2477,7 +2442,7 @@ namespace SESpriteLCDLayoutTool
                 if (i > 0) sb.AppendLine();
                 if (content.Length > 0)
                 {
-                    for (int k = 0; k < depth; k++) sb.Append(unit);
+                    for (int d = 0; d < depth; d++) sb.Append(unit);
                 }
                 sb.Append(content);
 
@@ -2977,7 +2942,7 @@ namespace SESpriteLCDLayoutTool
                 if (start < 0) break;
                 start += prefix.Length;
                 int end = source.IndexOf('"', start);
-                if (end < 0) break;
+                if (end < start) break;
                 string val = source.Substring(start, end - start);
                 if (val.Length > 0) results.Add(val);
                 pos = end + 1;

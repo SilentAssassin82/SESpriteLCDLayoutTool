@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using SESpriteLCDLayoutTool.Controls;
 using SESpriteLCDLayoutTool.Data;
 
 namespace SESpriteLCDLayoutTool.Services
@@ -19,7 +20,7 @@ namespace SESpriteLCDLayoutTool.Services
         private enum AcContext { None, SpriteData, FontId, DotAccess }
 
         // ── Fields ──────────────────────────────────────────────────────────────
-        private readonly RichTextBox _editor;
+        private readonly ScintillaCodeBox _editor;
         private readonly ListBox _popup;
         private List<string> _allItems = new List<string>();
         private string _filterPrefix = "";
@@ -446,7 +447,7 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         // ── Constructor ─────────────────────────────────────────────────────────
-        public CodeAutoComplete(RichTextBox editor)
+        public CodeAutoComplete(ScintillaCodeBox editor)
         {
             _editor = editor ?? throw new ArgumentNullException(nameof(editor));
 
@@ -461,6 +462,7 @@ namespace SESpriteLCDLayoutTool.Services
                 Width         = 320,
                 Height        = 160,
             };
+            _popup.Click      += (s, e) => CommitSelection();
             _popup.DoubleClick += (s, e) => CommitSelection();
             _popup.KeyDown    += OnPopupKeyDown;
 
@@ -473,6 +475,9 @@ namespace SESpriteLCDLayoutTool.Services
 
         /// <summary>Is the autocomplete popup currently visible?</summary>
         public bool IsActive => _popup.Visible;
+
+        /// <summary>True when the popup ListBox has focus (e.g. during a mouse click).</summary>
+        public bool IsPopupFocused => _popup.Focused;
 
         // ── Public API called from MainForm ─────────────────────────────────────
 
@@ -683,7 +688,7 @@ namespace SESpriteLCDLayoutTool.Services
             Point screenPt = _editor.PointToScreen(caretPt);
             Point parentPt = _popup.Parent.PointToClient(screenPt);
 
-            int lineHeight = _editor.Font.Height + 2;
+            int lineHeight = _editor.Lines[0].Height + 2;
             int x = parentPt.X;
             int y = parentPt.Y + lineHeight;
 
@@ -719,6 +724,7 @@ namespace SESpriteLCDLayoutTool.Services
                 _inserting = false;
             }
             Hide();
+            _editor.Focus();
         }
 
         public void Hide()

@@ -34,95 +34,8 @@ namespace SESpriteLCDLayoutTool
                 // Code-editor–specific keys (only when the code box itself is focused)
                 if (_codeBox != null && _codeBox.Focused)
                 {
-                    // Use KeyCode mask for reliable key matching (avoids extra modifier bits)
                     Keys keyCode = keyData & Keys.KeyCode;
                     Keys modifiers = keyData & Keys.Modifiers;
-
-                    // Tab / Shift+Tab for indent/outdent
-                    if (keyCode == Keys.Tab)
-                    {
-                        if ((modifiers & Keys.Shift) != 0)
-                            CodeBoxOutdentSelection();
-                        else
-                            CodeBoxIndentSelection();
-                        return true;
-                    }
-
-                    // Enter for auto-indent newline
-                    if (keyCode == Keys.Enter && modifiers == Keys.None)
-                    {
-                        CodeBoxAutoIndentNewline();
-                        return true;
-                    }
-
-                    // Normalize clipboard to \r\n so pasting into a
-                    // WinForms TextBox (e.g. the Paste Layout dialog)
-                    // preserves line breaks.  RichTextBox.Copy() may
-                    // place \n-only text on the clipboard.
-                    if (keyCode == Keys.C && modifiers == Keys.Control)
-                    {
-                        string sel = _codeBox.SelectedText;
-                        if (string.IsNullOrEmpty(sel))
-                            sel = _codeBox.Text;  // Ctrl+C with no selection = copy all
-                        if (!string.IsNullOrEmpty(sel))
-                        {
-                            string norm = sel.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
-                            Clipboard.SetText(norm);
-                        }
-                        return true;
-                    }
-                    if (keyCode == Keys.X && modifiers == Keys.Control)
-                    {
-                        string sel = _codeBox.SelectedText;
-                        if (!string.IsNullOrEmpty(sel))
-                        {
-                            string norm = sel.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
-                            Clipboard.SetText(norm);
-                            _codeBox.SelectedText = "";
-                        }
-                        return true;
-                    }
-
-                    // Custom undo/redo — bypass native RichTextBox undo which is
-                    // polluted by syntax-highlighting formatting changes.
-                    if (keyCode == Keys.Z && modifiers == Keys.Control)
-                    {
-                        var state = _codeUndo.Undo();
-                        if (state != null)
-                        {
-                            _suppressCodeBoxEvents = true;
-                            _codeBox.Text = state.Text;
-                            _lastHighlightedCode = null;
-                            if (_codeBox.TextLength <= InitialHighlightMaxChars)
-                            {
-                                Services.SyntaxHighlighter.Highlight(_codeBox);
-                                _lastHighlightedCode = _codeBox.Text;
-                            }
-                            if (state.CaretPosition <= _codeBox.TextLength)
-                                _codeBox.SelectionStart = state.CaretPosition;
-                            _suppressCodeBoxEvents = false;
-                        }
-                        return true;
-                    }
-                    if (keyCode == Keys.Y && modifiers == Keys.Control)
-                    {
-                        var state = _codeUndo.Redo();
-                        if (state != null)
-                        {
-                            _suppressCodeBoxEvents = true;
-                            _codeBox.Text = state.Text;
-                            _lastHighlightedCode = null;
-                            if (_codeBox.TextLength <= InitialHighlightMaxChars)
-                            {
-                                Services.SyntaxHighlighter.Highlight(_codeBox);
-                                _lastHighlightedCode = _codeBox.Text;
-                            }
-                            if (state.CaretPosition <= _codeBox.TextLength)
-                                _codeBox.SelectionStart = state.CaretPosition;
-                            _suppressCodeBoxEvents = false;
-                        }
-                        return true;
-                    }
 
                     // Find / Find+Replace in code editor
                     if (keyCode == Keys.F && modifiers == Keys.Control)
@@ -134,6 +47,16 @@ namespace SESpriteLCDLayoutTool
                     {
                         _findReplaceBar?.ShowFindReplace();
                         return true;
+                    }
+
+                    // Kick the syntax highlight timer on undo/redo so colouring updates
+                    if ((keyCode == Keys.Z || keyCode == Keys.Y) && modifiers == Keys.Control)
+                    {
+                        _lastHighlightedCode = null;
+                        _syntaxTimer.Stop();
+                        _syntaxTimer.Start();
+                        // Let Scintilla handle the actual undo/redo
+                        return base.ProcessCmdKey(ref msg, keyData);
                     }
                 }
 

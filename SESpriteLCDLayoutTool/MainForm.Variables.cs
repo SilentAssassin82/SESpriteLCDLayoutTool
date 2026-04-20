@@ -1176,18 +1176,9 @@ namespace SESpriteLCDLayoutTool
             _btnPopOut.Click += (s, e) => ToggleCodePopout();
             toolbar.Controls.Add(_btnPopOut);
 
-            _codeBox = new RichTextBox
+            _codeBox = new Controls.ScintillaCodeBox
             {
-                Dock          = DockStyle.Fill,
-                BackColor     = Color.FromArgb(14, 14, 14),
-                ForeColor     = Color.FromArgb(212, 212, 212),
-                Font          = new Font("Consolas", 9f),
-                ReadOnly      = false,
-                BorderStyle   = BorderStyle.None,
-                ScrollBars    = RichTextBoxScrollBars.Both,
-                WordWrap      = false,
-                HideSelection = false,
-                AcceptsTab    = true,
+                Dock = DockStyle.Fill,
             };
             _codeDiagTooltip = new ToolTip
             {
@@ -1197,37 +1188,93 @@ namespace SESpriteLCDLayoutTool
                 ShowAlways = true,
             };
             // ── Syntax-highlight debounce timer ───────────────────────────────
-            _syntaxTimer = new System.Windows.Forms.Timer { Interval = 900 };
+            _syntaxTimer = new System.Windows.Forms.Timer { Interval = SyntaxHighlightDebounceMs };
             _syntaxTimer.Tick += (s, e) =>
             {
                 _syntaxTimer.Stop();
                 if (_highlightInProgress || _codeBox == null) return;
 
-                // Full RichTextBox token colouring is expensive on very large scripts.
-                // Keep auto-highlight for normal code size and skip oversized buffers.
+                // While compile diagnostics are active for the current buffer,
+                // keep them authoritative until user edits or successful run clears them.
+                if (_codeDiagnosticsMode == CodeDiagnosticsMode.Compile &&
+                    string.Equals(_compileDiagnosticsCodeSnapshot, _codeBox.Text, StringComparison.Ordinal))
+                    return;
+
                 if (_codeBox.TextLength > LiveHighlightMaxChars) return;
 
                 string current = _codeBox.Text;
                 if (string.Equals(_lastHighlightedCode, current, StringComparison.Ordinal)) return;
+                int generationAtStart = _semanticHighlightGeneration;
 
+                // Fast pass (UI thread): syntax colouring only — no diagnostic
+                // squiggles.  The background compilation pass will supply accurate
+                // diagnostics from a full Roslyn compilation.
                 try
                 {
                     _highlightInProgress = true;
-                    SyntaxHighlighter.Highlight(_codeBox);
+                    _suppressCodeBoxEvents = true;
+                    SyntaxHighlighter.Highlight(_codeBox, includeSemantics: false, skipDiagnostics: true);
                     _lastHighlightedCode = _codeBox.Text;
+                    _diagnosticOverlay?.InvalidateEditor();
+                }
+                catch
+                {
+                    return;
                 }
                 finally
                 {
+                    _suppressCodeBoxEvents = false;
                     _highlightInProgress = false;
                 }
+
+                // Slow pass (background thread): Roslyn semantic compilation.
+                // ContinueWith posts the result back to the UI thread via the
+                // synchronisation context captured here (WinForms message loop).
+                var capturedSource = current;
+                var uiScheduler = System.Threading.Tasks.TaskScheduler.FromCurrentSynchronizationContext();
+                System.Threading.Tasks.Task
+                    .Run(() => SyntaxHighlighter.ComputeSemanticMarkers(capturedSource))
+                    .ContinueWith(t =>
+                    {
+                        if (t.IsFaulted || t.Result == null) return;
+                        if (generationAtStart != _semanticHighlightGeneration) return;
+                        // Discard if user typed during the background pass.
+                        if (_codeBox == null) return;
+                        if (!string.Equals(_codeBox.Text, capturedSource, StringComparison.Ordinal)) return;
+                        // Discard if compile diagnostics took over while we were computing.
+                        if (_codeDiagnosticsMode == CodeDiagnosticsMode.Compile) return;
+                        _suppressCodeBoxEvents = true;
+                        try
+                        {
+                            SyntaxHighlighter.ApplySemanticMarkers(_codeBox, t.Result);
+                        }
+                        finally
+                        {
+                            _suppressCodeBoxEvents = false;
+                        }
+                        _codeDiagnosticsMode = CodeDiagnosticsMode.Live;
+                        _diagnosticOverlay?.InvalidateEditor();
+                    }, uiScheduler);
             };
 
             _codeBox.TextChanged += (s, e) =>
             {
-                if (_suppressCodeBoxEvents) return;
+                if (_suppressCodeBoxEvents)
+                {
+                    // Even when suppressed (e.g. during indicator updates),
+                    // let autocomplete respond to the text change so that
+                    // typing '.' immediately shows the popup.
+                    _autoComplete?.OnTextChanged();
+                    return;
+                }
                 if (!_codeUndo.IsUndoRedoing)
                     _codeUndo.Push(_codeBox.Text, _codeBox.SelectionStart);
-                SyntaxHighlighter.ClearDiagnosticCache(_codeBox);
+                _semanticHighlightGeneration++;
+                SyntaxHighlighter.ClearDiagnosticsVisual(_codeBox);
+                _diagnosticOverlay?.InvalidateEditor();
+                _codeDiagnosticsMode = CodeDiagnosticsMode.None;
+                _lastHighlightedCode = null;
+                _compileDiagnosticsCodeSnapshot = null;
                 HideCodeDiagnosticTooltip();
                 _codeBoxDirty = true;
                 _lblCodeTitle.Text = "✏ Code (edited)";
@@ -1238,7 +1285,12 @@ namespace SESpriteLCDLayoutTool
                 _syntaxTimer.Stop();
                 _syntaxTimer.Start();
             };
-            _codeBox.LostFocus += (s, e) => _autoComplete?.Hide();
+            _codeBox.LostFocus += (s, e) =>
+            {
+                // Don't hide autocomplete when focus moves to the popup itself
+                if (_autoComplete != null && _autoComplete.IsPopupFocused) return;
+                _autoComplete?.Hide();
+            };
             _codeBox.MouseMove += (s, e) => UpdateCodeDiagnosticTooltip(e.Location);
             _codeBox.MouseLeave += (s, e) => HideCodeDiagnosticTooltip();
 
@@ -1306,11 +1358,10 @@ namespace SESpriteLCDLayoutTool
             };
             _codeBox.ContextMenuStrip = ctxCode;
 
-            var lineGutter = new Controls.LineNumberGutter(_codeBox);
             _findReplaceBar = new Controls.CodeFindReplaceBar(_codeBox);
+            _diagnosticOverlay = new Controls.DiagnosticOverlay(_codeBox);
             panel.Controls.Add(_codeBox);
             panel.Controls.Add(_findReplaceBar);
-            panel.Controls.Add(lineGutter);
             panel.Controls.Add(toolbar);
             _autoComplete = new CodeAutoComplete(_codeBox);
             _codePanel = panel;
