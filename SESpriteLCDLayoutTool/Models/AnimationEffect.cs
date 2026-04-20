@@ -202,9 +202,12 @@ namespace SESpriteLCDLayoutTool.Models
 
         public Dictionary<string, string> GetPropertyOverrides(string suffix)
         {
+            // Fade only contributes to the alpha channel. The injector composes
+            // this with any other Color-producing effect (ColorCycle, Keyframe,
+            // or the sprite's static RGB) so Fade never cancels RGB animation.
             return new Dictionary<string, string>
             {
-                { "Color", $"new Color({{baseR}}, {{baseG}}, {{baseB}}, fadeAlpha{suffix})" }
+                { "Color.A", $"fadeAlpha{suffix}" }
             };
         }
     }

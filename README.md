@@ -799,16 +799,24 @@ MIT License
 
 ## 📝 Changelog
 
-### v3.5.0 — Real SE DLL Analysis, Autocomplete Fixes & PB Class Wrapping
-- **Real SE DLL loading for code analysis** — Roslyn semantic analysis now uses actual Space Engineers game DLLs from Bin64 when available, providing accurate member resolution, tooltips, and diagnostics with graceful fallback to source stubs
-- **Implicit standard .NET usings** — `System`, `System.Collections.Generic`, `System.Linq`, `System.Text`, and `System.IO` added to Roslyn analysis, eliminating false squiggles on `Math`, `List<T>`, `StringBuilder`, etc.
-- **PB bare-script class wrapping** — bare Programmable Block scripts are wrapped in `class Program : MyGridProgram` for analysis, giving full semantic diagnostics without spurious errors
-- **Autocomplete dot-trigger fix** — popup now appears immediately on `.` (fixed race condition with `_suppressCodeBoxEvents` guard)
-- **Autocomplete mouse-click selection fix** — clicking an item now correctly commits and returns focus to the editor
+For the complete version history, see [CHANGELOG.md](CHANGELOG.md).
 
-### v3.3.0 — Playback Smoothness, Layer UX, and SE Plugin Diagnostics
+### Recent Releases
 
-#### Animation & Playback Performance
+**v3.5.0** - 2026-07-21  
+Real SE DLL loading for code analysis, implicit standard .NET usings, PB bare-script class wrapping, autocomplete fixes
+
+**v3.4.0** - 2026-05-15  
+Complete code editor refactor from RichTextBox to Scintilla with enhanced syntax highlighting and performance improvements
+
+**v3.3.0** - 2026-04-19  
+Playback smoothness improvements, layer UX enhancements, SE plugin diagnostics
+
+---
+
+Made for the Space Engineers community ❤️
+Happy building!
+
 - **Reduced animation stutter in complex Torch/Pulsar scenes** — expensive per-frame work is now throttled to a visual update cadence instead of running every tick
   - Code heatmap repaints are rate-limited and skip insignificant timing jitter
   - Variables panel reflection refresh and watch evaluation are rate-limited during playback

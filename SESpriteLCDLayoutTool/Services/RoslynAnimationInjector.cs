@@ -346,6 +346,27 @@ namespace SESpriteLCDLayoutTool.Services
                     allOverrides[kv.Key] = kv.Value; // last-write-wins per property
             }
 
+            // ── Compose channel-scoped overrides into their parent property ──
+            // Fade only touches alpha via "Color.A"; combine it with whatever
+            // else produces Color (ColorCycle, Keyframe color, or static RGB)
+            // so channel-scoped effects never cancel full-property ones.
+            if (allOverrides.TryGetValue("Color.A", out string alphaExpr))
+            {
+                allOverrides.Remove("Color.A");
+                if (allOverrides.TryGetValue("Color", out string colorExpr))
+                {
+                    // Rewrite existing Color: keep RGB, override alpha.
+                    allOverrides["Color"] =
+                        $"new Color(({colorExpr}).R, ({colorExpr}).G, ({colorExpr}).B, (byte)({alphaExpr}))";
+                }
+                else
+                {
+                    // No other Color contributor — fade against the sprite's static RGB.
+                    allOverrides["Color"] =
+                        $"new Color({{baseR}}, {{baseG}}, {{baseB}}, (byte)({alphaExpr}))";
+                }
+            }
+
             // Resolve placeholder tokens with sprite's actual values
             ResolveBasePlaceholders(allOverrides, loc.Sprite);
 
@@ -712,18 +733,29 @@ namespace SESpriteLCDLayoutTool.Services
 
             return blinkRx.Replace(code, m =>
             {
-                // Dedent the inner content by 4 spaces (the blink guard indentation)
+                // Dedent the inner content by 4 spaces (the blink guard indentation).
+                // Split on '\n' drops the separators, so we must re-emit them per line
+                // to preserve the original line structure (otherwise the Add block
+                // collapses onto a single line and the next merge loses content).
                 string inner = m.Groups["inner"].Value;
                 var lines = inner.Split(new[] { "\n" }, StringSplitOptions.None);
                 var sb = new StringBuilder();
-                foreach (string line in lines)
+                for (int i = 0; i < lines.Length; i++)
                 {
+                    string line = lines[i];
+                    string dedented;
                     if (line.TrimEnd('\r').Length == 0)
-                        sb.Append(line.EndsWith("\n") ? "\n" : "");
+                        dedented = line; // preserve blank lines (incl. any trailing \r)
                     else if (line.StartsWith("    "))
-                        sb.Append(line.Substring(4));
+                        dedented = line.Substring(4);
                     else
-                        sb.Append(line);
+                        dedented = line;
+
+                    sb.Append(dedented);
+                    // Re-append the '\n' that Split() consumed, except after the
+                    // final element (which is the trailing piece after the last \n).
+                    if (i < lines.Length - 1)
+                        sb.Append('\n');
                 }
                 return sb.ToString();
             });
