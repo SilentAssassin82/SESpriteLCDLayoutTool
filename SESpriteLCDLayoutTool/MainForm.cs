@@ -85,6 +85,10 @@ namespace SESpriteLCDLayoutTool
         private Dictionary<string, double> _lastHeatmapTimings;
         private bool _heatmapEnabled = true;
         private DateTime _lastHeatmapPaintTime;
+        private static readonly System.Text.RegularExpressions.Regex _heatmapMethodRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"(?:private|public|internal|protected)[ \t]+(?:static[ \t]+)?(?:void|[\w<>\[\], \t]+)[ \t]+(\w+)\s*\([^)]*\)\s*\{",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
 
         // ── Syntax highlighting ───────────────────────────────────────────────
         private System.Windows.Forms.Timer _syntaxTimer;
@@ -525,8 +529,7 @@ namespace SESpriteLCDLayoutTool
 
             // Build method name → (charStart, charEnd) map from source
             var methodRanges = new Dictionary<string, (int start, int end)>(StringComparer.Ordinal);
-            var rxMethod = new System.Text.RegularExpressions.Regex(
-                @"(?:private|public|internal|protected)[ \t]+(?:static[ \t]+)?(?:void|[\w<>\[\], \t]+)[ \t]+(\w+)\s*\([^)]*\)\s*\{");
+            var rxMethod = _heatmapMethodRegex;
 
             foreach (System.Text.RegularExpressions.Match m in rxMethod.Matches(code))
             {

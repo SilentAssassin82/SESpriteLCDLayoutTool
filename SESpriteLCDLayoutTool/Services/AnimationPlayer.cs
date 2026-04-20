@@ -51,8 +51,10 @@ namespace SESpriteLCDLayoutTool.Services
         private DateTime _lastFrameTime;
         private int _currentUpdateType = 32; // UpdateType.Update10
         private bool _frameInProgress;
+        private System.Reflection.FieldInfo[] _cachedFields;
+        private DateTime _lastSnapshotTime;
 
-        // ── Tick history for timeline scrubber ─────────────────────────────────
+        // ── Tick history for timeline scrubber
         private TickHistoryBuffer _tickHistory = new TickHistoryBuffer(500);
 
         /// <summary>
@@ -175,6 +177,7 @@ namespace SESpriteLCDLayoutTool.Services
             CurrentTick = 0;
             _ctx?.Dispose();
             _ctx = null;
+            _cachedFields = null;
             // Note: do NOT clear _tickHistory here — it's needed for
             // post-mortem scrubbing after animation stops.
             if (wasPlaying) PlaybackStopped?.Invoke();
@@ -269,7 +272,15 @@ namespace SESpriteLCDLayoutTool.Services
 
             LastOutputLines = result.OutputLines;
             LastMethodTimings = result.MethodTimings;
-            RecordTickSnapshot(tick, result.Sprites);
+
+            // Throttle history recording to ~10 Hz to reduce per-frame overhead
+            var now = DateTime.UtcNow;
+            if ((now - _lastSnapshotTime).TotalMilliseconds >= 100)
+            {
+                _lastSnapshotTime = now;
+                RecordTickSnapshot(tick, result.Sprites);
+            }
+
             FrameRendered?.Invoke(result.Sprites, tick);
             UpdateTimerInterval();
         }
@@ -343,10 +354,14 @@ namespace SESpriteLCDLayoutTool.Services
                 return null;
 
             var result = new Dictionary<string, object>();
-            var fields = _ctx.Runner.GetType()
-                .GetFields(System.Reflection.BindingFlags.Public | 
-                          System.Reflection.BindingFlags.NonPublic | 
-                          System.Reflection.BindingFlags.Instance);
+            if (_cachedFields == null)
+            {
+                _cachedFields = _ctx.Runner.GetType()
+                    .GetFields(System.Reflection.BindingFlags.Public | 
+                              System.Reflection.BindingFlags.NonPublic | 
+                              System.Reflection.BindingFlags.Instance);
+            }
+            var fields = _cachedFields;
 
             foreach (var field in fields)
             {
@@ -375,10 +390,14 @@ namespace SESpriteLCDLayoutTool.Services
                 return null;
 
             var result = new Dictionary<string, Type>();
-            var fields = _ctx.Runner.GetType()
-                .GetFields(System.Reflection.BindingFlags.Public |
-                          System.Reflection.BindingFlags.NonPublic |
-                          System.Reflection.BindingFlags.Instance);
+            if (_cachedFields == null)
+            {
+                _cachedFields = _ctx.Runner.GetType()
+                    .GetFields(System.Reflection.BindingFlags.Public |
+                              System.Reflection.BindingFlags.NonPublic |
+                              System.Reflection.BindingFlags.Instance);
+            }
+            var fields = _cachedFields;
 
             foreach (var field in fields)
             {

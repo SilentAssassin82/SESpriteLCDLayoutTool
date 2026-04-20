@@ -399,6 +399,20 @@ namespace SESpriteLCDLayoutTool
             // playback avoids any accidental Roslyn parse triggered by other code paths.
             _syntaxTimer?.Stop();
 
+            // Suspend layout to prevent intermediate layout recalcs during batch UI updates
+            SuspendLayout();
+            try
+            {
+            OnAnimFrameCore(sprites, tick);
+            }
+            finally
+            {
+            ResumeLayout(false);
+            }
+        }
+
+        private void OnAnimFrameCore(List<SpriteEntry> sprites, int tick)
+        {
             _layout.Sprites.Clear();
 
             // Isolation mode: when a specific method is isolated (via Execute & Isolate),
