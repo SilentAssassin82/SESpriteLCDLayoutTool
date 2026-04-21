@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Windows.Forms;
 using SESpriteLCDLayoutTool.Controls;
@@ -297,6 +297,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                             codeBox.Focus();
                             codeBox.Select(lineStart, lineEnd - lineStart);
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.ScrollToCaret();
 
                             System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ STRATEGY 0 (LineNumber): Navigated using SourceLineNumber {sprite.SourceLineNumber}");
@@ -333,6 +334,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                     codeBox.Focus();
                     codeBox.Select(lineStart, lineEnd - lineStart);
+                    codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                     codeBox.ScrollToCaret();
 
                     System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ STRATEGY 0a (SourceStart): Navigated using SourceStart {sprite.SourceStart}");
@@ -488,6 +490,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                             codeBox.Focus();
                             codeBox.Select(lineStart, lineEnd - lineStart);
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.ScrollToCaret();
 
                             System.Diagnostics.Debug.WriteLine(
@@ -555,6 +558,7 @@ namespace SESpriteLCDLayoutTool.Services
                             {
                                 codeBox.Focus();
                                 codeBox.Select(lineStart, lineEnd - lineStart);
+                                codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                                 codeBox.ScrollToCaret();
 
                                 System.Diagnostics.Debug.WriteLine(
@@ -630,6 +634,7 @@ namespace SESpriteLCDLayoutTool.Services
                         {
                             codeBox.Focus();
                             codeBox.Select(lineStart, lineEnd - lineStart);
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.ScrollToCaret();
 
                             int lineNum = SpriteAddMapper.GetLineNumber(addCallMap, sprite.SourceMethodName, sprite.SourceMethodIndex);
@@ -773,6 +778,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                             codeBox.Focus();
                             codeBox.Select(lineStart, lineEnd - lineStart);
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.ScrollToCaret();
 
                             System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated to '{searchContent}' using position/size context {(foundMethod ? "in '" + sprite.SourceMethodName + "'" : "globally")}");
@@ -822,6 +828,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                                     codeBox.Focus();
                                     codeBox.Select(lineStart, lineEnd - lineStart);
+                                    codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                                     codeBox.ScrollToCaret();
 
                                     System.Diagnostics.Debug.WriteLine(
@@ -842,6 +849,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                         codeBox.Focus();
                         codeBox.Select(lineStart, lineEnd - lineStart);
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.ScrollToCaret();
 
                         System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated to unique content '{searchContent}' {(foundMethod ? "in method '" + sprite.SourceMethodName + "'" : "globally")}");
@@ -882,6 +890,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                                     codeBox.Focus();
                                     codeBox.Select(lineStart, lineEnd - lineStart);
+                                    codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                                     codeBox.ScrollToCaret();
 
                                     System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated using Roslyn index: {sprite.SourceMethodName}[{sprite.SourceMethodIndex}] → line {targetLocation.LineNumber}");
@@ -906,6 +915,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                         codeBox.Focus();
                         codeBox.Select(lineStart, lineEnd - lineStart);
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.ScrollToCaret();
 
                         System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated to first occurrence of '{searchContent}' globally");
@@ -924,6 +934,7 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 codeBox.Focus();
                 codeBox.Select(mapperFallbackStart, mapperFallbackEnd - mapperFallbackStart);
+                codeBox.EnsureVisible(codeBox.LineFromPosition(mapperFallbackStart));
                 codeBox.ScrollToCaret();
 
                 System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated via SpriteAddMapper fallback (helper method sprite creation site)");
@@ -961,7 +972,9 @@ namespace SESpriteLCDLayoutTool.Services
 
                             // Convert to RichTextBox selection
                             codeBox.Focus();
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.Select(lineStart, lineEnd - lineStart);
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.ScrollToCaret();
 
                             System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated to {sprite.SourceMethodName}[{sprite.SourceMethodIndex}] at line {location.LineNumber}");
@@ -1032,6 +1045,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                         codeBox.Focus();
                         codeBox.Select(lineStart, lineEnd - lineStart);
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.ScrollToCaret();
 
                         System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated to variable definition '{varName}' at position {varPos}");
@@ -1109,10 +1123,12 @@ namespace SESpriteLCDLayoutTool.Services
                         if (lineEnd < 0) lineEnd = currentCode.Length;
 
                         codeBox.Focus();
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.Select(lineStart, lineEnd - lineStart);
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.ScrollToCaret();
 
-                        System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated by searching for content '{searchContent}' in method '{sprite.SourceMethodName ?? "(global)"}'");
+                        System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated by searching for content '{searchContent}' in method '{sprite.SourceMethodName ?? "(global)"}'" );
                         return true;
                     }
                     else
@@ -1146,7 +1162,9 @@ namespace SESpriteLCDLayoutTool.Services
                         if (lineEnd < 0) lineEnd = currentCode.Length;
 
                         codeBox.Focus();
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.Select(lineStart, lineEnd - lineStart);
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.ScrollToCaret();
 
                         System.Diagnostics.Debug.WriteLine($"[CodeNav] ✓ Navigated to method definition '{sprite.SourceMethodName}()' (exact sprite not found - likely created in loop)");
@@ -1287,7 +1305,9 @@ namespace SESpriteLCDLayoutTool.Services
                         if (lineEnd < 0) lineEnd = currentCode.Length;
 
                         codeBox.Focus();
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.Select(lineStart, lineEnd - lineStart);
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.ScrollToCaret();
 
                         System.Diagnostics.Debug.WriteLine(
@@ -1350,7 +1370,9 @@ namespace SESpriteLCDLayoutTool.Services
                         int lineEnd = code.IndexOf('\n', charIndex);
                         if (lineEnd < 0) lineEnd = code.Length;
 
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.Select(lineStart, lineEnd - lineStart);
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.ScrollToCaret();
 
                         System.Diagnostics.Debug.WriteLine($"[CodeNav] Jumped to Line {sprite.SourceLineNumber} (index {charIndex})");
@@ -1369,7 +1391,9 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 try
                 {
+                    codeBox.EnsureVisible(codeBox.LineFromPosition(sprite.SourceStart));
                     codeBox.Select(sprite.SourceStart, sprite.SourceEnd - sprite.SourceStart);
+                    codeBox.EnsureVisible(codeBox.LineFromPosition(sprite.SourceStart));
                     codeBox.ScrollToCaret();
 
                     System.Diagnostics.Debug.WriteLine($"[CodeNav] Jumped to SourceStart {sprite.SourceStart}");
@@ -1401,7 +1425,9 @@ namespace SESpriteLCDLayoutTool.Services
                             int lineEnd = code.IndexOf('\n', charIndex);
                             if (lineEnd < 0) lineEnd = code.Length;
 
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.Select(lineStart, lineEnd - lineStart);
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.ScrollToCaret();
 
                             System.Diagnostics.Debug.WriteLine($"[CodeNav] Jumped via Roslyn to {sprite.SourceMethodName}[{sprite.SourceMethodIndex}]");
@@ -1441,7 +1467,9 @@ namespace SESpriteLCDLayoutTool.Services
                             int lineEnd = code.IndexOf('\n', caseIndex);
                             if (lineEnd < 0) lineEnd = code.Length;
 
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.Select(lineStart, lineEnd - lineStart);
+                            codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                             codeBox.ScrollToCaret();
 
                             System.Diagnostics.Debug.WriteLine($"[CodeNav] Jumped to case block for {sprite.SourceMethodName} (case {caseName}:)");
@@ -1468,7 +1496,9 @@ namespace SESpriteLCDLayoutTool.Services
                         int lineEnd = code.IndexOf('\n', methodIndex);
                         if (lineEnd < 0) lineEnd = code.Length;
 
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.Select(lineStart, lineEnd - lineStart);
+                        codeBox.EnsureVisible(codeBox.LineFromPosition(lineStart));
                         codeBox.ScrollToCaret();
 
                         System.Diagnostics.Debug.WriteLine($"[CodeNav] Jumped to method definition for {sprite.SourceMethodName}");

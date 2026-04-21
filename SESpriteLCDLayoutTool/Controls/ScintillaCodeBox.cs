@@ -20,7 +20,10 @@ namespace SESpriteLCDLayoutTool.Controls
         internal const int IndicatorHeatmap2 = 12;
         internal const int IndicatorHeatmap3 = 13;
         internal const int IndicatorHeatmap4 = 14;
+        internal const int IndicatorWordHighlight = 15;
         private static readonly int[] HeatmapIndicators = { 11, 12, 13, 14 };
+
+        private string _wordHighlight; // currently highlighted word (null = none)
 
         // ── Style constants for C# syntax colouring ───────────────────────────
         internal const int StyleDefault    = Style.Default;
@@ -66,9 +69,44 @@ namespace SESpriteLCDLayoutTool.Controls
             Styles[Style.LineNumber].ForeColor = Color.FromArgb(100, 100, 100);
             Styles[Style.LineNumber].BackColor = Color.FromArgb(24, 24, 24);
 
-            // Disable other margins
-            Margins[1].Width = 0;
+            // Margin 1: fold margin (the clickable [+]/[-] gutter)
+            Margins[1].Type  = MarginType.Symbol;
+            Margins[1].Mask  = Marker.MaskFolders;
+            Margins[1].Sensitive = true;   // clicks toggle fold state
+            Margins[1].Width = 16;
+            Margins[1].BackColor = Color.FromArgb(24, 24, 24);
+
+            // Disable margin 2
             Margins[2].Width = 0;
+
+            // ── Fold marker glyphs (VS Code-style box expand/collapse) ─────────────
+            // FolderOpen / FolderOpenMid : expanded node  [−]
+            Markers[Marker.FolderOpen].Symbol    = MarkerSymbol.BoxMinusConnected;
+            Markers[Marker.FolderOpen].SetForeColor(Color.FromArgb(180, 180, 180));
+            Markers[Marker.FolderOpen].SetBackColor(Color.FromArgb(40,  40,  40));
+            Markers[Marker.Folder].Symbol        = MarkerSymbol.BoxPlusConnected;
+            Markers[Marker.Folder].SetForeColor(Color.FromArgb(180, 180, 180));
+            Markers[Marker.Folder].SetBackColor(Color.FromArgb(40,  40,  40));
+            Markers[Marker.FolderSub].Symbol     = MarkerSymbol.VLine;
+            Markers[Marker.FolderSub].SetForeColor(Color.FromArgb(80, 80, 80));
+            Markers[Marker.FolderSub].SetBackColor(Color.FromArgb(24, 24, 24));
+            Markers[Marker.FolderTail].Symbol    = MarkerSymbol.LCorner;
+            Markers[Marker.FolderTail].SetForeColor(Color.FromArgb(80, 80, 80));
+            Markers[Marker.FolderTail].SetBackColor(Color.FromArgb(24, 24, 24));
+            Markers[Marker.FolderEnd].Symbol     = MarkerSymbol.BoxPlusConnected;
+            Markers[Marker.FolderEnd].SetForeColor(Color.FromArgb(180, 180, 180));
+            Markers[Marker.FolderEnd].SetBackColor(Color.FromArgb(40,  40,  40));
+            Markers[Marker.FolderOpenMid].Symbol = MarkerSymbol.BoxMinusConnected;
+            Markers[Marker.FolderOpenMid].SetForeColor(Color.FromArgb(180, 180, 180));
+            Markers[Marker.FolderOpenMid].SetBackColor(Color.FromArgb(40,  40,  40));
+            Markers[Marker.FolderMidTail].Symbol = MarkerSymbol.TCorner;
+            Markers[Marker.FolderMidTail].SetForeColor(Color.FromArgb(80, 80, 80));
+            Markers[Marker.FolderMidTail].SetBackColor(Color.FromArgb(24, 24, 24));
+
+            // ── Folding behaviour ─────────────────────────────────────────────
+            SetProperty("fold",                     "1");
+            SetProperty("fold.compact",             "0"); // don't collapse blank lines into fold
+            AutomaticFold = AutomaticFold.Show | AutomaticFold.Click | AutomaticFold.Change;
 
             // ── Editor settings ───────────────────────────────────────────────
             TabWidth = 4;
@@ -126,6 +164,229 @@ namespace SESpriteLCDLayoutTool.Controls
 
             // ── Multi-caret / selection ────────────────────────────────────────
             MultipleSelection = false;
+
+            // ── Word occurrence highlight ──────────────────────────────────────
+            // Subtle box outline — same feel as VS / VS Code "other references"
+            Indicators[IndicatorWordHighlight].Style        = IndicatorStyle.StraightBox;
+            Indicators[IndicatorWordHighlight].ForeColor    = Color.FromArgb(100, 150, 200);
+            Indicators[IndicatorWordHighlight].Alpha        = 40;
+            Indicators[IndicatorWordHighlight].OutlineAlpha = 140;
+            Indicators[IndicatorWordHighlight].Under        = false;
+
+            // ── Brace matching highlight styles ───────────────────────────────
+            // BraceLight: matched pair — gold text on a subtle dark-gold background
+            Styles[Style.BraceLight].ForeColor = Color.FromArgb(255, 215, 0);   // gold
+            Styles[Style.BraceLight].BackColor = Color.FromArgb(50, 45, 10);    // dark gold tint
+            Styles[Style.BraceLight].Bold = true;
+            // BraceBad: unmatched brace — red so the user knows there is no partner
+            Styles[Style.BraceBad].ForeColor  = Color.FromArgb(255, 80, 80);    // red
+            Styles[Style.BraceBad].BackColor  = Color.FromArgb(50, 10, 10);     // dark red tint
+            Styles[Style.BraceBad].Bold = true;
+        }
+
+        // ── Brace matching ────────────────────────────────────────────────────
+
+        private static bool IsBrace(char c)
+            => c == '{' || c == '}' || c == '(' || c == ')' || c == '[' || c == ']';
+
+        /// <summary>
+        /// Fires on every caret move / selection change. Highlights the brace pair
+        /// under or immediately before the caret, or marks it red if unmatched.
+        /// Also clears word-occurrence highlights when the caret leaves the word.
+        /// </summary>
+        protected override void OnUpdateUI(UpdateUIEventArgs e)
+        {
+            base.OnUpdateUI(e);
+
+            // ── Brace highlight ───────────────────────────────────────────────
+            int caret = CurrentPosition;
+            int bracePos = -1;
+            if (caret > 0 && IsBrace((char)GetCharAt(caret - 1)))
+                bracePos = caret - 1;
+            else if (caret < TextLength && IsBrace((char)GetCharAt(caret)))
+                bracePos = caret;
+
+            if (bracePos < 0)
+                BraceHighlight(-1, -1);
+            else
+            {
+                int matchPos = BraceMatch(bracePos);
+                if (matchPos == InvalidPosition)
+                    BraceBadLight(bracePos);
+                else
+                    BraceHighlight(bracePos, matchPos);
+            }
+
+            // ── Word highlight: clear when caret moves off the highlighted word ─
+            if (_wordHighlight != null)
+            {
+                int wStart = WordStartPosition(caret, true);
+                int wEnd   = WordEndPosition(caret, true);
+                string current = wEnd > wStart ? GetTextRange(wStart, wEnd - wStart) : "";
+                if (current != _wordHighlight)
+                    ClearWordHighlights();
+            }
+        }
+
+        // ── Word occurrence highlight ──────────────────────────────────────────
+
+        /// <summary>
+        /// Double-click: highlight all occurrences of the word under the caret.
+        /// </summary>
+        protected override void OnDoubleClick(DoubleClickEventArgs e)
+        {
+            base.OnDoubleClick(e);
+            HighlightWordUnderCaret();
+        }
+
+        private void HighlightWordUnderCaret()
+        {
+            int pos    = CurrentPosition;
+            int wStart = WordStartPosition(pos, true);
+            int wEnd   = WordEndPosition(pos, true);
+
+            if (wEnd <= wStart)
+            { ClearWordHighlights(); return; }
+
+            string word = GetTextRange(wStart, wEnd - wStart);
+
+            // Only highlight identifier-like words of 2+ chars
+            if (word.Length < 2 || !IsWordChar(word[0]))
+            { ClearWordHighlights(); return; }
+
+            _wordHighlight = word;
+
+            IndicatorCurrent = IndicatorWordHighlight;
+            IndicatorClearRange(0, TextLength);
+
+            string text = Text;
+            int search = 0;
+            while ((search = text.IndexOf(word, search, StringComparison.Ordinal)) >= 0)
+            {
+                bool startOk = search == 0 || !IsWordChar(text[search - 1]);
+                bool endOk   = search + word.Length >= text.Length || !IsWordChar(text[search + word.Length]);
+                if (startOk && endOk)
+                    IndicatorFillRange(search, word.Length);
+                search += word.Length;
+            }
+        }
+
+        private void ClearWordHighlights()
+        {
+            _wordHighlight = null;
+            IndicatorCurrent = IndicatorWordHighlight;
+            IndicatorClearRange(0, TextLength);
+        }
+
+        private static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+
+        // ── Auto-indent & auto-close brackets ─────────────────────────────────
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.Handled) return;
+
+            if (e.KeyCode == Keys.Enter && !e.Control && !e.Alt)
+            {
+                e.Handled = true;
+                HandleEnter();
+            }
+        }
+
+        protected override void OnKeyPress(KeyPressEventArgs e)
+        {
+            base.OnKeyPress(e);
+            if (e.Handled) return;
+
+            switch (e.KeyChar)
+            {
+                case '{': e.Handled = true; InsertPair('{', '}'); break;
+                case '(': e.Handled = true; InsertPair('(', ')'); break;
+                case '[': e.Handled = true; InsertPair('[', ']'); break;
+                case '"': e.Handled = true; InsertPair('"', '"'); break;
+                case '}': e.Handled = true; SkipOrInsert('}'); break;
+                case ')': e.Handled = true; SkipOrInsert(')'); break;
+                case ']': e.Handled = true; SkipOrInsert(']'); break;
+            }
+        }
+
+        private void HandleEnter()
+        {
+            int pos      = CurrentPosition;
+            int line     = LineFromPosition(pos);
+            string indent = GetLineIndent(line);
+
+            // If the character before the caret is '{', add one extra indent level.
+            int lookBack = pos - 1;
+            while (lookBack >= 0 && GetCharAt(lookBack) == ' ') lookBack--;
+            bool afterBrace = lookBack >= 0 && (char)GetCharAt(lookBack) == '{';
+
+            // If the character at the caret is '}', put it on its own dedented line.
+            int lookAhead = pos;
+            while (lookAhead < TextLength && GetCharAt(lookAhead) == ' ') lookAhead++;
+            bool beforeBrace = lookAhead < TextLength && (char)GetCharAt(lookAhead) == '}';
+
+            if (afterBrace && beforeBrace)
+            {
+                // Split: new line for body (indented) + new line for closing brace (same as opener)
+                string bodyIndent = indent + "    ";
+                string insertion  = "\n" + bodyIndent + "\n" + indent;
+                int insertPos     = pos;
+                InsertText(insertPos, insertion);
+                SetEmptySelection(insertPos + 1 + bodyIndent.Length);
+            }
+            else if (afterBrace)
+            {
+                string bodyIndent = indent + "    ";
+                string insertion  = "\n" + bodyIndent;
+                InsertText(pos, insertion);
+                SetEmptySelection(pos + insertion.Length);
+            }
+            else
+            {
+                string insertion = "\n" + indent;
+                InsertText(pos, insertion);
+                SetEmptySelection(pos + insertion.Length);
+            }
+
+            ScrollCaret();
+        }
+
+        private void InsertPair(char open, char close)
+        {
+            int selStart = Math.Min(base.SelectionStart, base.SelectionEnd);
+            int selEnd   = Math.Max(base.SelectionStart, base.SelectionEnd);
+
+            if (selEnd > selStart)
+            {
+                // Wrap selection
+                string selected = GetTextRange(selStart, selEnd - selStart);
+                ReplaceSelection(open + selected + close);
+                SetEmptySelection(selStart + 1 + selected.Length);
+            }
+            else
+            {
+                ReplaceSelection(open.ToString() + close.ToString());
+                SetEmptySelection(selStart + 1);
+            }
+        }
+
+        private void SkipOrInsert(char close)
+        {
+            int pos = CurrentPosition;
+            if (pos < TextLength && (char)GetCharAt(pos) == close)
+                SetEmptySelection(pos + 1); // skip over the already-inserted closer
+            else
+                ReplaceSelection(close.ToString());
+        }
+
+        private string GetLineIndent(int line)
+        {
+            if (line < 0 || line >= Lines.Count) return "";
+            string text = Lines[line].Text.TrimEnd('\r', '\n');
+            int len = text.Length - text.TrimStart(' ', '\t').Length;
+            return text.Substring(0, len);
         }
 
         // ── RichTextBox-compatible API shims ──────────────────────────────────
@@ -188,6 +449,15 @@ namespace SESpriteLCDLayoutTool.Controls
         public void ScrollToCaret()
         {
             ScrollCaret();
+        }
+
+        /// <summary>
+        /// Ensures a line is visible by expanding any folded regions that contain it.
+        /// Equivalent to Scintilla SCI_ENSUREVISIBLE.
+        /// </summary>
+        public void EnsureVisible(int line)
+        {
+            Lines[line].EnsureVisible();
         }
 
         /// <summary>RichTextBox.GetCharIndexFromPosition compatible.</summary>

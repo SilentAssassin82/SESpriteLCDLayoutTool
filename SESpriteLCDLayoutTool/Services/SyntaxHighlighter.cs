@@ -9,6 +9,7 @@ using System.Windows.Forms;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using ScintillaNET;
 using SESpriteLCDLayoutTool.Controls;
 using SESpriteLCDLayoutTool.Data;
 
@@ -146,6 +147,7 @@ namespace SESpriteLCDLayoutTool.Services
             // positives from parse-only analysis.
             if (skipDiagnostics)
             {
+                UpdateFoldLevels(editor, source);
                 perfSw.Stop();
                 System.Diagnostics.Debug.WriteLine($"[SyntaxHighlighter.Highlight] {perfSw.ElapsedMilliseconds} ms | len={source.Length} | coloring-only (diagnostics deferred)");
                 return;
@@ -231,8 +233,77 @@ namespace SESpriteLCDLayoutTool.Services
 
             SetDiagnosticCache(editor, markers);
 
+            // Update fold levels now that we have the final text (uses brace depth,
+            // not the built-in lexer, since we drive styling via Roslyn).
+            UpdateFoldLevels(editor, source);
+
             perfSw.Stop();
             System.Diagnostics.Debug.WriteLine($"[SyntaxHighlighter.Highlight] {perfSw.ElapsedMilliseconds} ms | len={source.Length} | squiggles={squiggleCount} | semantics={includeSemantics}");
+        }
+
+        /// <summary>
+        /// Walks the source text line-by-line, tracking <c>{</c>/<c>}</c> brace depth
+        /// (ignoring braces inside strings and comments) and assigns Scintilla fold
+        /// levels so the fold-margin [+]/[−] glyphs appear correctly.
+        /// Called after every highlight pass since fold levels are not computed by a
+        /// built-in lexer (we drive styling via Roslyn instead).
+        /// </summary>
+        private static void UpdateFoldLevels(ScintillaCodeBox editor, string source)
+        {
+            if (editor == null || string.IsNullOrEmpty(source)) return;
+
+            string[] lines = source.Split('\n');
+            int depth = 0;
+
+            for (int li = 0; li < lines.Length && li < editor.Lines.Count; li++)
+            {
+                string line = lines[li];
+                int lineDepth = depth; // depth at start of this line
+                bool inString  = false;
+                bool inChar    = false;
+                bool inLineComment = false;
+
+                for (int ci = 0; ci < line.Length; ci++)
+                {
+                    char c = line[ci];
+
+                    // Line comment — rest of line is ignored
+                    if (!inString && !inChar && ci + 1 < line.Length &&
+                        c == '/' && line[ci + 1] == '/')
+                    {
+                        inLineComment = true;
+                        break;
+                    }
+
+                    // String literal boundaries (naive — good enough for fold levels)
+                    if (!inChar && !inLineComment && c == '"')
+                    {
+                        inString = !inString;
+                        continue;
+                    }
+                    if (!inString && !inLineComment && c == '\'')
+                    {
+                        inChar = !inChar;
+                        continue;
+                    }
+
+                    if (inString || inChar || inLineComment) continue;
+
+                    if (c == '{') depth++;
+                    else if (c == '}') depth = Math.Max(0, depth - 1);
+                }
+
+                // Set this line's fold level.
+                // Use the MINIMUM depth seen across the line — for a closing-brace-only
+                // line like "}" the level should reflect the post-close depth so the
+                // line sits at the same visual level as the block header.
+                const int foldLevelBase = 1024; // Scintilla SC_FOLDLEVELBASE
+                int lineLevel = foldLevelBase + Math.Min(lineDepth, depth);
+                bool isHeader = depth > lineDepth; // line opens a new level
+
+                editor.Lines[li].FoldLevel      = lineLevel | (isHeader ? (int)FoldLevelFlags.Header : 0);
+                editor.Lines[li].FoldLevelFlags = isHeader ? FoldLevelFlags.Header : (FoldLevelFlags)0;
+            }
         }
 
         /// <summary>

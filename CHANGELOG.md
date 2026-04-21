@@ -2,6 +2,20 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v3.7.0 - 2026-07-28
+
+### Added
+- **Code folding** — fold/collapse any `{...}` block in the code editor via the gutter margin. Fold levels are computed manually from brace depth since the Roslyn/Null lexer doesn't provide them automatically.
+- **Auto-expand on sprite navigation** — jumping to a sprite from the layer list now automatically expands any folded region containing the target line before scrolling to it.
+- **Word occurrence highlight** — double-clicking any identifier highlights all other occurrences in the editor with a subtle blue box indicator (indicator 15). Clears automatically when the caret moves off the word.
+- **Brace matching** — the `{` `}` `(` `)` `[` `]` pair under or immediately before the caret is highlighted in gold; unmatched braces highlight in red.
+- **Auto-indent** — pressing Enter carries the current line's indentation to the new line. After `{` adds one extra indent level; if `}` immediately follows the caret the closing brace is placed on its own correctly-indented line.
+- **Auto-close brackets** — typing `{` `(` `[` `"` inserts the matching closer and places the caret between them. Wraps any active selection. Typing a closer skips over an already-inserted one rather than doubling up.
+
+### Fixed
+- **Fade + ColorCycle animation conflict** — `FadeEffect` now emits a `Color.A` sub-key override instead of overwriting the full `Color` property, so Fade and ColorCycle can compose correctly. The animation injector folds the alpha channel into whatever color source is active (ColorCycle, keyframe, or static RGB).
+- **`UnwrapBlinkGuards` newline collapse** — `Split("\n")` was discarding newlines, collapsing multi-sprite Add blocks onto one line and causing sprite deletion on regeneration. Fixed by re-emitting `\n` between split pieces.
+
 ## v3.5.0 - 2026-07-21
 
 ### Added
