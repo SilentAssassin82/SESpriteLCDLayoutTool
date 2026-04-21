@@ -25,6 +25,13 @@ namespace SESpriteLCDLayoutTool.Controls
 
         private string _wordHighlight; // currently highlighted word (null = none)
 
+        /// <summary>
+        /// Optional callback invoked immediately when a character is typed,
+        /// before any TextChanged suppression can interfere. Used by CodeAutoComplete
+        /// to trigger the dot-access popup with zero latency.
+        /// </summary>
+        public Action<char> CharAddedCallback { get; set; }
+
         // ── Style constants for C# syntax colouring ───────────────────────────
         internal const int StyleDefault    = Style.Default;
         internal const int StyleKeyword    = 1;
@@ -40,6 +47,12 @@ namespace SESpriteLCDLayoutTool.Controls
         public ScintillaCodeBox()
         {
             ConfigureDefaults();
+        }
+
+        protected override void OnCharAdded(CharAddedEventArgs e)
+        {
+            base.OnCharAdded(e);
+            CharAddedCallback?.Invoke((char)e.Char);
         }
 
         private void ConfigureDefaults()

@@ -2,6 +2,15 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v3.8.0 - 2026-07-29
+
+### Added
+- **Reflection-based autocomplete expansion** — `RoslynMemberProvider` now resolves member lists for any Space Engineers or standard API type via `AppDomain` assembly reflection, with a permanent cache. Types not in the hardcoded `DotMembers` dictionary (e.g. `IMyTextSurface`, `IMyGridTerminalSystem`) now get accurate member suggestions automatically.
+
+### Fixed
+- **Autocomplete dot-trigger latency** — popup now fires the instant `.` is typed, using the `CharAdded` event path which bypasses the `_suppressCodeBoxEvents` guard that was delaying `TextChanged`-based triggering by one keystroke.
+- **Multi-sprite timeline modulo bleed** — when a short animation (e.g. 60-tick SemiCircle) and a longer animation (e.g. 150-tick Triangle) were merged into a single script, stretching the longer animation's last keyframe incorrectly updated the shorter animation's `% 60` loop modulo to `% 150` via an unscoped regex. The tick-modulo update in `MergeKeyframedIntoCode` is now scoped to each animation's own tick counter variable (e.g. `_tick`, `_tick2`), so each animation loops independently at its own period. Canvas and preview are now in sync.
+
 ## v3.7.0 - 2026-07-28
 
 ### Added

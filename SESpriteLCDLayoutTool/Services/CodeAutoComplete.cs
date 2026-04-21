@@ -471,6 +471,10 @@ namespace SESpriteLCDLayoutTool.Services
                 _editor.Parent.Controls.Add(_popup);
 
             _popup.BringToFront();
+
+            // Hook CharAdded directly — fires before TextChanged and is never suppressed,
+            // so the dot popup appears the instant '.' is typed.
+            _editor.CharAddedCallback = OnCharAdded;
         }
 
         /// <summary>Is the autocomplete popup currently visible?</summary>
@@ -480,6 +484,26 @@ namespace SESpriteLCDLayoutTool.Services
         public bool IsPopupFocused => _popup.Focused;
 
         // ── Public API called from MainForm ─────────────────────────────────────
+
+        /// <summary>
+        /// Called directly from ScintillaCodeBox.OnCharAdded — fires before TextChanged
+        /// and is never blocked by _suppressCodeBoxEvents. Used to trigger the dot popup
+        /// with zero latency.
+        /// </summary>
+        private void OnCharAdded(char c)
+        {
+            if (_inserting) return;
+            if (c == '.')
+            {
+                // '.' was just inserted — run detection immediately
+                DetectAndShow();
+            }
+            else if (_popup.Visible)
+            {
+                // Any other character: update the filter prefix in real time
+                DetectAndShow();
+            }
+        }
 
         /// <summary>
         /// Call on every text change in the editor.  Detects context and shows/hides the popup.
@@ -604,7 +628,7 @@ namespace SESpriteLCDLayoutTool.Services
                     }
                     else if (beforeDot.Length > 0)
                     {
-                        // Fallback: resolve variable name to its declared type
+                        // Fallback 1: resolve variable name to its declared type
                         string resolved = ResolveVariableType(beforeDot, text);
                         if (resolved != null && DotMembers.TryGetValue(resolved, out members))
                         {
@@ -612,6 +636,19 @@ namespace SESpriteLCDLayoutTool.Services
                             items = members.ToList();
                             prefix = afterDot;
                             prefixStartInEditor = caret - afterDot.Length;
+                        }
+                        else
+                        {
+                            // Fallback 2: reflection-based lookup for any loaded SE/API type
+                            string lookupName = resolved ?? beforeDot;
+                            var reflected = RoslynMemberProvider.GetMembers(lookupName);
+                            if (reflected != null && reflected.Length > 0)
+                            {
+                                ctx = AcContext.DotAccess;
+                                items = reflected.ToList();
+                                prefix = afterDot;
+                                prefixStartInEditor = caret - afterDot.Length;
+                            }
                         }
                     }
                 }

@@ -177,6 +177,7 @@
     <Compile Include="Services\CodeUndoManager.cs" />
     <Compile Include="Services\MultiAnimationRegistry.cs" />
     <Compile Include="Services\RoslynAnimationInjector.cs" />
+    <Compile Include="Services\RoslynMemberProvider.cs" />
     <Compile Include="Services\SEStubs.cs" />
     <Compile Include="Services\CodePatcher.cs" />
     <Compile Include="Services\KeyframedCodeGenerator.cs" />

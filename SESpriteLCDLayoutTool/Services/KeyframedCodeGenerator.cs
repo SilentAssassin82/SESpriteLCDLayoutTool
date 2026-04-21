@@ -1131,23 +1131,32 @@ namespace SESpriteLCDLayoutTool.Services
                 int newTotal = newTicks.Last();
                 if (oldTotal != newTotal && oldTotal > 0 && newTotal > 0)
                 {
-                    // _tick % OLD → _tick % NEW  (loop mode)
+                    // Derive the tick counter and raw variable names from the kfTick array name
+                    // e.g. "kfTick" → "_tick" / "raw", "kfTick2" → "_tick2" / "raw2"
+                    string tickVarRaw = existingArrays["tick"].varName.Replace("kfTick", "_tick");
+                    string rawVarRaw  = existingArrays["tick"].varName.Replace("kfTick", "raw");
+                    string tickEsc    = Regex.Escape(tickVarRaw);
+                    string rawEsc     = Regex.Escape(rawVarRaw);
+
+                    // _tick % OLD → _tick % NEW  (loop mode) — scoped to this animation's counter
                     result = Regex.Replace(result,
-                        @"(%\s*)" + oldTotal + @"(\s*;)",
+                        @"(" + tickEsc + @"\s*%\s*)" + oldTotal + @"(\s*;)",
                         "${1}" + newTotal + "${2}");
 
-                    // Math.Min(_tick, OLD) (once mode)
+                    // Math.Min(_tick, OLD) (once mode) — scoped to this animation's counter
                     result = Regex.Replace(result,
-                        @"(Math\.Min\s*\(\s*\w+\s*,\s*)" + oldTotal + @"(\s*\))",
+                        @"(Math\.Min\s*\(\s*" + tickEsc + @"\s*,\s*)" + oldTotal + @"(\s*\))",
                         "${1}" + newTotal + "${2}");
 
-                    // raw % (OLD*2) and (OLD*2) - raw (ping-pong)
+                    // raw{suffix} % (OLD*2) and (OLD*2) - raw{suffix} (ping-pong)
                     int oldDouble = oldTotal * 2;
                     int newDouble = newTotal * 2;
-                    if (result.Contains(oldDouble.ToString()))
-                    {
-                        result = result.Replace(oldDouble.ToString(), newDouble.ToString());
-                    }
+                    result = Regex.Replace(result,
+                        @"(" + rawEsc + @"\s*%\s*)" + oldDouble + @"(\s*;)",
+                        "${1}" + newDouble + "${2}");
+                    result = Regex.Replace(result,
+                        @"(" + oldDouble + @"\s*-\s*" + rawEsc + @")",
+                        newDouble + " - " + rawVarRaw);
                 }
             }
 
