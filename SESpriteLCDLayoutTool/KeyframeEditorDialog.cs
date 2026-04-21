@@ -1076,6 +1076,8 @@ namespace SESpriteLCDLayoutTool
         /// </summary>
         private static void DrawTintedTexture(Graphics g, Bitmap tex, RectangleF dest, Color tint)
         {
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+
             float rm = tint.R / 255f;
             float gm = tint.G / 255f;
             float bm = tint.B / 255f;
@@ -1093,7 +1095,6 @@ namespace SESpriteLCDLayoutTool
             using (var ia = new ImageAttributes())
             {
                 ia.SetColorMatrix(cm, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 g.DrawImage(tex,
                     new[] { new PointF(dest.Left, dest.Top), new PointF(dest.Right, dest.Top), new PointF(dest.Left, dest.Bottom) },
                     new RectangleF(0, 0, tex.Width, tex.Height),

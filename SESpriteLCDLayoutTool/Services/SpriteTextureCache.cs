@@ -281,13 +281,16 @@ namespace SESpriteLCDLayoutTool.Services
 
                     if (localName == "LCDTextureDefinition")
                     {
-                        using (var sub = reader.ReadSubtree())
-                        {
-                            string name, texPath;
-                            ReadSubtypeAndTexture(sub, out name, out texPath,
-                                "SpritePath", "TexturePath");
-                            AddMappingIfValid(name, texPath, textureRoot);
-                        }
+                        // Load the full element so we can prefer SpritePath over TexturePath.
+                        // ReadSubtypeAndTexture uses a HashSet and takes whichever element
+                        // appears first in the XML stream — but SE SBCs always put TexturePath
+                        // (3D model albedo) before SpritePath (LCD sprite), so we must
+                        // explicitly prefer SpritePath.
+                        var el = XElement.Load(reader.ReadSubtree());
+                        string name = GetSubtypeId(el);
+                        string texPath = GetDescendantValue(el, "SpritePath")
+                                      ?? GetDescendantValue(el, "TexturePath");
+                        AddMappingIfValid(name, texPath, textureRoot);
                         continue;
                     }
 
