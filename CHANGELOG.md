@@ -2,6 +2,13 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v3.8.2 - 2026-07-30
+
+### Fixed
+- **Multi-sprite preview loop hitch** — the shared playhead timer now wraps at the LCM of all sprite animation periods instead of the simple maximum. This ensures every sprite hits its natural loop boundary simultaneously, preventing shorter-cycle sprites (e.g. 60-tick SemiCircles) from hitching back to frame 0 while longer-cycle sprites (e.g. 90-tick Triangle) are still mid-animation.
+- **Mid-loop keyframe stretch causing playhead wrap** — dragging a keyframe bar to a tick beyond the current frozen loop window now immediately extends the window, so the playhead no longer wraps prematurely and resets all sprites in the middle of a loop.
+- **Hover tooltips not appearing on initial load** — `SetCodeText` now triggers a background `ComputeSemanticMarkers` pass so the Roslyn semantic cache is populated immediately rather than waiting for the first `TextChanged` event.
+
 ## v3.8.0 - 2026-07-29
 
 ### Added
