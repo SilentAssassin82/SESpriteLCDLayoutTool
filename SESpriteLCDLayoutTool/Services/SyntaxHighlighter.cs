@@ -310,8 +310,15 @@ namespace SESpriteLCDLayoutTool.Services
         /// Returns tooltip text for the diagnostic covering <paramref name="charIndex"/>.
         /// </summary>
         public static bool TryGetDiagnosticTooltip(ScintillaCodeBox editor, int charIndex, out string tooltipText)
+            => TryGetDiagnosticTooltip(editor, charIndex, out tooltipText, out _);
+
+        /// <summary>
+        /// Returns tooltip text and severity for the diagnostic covering <paramref name="charIndex"/>.
+        /// </summary>
+        public static bool TryGetDiagnosticTooltip(ScintillaCodeBox editor, int charIndex, out string tooltipText, out DiagnosticSeverity severity)
         {
             tooltipText = null;
+            severity = DiagnosticSeverity.Hidden;
             if (editor == null || charIndex < 0) return false;
 
             if (!_diagnosticCache.TryGetValue(editor, out var markers) || markers == null || markers.Count == 0)
@@ -337,6 +344,7 @@ namespace SESpriteLCDLayoutTool.Services
 
             if (best == null) return false;
 
+            severity = best.Severity;
             string sev = best.Severity.ToString().ToUpperInvariant();
             tooltipText = string.IsNullOrWhiteSpace(best.Id)
                 ? $"{sev}: {best.Message}"
@@ -513,6 +521,20 @@ namespace SESpriteLCDLayoutTool.Services
                         references: refs,
                         options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
+                    // Cache the semantic model for hover info
+                    try
+                    {
+                        var sm = compilation.GetSemanticModel(userTree);
+                        lock (_hoverCacheLock)
+                        {
+                            _cachedSemanticModel  = sm;
+                            _cachedSemanticTree   = userTree;
+                            _cachedPrefixLength   = prefixLength;
+                            _cachedSourceText     = source;
+                        }
+                    }
+                    catch { /* non-fatal */ }
+
                     // Only report diagnostics from the USER's code, not from stubs
                     diagnostics = compilation.GetDiagnostics()
                         .Where(d => d.Severity == DiagnosticSeverity.Error ||
@@ -558,6 +580,189 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 return new List<SemanticMarker>();
             }
+        }
+
+        // ── Semantic hover cache ──────────────────────────────────────────────
+        // Populated by ComputeSemanticMarkers so hover can reuse the same
+        // compilation without re-compiling on every mouse move.
+        private static readonly object _hoverCacheLock = new object();
+        private static SemanticModel  _cachedSemanticModel;
+        private static SyntaxTree     _cachedSemanticTree;
+        private static int            _cachedPrefixLength;
+        private static string         _cachedSourceText; // raw (unwrapped) user source
+
+        /// <summary>
+        /// Returns IDE-style hover text (signature + doc) for the symbol at
+        /// <paramref name="charPos"/> in the raw (unwrapped) user source, or
+        /// returns false when nothing useful is found.
+        /// </summary>
+        public static bool TryGetHoverInfo(string source, int charPos, out string hoverText)
+        {
+            hoverText = null;
+            if (string.IsNullOrEmpty(source) || charPos < 0 || charPos >= source.Length)
+                return false;
+
+            SemanticModel model;
+            SyntaxTree tree;
+            int prefixLen;
+            string cachedSrc;
+
+            lock (_hoverCacheLock)
+            {
+                model     = _cachedSemanticModel;
+                tree      = _cachedSemanticTree;
+                prefixLen = _cachedPrefixLength;
+                cachedSrc = _cachedSourceText;
+            }
+
+            if (model == null || tree == null) return false;
+
+            // Reject stale cache — source has changed since last background pass
+            if (!string.Equals(cachedSrc, source, StringComparison.Ordinal)) return false;
+
+            // Walk back/forward from charPos to find the start of a word so that
+            // hovering anywhere on an identifier (not just its first char) works.
+            int tokenPos = charPos;
+            while (tokenPos > 0 && IsIdentChar(source[tokenPos - 1]))
+                tokenPos--;
+            // If we ended up on whitespace entirely, nothing to resolve
+            if (tokenPos >= source.Length || !IsIdentChar(source[tokenPos]))
+                return false;
+
+            int wrappedPos = tokenPos + prefixLen;
+            var root = tree.GetRoot();
+
+            // Find the token at the adjusted position
+            SyntaxToken token;
+            try { token = root.FindToken(wrappedPos); }
+            catch { return false; }
+
+            if (token == default || !token.IsKind(SyntaxKind.IdentifierToken))
+                return false;
+
+            // Walk up to get the right syntax node for symbol lookup
+            SyntaxNode node = token.Parent;
+            if (node == null) return false;
+
+            // Prefer the outermost expression that still contains the token
+            // so that invocations resolve to the method instead of just the name.
+            SyntaxNode lookupNode = node;
+            if (node is IdentifierNameSyntax && node.Parent != null)
+                lookupNode = node.Parent;
+
+            try
+            {
+                // 1) Try GetSymbolInfo (covers invocations, member access, type refs, etc.)
+                var symInfo = model.GetSymbolInfo(lookupNode);
+                var symbol  = symInfo.Symbol
+                    ?? (symInfo.CandidateSymbols.Length > 0 ? symInfo.CandidateSymbols[0] : null);
+
+                // 2) Fallback: GetDeclaredSymbol (covers local variable, parameter declarations)
+                if (symbol == null)
+                    symbol = model.GetDeclaredSymbol(node) ?? model.GetDeclaredSymbol(lookupNode);
+
+                if (symbol == null) return false;
+
+                hoverText = FormatSymbol(symbol);
+                return !string.IsNullOrWhiteSpace(hoverText);
+            }
+            catch { return false; }
+        }
+
+        private static bool IsIdentChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+
+        private static string FormatSymbol(ISymbol symbol)
+        {
+            switch (symbol.Kind)
+            {
+                case SymbolKind.Method:
+                {
+                    var m = (IMethodSymbol)symbol;
+                    // If it is a constructor, show  TypeName(params)
+                    if (m.MethodKind == MethodKind.Constructor)
+                    {
+                        string ctorParams = FormatParameters(m.Parameters);
+                        return $"(constructor) {m.ContainingType.Name}({ctorParams})";
+                    }
+                    string ret    = m.ReturnsVoid ? "void" : FormatType(m.ReturnType);
+                    string tArgs  = m.TypeParameters.Length > 0
+                        ? "<" + string.Join(", ", m.TypeParameters.Select(p => p.Name)) + ">"
+                        : "";
+                    string parms  = FormatParameters(m.Parameters);
+                    string prefix = m.IsStatic ? "(static) " : "";
+                    return $"{prefix}{ret} {m.ContainingType?.Name}.{m.Name}{tArgs}({parms})";
+                }
+
+                case SymbolKind.Property:
+                {
+                    var p = (IPropertySymbol)symbol;
+                    string accessors = p.IsReadOnly ? "{ get; }" : p.IsWriteOnly ? "{ set; }" : "{ get; set; }";
+                    return $"(property) {FormatType(p.Type)} {p.ContainingType?.Name}.{p.Name} {accessors}";
+                }
+
+                case SymbolKind.Field:
+                {
+                    var f = (IFieldSymbol)symbol;
+                    string prefix = f.IsConst ? "(const) " : f.IsStatic ? "(static) " : "(field) ";
+                    string val    = f.IsConst && f.ConstantValue != null ? $" = {f.ConstantValue}" : "";
+                    return $"{prefix}{FormatType(f.Type)} {f.ContainingType?.Name}.{f.Name}{val}";
+                }
+
+                case SymbolKind.Local:
+                {
+                    var l = (ILocalSymbol)symbol;
+                    return $"(local) {FormatType(l.Type)} {l.Name}";
+                }
+
+                case SymbolKind.Parameter:
+                {
+                    var p = (IParameterSymbol)symbol;
+                    return $"(parameter) {FormatType(p.Type)} {p.Name}";
+                }
+
+                case SymbolKind.NamedType:
+                {
+                    var t = (INamedTypeSymbol)symbol;
+                    string kind = t.TypeKind.ToString().ToLowerInvariant();
+                    return $"({kind}) {t.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}";
+                }
+
+                case SymbolKind.Namespace:
+                    return $"(namespace) {symbol.ToDisplayString()}";
+
+                default:
+                    return symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+            }
+        }
+
+        private static string FormatParameters(System.Collections.Immutable.ImmutableArray<IParameterSymbol> parameters)
+        {
+            if (parameters.Length == 0) return "";
+            var parts = new System.Text.StringBuilder();
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                if (i > 0) parts.Append(", ");
+                var p = parameters[i];
+                if (p.IsParams)         parts.Append("params ");
+                else if (p.RefKind == RefKind.Ref)  parts.Append("ref ");
+                else if (p.RefKind == RefKind.Out)  parts.Append("out ");
+                else if (p.RefKind == RefKind.In)   parts.Append("in ");
+                parts.Append(FormatType(p.Type));
+                parts.Append(' ');
+                parts.Append(p.Name);
+                if (p.HasExplicitDefaultValue)
+                {
+                    parts.Append(" = ");
+                    parts.Append(p.ExplicitDefaultValue?.ToString() ?? "null");
+                }
+            }
+            return parts.ToString();
+        }
+
+        private static string FormatType(ITypeSymbol type)
+        {
+            if (type == null) return "?";
+            return type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
         }
 
         public static void ApplySemanticMarkers(ScintillaCodeBox editor, List<SemanticMarker> markers)

@@ -1180,13 +1180,7 @@ namespace SESpriteLCDLayoutTool
             {
                 Dock = DockStyle.Fill,
             };
-            _codeDiagTooltip = new ToolTip
-            {
-                InitialDelay = 250,
-                ReshowDelay = 100,
-                AutoPopDelay = 10000,
-                ShowAlways = true,
-            };
+            _codeDiagTooltip = new Controls.HoverTooltipWindow();
             // ── Syntax-highlight debounce timer ───────────────────────────────
             _syntaxTimer = new System.Windows.Forms.Timer { Interval = SyntaxHighlightDebounceMs };
             _syntaxTimer.Tick += (s, e) =>

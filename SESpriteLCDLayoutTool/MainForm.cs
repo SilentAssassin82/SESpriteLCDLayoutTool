@@ -99,7 +99,7 @@ namespace SESpriteLCDLayoutTool
         private CodeDiagnosticsMode _codeDiagnosticsMode = CodeDiagnosticsMode.None;
         private string _compileDiagnosticsCodeSnapshot;
         private const int SyntaxHighlightDebounceMs = 500;
-        private ToolTip _codeDiagTooltip;
+        private Controls.HoverTooltipWindow _codeDiagTooltip;
         private Controls.DiagnosticOverlay _diagnosticOverlay;
         private string _lastCodeDiagTooltipText;
         private int _lastCodeDiagTooltipChar = -1;
@@ -2323,6 +2323,12 @@ namespace SESpriteLCDLayoutTool
                     }
                     _lastHighlightedCode = _codeBox.Text;
                     _diagnosticOverlay?.InvalidateEditor();
+
+                    // Kick off the background semantic pass so the hover cache is
+                    // warm immediately after code is loaded (not just after typing).
+                    var capturedForHover = _codeBox.Text;
+                    System.Threading.Tasks.Task.Run(() =>
+                        SyntaxHighlighter.ComputeSemanticMarkers(capturedForHover));
                 }
                 // Seed the custom undo stack with the new content
                 _codeUndo.Clear();
@@ -2356,9 +2362,21 @@ namespace SESpriteLCDLayoutTool
                 return;
             }
 
-            if (!SyntaxHighlighter.TryGetDiagnosticTooltip(_codeBox, charIndex, out string tip))
+            string tip;
+            Microsoft.CodeAnalysis.DiagnosticSeverity sev = Microsoft.CodeAnalysis.DiagnosticSeverity.Hidden;
+
+            if (SyntaxHighlighter.TryGetDiagnosticTooltip(_codeBox, charIndex, out tip, out sev))
             {
-                HideCodeDiagnosticTooltip();
+                // Diagnostic — accent colour driven by severity
+            }
+            else if (SyntaxHighlighter.TryGetHoverInfo(_codeBox.Text, charIndex, out tip))
+            {
+                sev = Microsoft.CodeAnalysis.DiagnosticSeverity.Hidden; // hover uses kind-based accent
+            }
+            else
+            {
+                if (_lastCodeDiagTooltipText != null)
+                    HideCodeDiagnosticTooltip();
                 return;
             }
 
@@ -2368,17 +2386,17 @@ namespace SESpriteLCDLayoutTool
 
             _lastCodeDiagTooltipChar = charIndex;
             _lastCodeDiagTooltipText = tip;
-            // Use Show() with explicit position — SetToolTip() doesn't reliably
-            // display on RichEdit50W controls.
-            var screen = _codeBox.PointToScreen(mousePoint);
-            var client = _codeBox.Parent.PointToClient(screen);
-            _codeDiagTooltip.Show(tip, _codeBox, mousePoint.X, mousePoint.Y - 20, 10000);
+
+            Point screen = _codeBox.PointToScreen(mousePoint);
+            if (sev == Microsoft.CodeAnalysis.DiagnosticSeverity.Hidden)
+                _codeDiagTooltip.ShowHover(tip, screen, _codeBox);
+            else
+                _codeDiagTooltip.ShowDiagnostic(tip, sev, screen, _codeBox);
         }
 
         private void HideCodeDiagnosticTooltip()
         {
-            if (_codeDiagTooltip == null || _codeBox == null) return;
-            _codeDiagTooltip.Hide(_codeBox);
+            _codeDiagTooltip?.Hide();
             _lastCodeDiagTooltipText = null;
             _lastCodeDiagTooltipChar = -1;
         }

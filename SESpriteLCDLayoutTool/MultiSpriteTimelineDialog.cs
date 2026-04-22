@@ -42,6 +42,7 @@ namespace SESpriteLCDLayoutTool
         private Label       _lblSpeed;
         private bool        _isPlaying;
         private int         _selectedSpriteIdx = -1;
+        private int         _frozenMaxTick = 0; // loop length frozen at play-start; refreshed only on wrap
 
         // ── Callbacks to main form ───────────────────────────────────────────────
 
@@ -473,6 +474,13 @@ namespace SESpriteLCDLayoutTool
 
         private void OnTimelineKeyframeMoved(int spriteIdx, int kfIdx, int newTick)
         {
+            // If the user drags a keyframe beyond the current frozen loop window,
+            // grow the window immediately so the playhead doesn't wrap and reset
+            // everything mid-animation.  Never shrink mid-loop — that happens
+            // naturally at the next wrap point via ComputeMaxTick().
+            if (_isPlaying && newTick > _frozenMaxTick)
+                _frozenMaxTick = newTick;
+
             InvalidatePreview();
             SetStatus($"Keyframe moved to tick {newTick}");
         }
@@ -566,6 +574,7 @@ namespace SESpriteLCDLayoutTool
                 _isPlaying         = true;
                 _btnPlay.Text      = "⏸ Pause";
                 _btnPlay.BackColor = Color.FromArgb(120, 80, 0);
+                _frozenMaxTick     = ComputeMaxTick();
                 UpdateTimerInterval();
                 _playTimer.Start();
                 SetStatus("Playing…");
@@ -576,6 +585,7 @@ namespace SESpriteLCDLayoutTool
         {
             _playTimer.Stop();
             _isPlaying         = false;
+            _frozenMaxTick     = 0;
             _btnPlay.Text      = "▶ Play";
             _btnPlay.BackColor = Color.FromArgb(20, 100, 40);
             _timeline.Playhead = 0;
@@ -585,17 +595,53 @@ namespace SESpriteLCDLayoutTool
             SetStatus("Stopped");
         }
 
-        private void OnPlayTimerTick(object sender, EventArgs e)
+        private int ComputeMaxTick()
         {
-            int maxTick = 0;
+            // Use the LCM of all sprite loop periods so the shared playhead only
+            // wraps when every sprite is simultaneously at its own natural loop
+            // boundary — prevents shorter-cycle sprites from hitching mid-animation.
+            int lcm = 0;
             foreach (var sp in _animatedSprites)
             {
                 if (sp.KeyframeAnimation?.Keyframes?.Count > 0)
-                    maxTick = Math.Max(maxTick, sp.KeyframeAnimation.Keyframes.Max(k => k.Tick));
+                {
+                    int period = sp.KeyframeAnimation.Keyframes.Max(k => k.Tick);
+                    if (period > 0)
+                        lcm = lcm == 0 ? period : Lcm(lcm, period);
+                }
             }
-            if (maxTick <= 0) { _playTimer.Stop(); return; }
+            // Cap at a sane maximum to prevent the playhead running forever when
+            // periods are coprime (e.g. 60 and 61 → LCM = 3660, acceptable).
+            return lcm > 0 ? Math.Min(lcm, 3600) : 0;
+        }
 
-            int next = (_timeline.Playhead + 1) % maxTick;
+        private static int Gcd(int a, int b)
+        {
+            while (b != 0) { int t = b; b = a % b; a = t; }
+            return a;
+        }
+
+        private static int Lcm(int a, int b) => a / Gcd(a, b) * b;
+
+        private void OnPlayTimerTick(object sender, EventArgs e)
+        {
+            // Use the loop length that was frozen at play-start so that dragging
+            // a keyframe bar mid-loop does not change the loop period and cause
+            // other sprites to hitch back to their start.
+            if (_frozenMaxTick <= 0) { _playTimer.Stop(); return; }
+
+            int current = _timeline.Playhead;
+            int next    = current + 1;
+
+            // At the natural wrap point, re-read the live max so edits made
+            // during the previous loop are picked up for the next loop.
+            if (next >= _frozenMaxTick)
+            {
+                next = 0;
+                _frozenMaxTick = ComputeMaxTick();
+                if (_frozenMaxTick <= 0) { _playTimer.Stop(); return; }
+            }
+
             _timeline.Playhead = next;
             _lblTick.Text      = $"Tick: {next}";
             InvalidatePreview();
@@ -841,6 +887,7 @@ namespace SESpriteLCDLayoutTool
             if (_allSprites.Count == 0) return;
 
             int tick = _timeline?.Playhead ?? 0;
+
             var selectedAnimated = (_selectedSpriteIdx >= 0 && _selectedSpriteIdx < _animatedSprites.Count)
                 ? _animatedSprites[_selectedSpriteIdx]
                 : null;

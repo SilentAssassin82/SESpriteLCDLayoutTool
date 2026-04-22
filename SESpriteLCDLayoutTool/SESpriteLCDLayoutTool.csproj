@@ -104,6 +104,9 @@
       <SubType>Component</SubType>
     </Compile>
     <Compile Include="Controls\DiagnosticOverlay.cs" />
+    <Compile Include="Controls\HoverTooltipWindow.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Controls\MultiSpriteTimeline.cs">
       <SubType>Component</SubType>
     </Compile>
