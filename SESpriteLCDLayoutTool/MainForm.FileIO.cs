@@ -21,6 +21,74 @@ namespace SESpriteLCDLayoutTool
     public partial class MainForm
     {
         // ── File I/O ──────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Rebuilds the Recent Files submenu from <see cref="AppSettings.RecentFiles"/>.
+        /// Call this after opening or saving a file and on startup.
+        /// </summary>
+        private void BuildRecentFilesMenu()
+        {
+            if (_mnuRecentFiles == null) return;
+            _mnuRecentFiles.DropDownItems.Clear();
+
+            if (AppSettings.RecentFiles.Count == 0)
+            {
+                _mnuRecentFiles.DropDownItems.Add(new ToolStripMenuItem("(none)") { Enabled = false });
+                return;
+            }
+
+            foreach (string path in AppSettings.RecentFiles)
+            {
+                string captured = path;
+                var item = new ToolStripMenuItem(Path.GetFileName(captured))
+                {
+                    ToolTipText = captured,
+                    Enabled     = File.Exists(captured),
+                };
+                item.Click += (s, e) => OpenLayoutFromPath(captured);
+                _mnuRecentFiles.DropDownItems.Add(item);
+            }
+
+            _mnuRecentFiles.DropDownItems.Add(new ToolStripSeparator());
+            var clearItem = new ToolStripMenuItem("Clear Recent Files");
+            clearItem.Click += (s, e) =>
+            {
+                AppSettings.RecentFiles.Clear();
+                AppSettings.Save();
+                BuildRecentFilesMenu();
+            };
+            _mnuRecentFiles.DropDownItems.Add(clearItem);
+        }
+
+        private void OpenLayoutFromPath(string filePath)
+        {
+            try
+            {
+                var xs = new XmlSerializer(typeof(LcdLayout));
+                using (var fs = File.OpenRead(filePath))
+                    _layout = (LcdLayout)xs.Deserialize(fs);
+                _currentFile = filePath;
+                _canvas.CanvasLayout = _layout;
+                RefreshLayerList();
+                ClearCodeDirty();
+
+                if (_layout.OriginalSourceCode != null)
+                    AutoSwitchCodeStyle(_layout.OriginalSourceCode);
+
+                RefreshCode();
+                UpdateTitle();
+                AppSettings.PushRecentFile(filePath);
+                AppSettings.Save();
+                BuildRecentFilesMenu();
+                SetStatus($"Opened: {Path.GetFileName(_currentFile)}");
+                RefreshDebugStats();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Could not open layout:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
         private void OpenLayout()
         {
             using (var dlg = new OpenFileDialog { Filter = "LCD Layout (*.seld)|*.seld|All files (*.*)|*.*", Title = "Open Layout" })
@@ -75,11 +143,51 @@ namespace SESpriteLCDLayoutTool
                 using (var fs = File.Create(_currentFile))
                     xs.Serialize(fs, _layout);
                 UpdateTitle();
+                AppSettings.PushRecentFile(_currentFile);
+                AppSettings.Save();
+                BuildRecentFilesMenu();
                 SetStatus($"Saved: {Path.GetFileName(_currentFile)}");
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Could not save layout:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ExportScript()
+        {
+            string code = _codeBox?.Text;
+            if (string.IsNullOrWhiteSpace(code))
+                code = _layout?.OriginalSourceCode ?? "";
+
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                SetStatus("Nothing to export — code panel is empty.");
+                return;
+            }
+
+            string defaultName = (_currentFile != null)
+                ? Path.GetFileNameWithoutExtension(_currentFile)
+                : (_layout?.Name ?? "Script");
+
+            using (var dlg = new SaveFileDialog
+            {
+                Filter   = "C# Script (*.cs)|*.cs|All files (*.*)|*.*",
+                Title    = "Export Script",
+                FileName = defaultName + ".cs",
+            })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    File.WriteAllText(dlg.FileName, code, Encoding.UTF8);
+                    SetStatus($"Script exported: {Path.GetFileName(dlg.FileName)}");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Could not export script:\n{ex.Message}", "Error",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
         }
 

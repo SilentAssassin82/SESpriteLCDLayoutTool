@@ -170,8 +170,12 @@ namespace SESpriteLCDLayoutTool
             var file = new ToolStripMenuItem("File");
             file.DropDownItems.Add("New",        null, (s, e) => NewLayout());
             file.DropDownItems.Add("Open...",    null, (s, e) => OpenLayout());
-            file.DropDownItems.Add("Save",       null, (s, e) => SaveLayout(false));
-            file.DropDownItems.Add("Save As...", null, (s, e) => SaveLayout(true));
+            file.DropDownItems.Add("Save",            null, (s, e) => SaveLayout(false));
+            file.DropDownItems.Add("Save As...",      null, (s, e) => SaveLayout(true));
+            file.DropDownItems.Add("Export Script…\tCtrl+Shift+S", null, (s, e) => ExportScript());
+            file.DropDownItems.Add(new ToolStripSeparator());
+            _mnuRecentFiles = new ToolStripMenuItem("Recent Files");
+            file.DropDownItems.Add(_mnuRecentFiles);
             file.DropDownItems.Add(new ToolStripSeparator());
             file.DropDownItems.Add("Import Sprite List...", null, (s, e) => ShowImportSpriteDialog());
             file.DropDownItems.Add("Clear Imported Sprites", null, (s, e) => ClearImportedSprites());

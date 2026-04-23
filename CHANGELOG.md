@@ -2,6 +2,11 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v3.9.0 - 2025-07-15
+
+### Added
+- **Export Script** (`File → Export Script…` / `Ctrl+Shift+S`) — saves the current code panel contents directly to a `.cs` file. Users writing PB scripts from scratch no longer need to copy-paste out of the editor; the file-sync path was already handled, now in-app authoring is too.
+
 ## v3.8.2 - 2026-07-30
 
 ### Fixed

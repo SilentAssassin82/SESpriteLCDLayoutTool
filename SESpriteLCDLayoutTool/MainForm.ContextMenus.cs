@@ -153,6 +153,9 @@ namespace SESpriteLCDLayoutTool
                 case Keys.Control | Keys.S:
                     SaveLayout(false);
                     return true;
+                case Keys.Control | Keys.Shift | Keys.S:
+                    ExportScript();
+                    return true;
                 case Keys.Control | Keys.N:
                     if (MessageBox.Show("Start a new layout? Unsaved changes will be lost.", "New Layout",
                             MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK)
