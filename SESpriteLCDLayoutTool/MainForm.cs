@@ -137,6 +137,9 @@ namespace SESpriteLCDLayoutTool
         private ToolStripMenuItem _mnuCaptureSnapshot;
         private Button _btnCaptureSnapshot;
 
+        // ── Recent files menu ────────────────────────────────────────────────────
+        private ToolStripMenuItem _mnuRecentFiles;
+
         // ── File-based live stream ───────────────────────────────────────────────
         private LiveFileWatcher _fileWatcher;
         private bool _fileWatchBidirectional;           // true = script sync mode, false = one-way LCD output
@@ -244,30 +247,94 @@ namespace SESpriteLCDLayoutTool
 
             Load += (s, e) =>
             {
+                // ── Restore saved workspace layout ────────────────────────────
+                if (AppSettings.WindowWidth > 0 && AppSettings.WindowHeight > 0)
+                {
+                    // Validate the saved bounds are on an accessible screen
+                    var savedBounds = new System.Drawing.Rectangle(
+                        AppSettings.WindowX, AppSettings.WindowY,
+                        AppSettings.WindowWidth, AppSettings.WindowHeight);
+                    bool onScreen = Screen.AllScreens.Length > 0 &&
+                        Array.Exists(Screen.AllScreens, sc => sc.WorkingArea.IntersectsWith(savedBounds));
+
+                    if (onScreen)
+                    {
+                        StartPosition = FormStartPosition.Manual;
+                        Bounds        = savedBounds;
+                    }
+                    else
+                    {
+                        Size = new Size(AppSettings.WindowWidth, AppSettings.WindowHeight);
+                    }
+
+                    if (AppSettings.WindowMaximised)
+                        WindowState = FormWindowState.Maximized;
+                }
+
                 // Clamp to screen working area so the window never starts behind the taskbar
                 // (e.g. 1366×768 laptops where the default 860px height would be clipped).
                 var wa = Screen.FromControl(this).WorkingArea;
-                if (Width  > wa.Width)  Width  = wa.Width;
-                if (Height > wa.Height) Height = wa.Height;
-                Location = new Point(
-                    wa.X + Math.Max(0, (wa.Width  - Width)  / 2),
-                    wa.Y + Math.Max(0, (wa.Height - Height) / 2));
+                if (WindowState == FormWindowState.Normal)
+                {
+                    if (Width  > wa.Width)  Width  = wa.Width;
+                    if (Height > wa.Height) Height = wa.Height;
+                    if (StartPosition != FormStartPosition.Manual)
+                        Location = new Point(
+                            wa.X + Math.Max(0, (wa.Width  - Width)  / 2),
+                            wa.Y + Math.Max(0, (wa.Height - Height) / 2));
+                }
 
                 // MinSize must be set after layout so internal SplitterDistance validation has real dimensions.
                 _mainSplit.Panel1MinSize    = 160;
                 _mainSplit.Panel2MinSize    = 300;
-                _mainSplit.SplitterDistance = Math.Max(160, Math.Min(_mainSplit.Width - 300 - _mainSplit.SplitterWidth, 210));
+                _mainSplit.SplitterDistance = AppSettings.MainSplitterDistance > 0
+                    ? Math.Max(160, Math.Min(_mainSplit.Width - 300 - _mainSplit.SplitterWidth, AppSettings.MainSplitterDistance))
+                    : Math.Max(160, Math.Min(_mainSplit.Width - 300 - _mainSplit.SplitterWidth, 210));
                 _mainSplit.FixedPanel       = FixedPanel.Panel1;   // sprite palette stays fixed width
 
                 _workSplit.Panel1MinSize    = 200;
                 _workSplit.Panel2MinSize    = 180;
-                _workSplit.SplitterDistance = Math.Max(200, Math.Min(_workSplit.Height - 180 - _workSplit.SplitterWidth, 560));
+                _workSplit.SplitterDistance = AppSettings.WorkSplitterDistance > 0
+                    ? Math.Max(200, Math.Min(_workSplit.Height - 180 - _workSplit.SplitterWidth, AppSettings.WorkSplitterDistance))
+                    : Math.Max(200, Math.Min(_workSplit.Height - 180 - _workSplit.SplitterWidth, 560));
                 _workSplit.FixedPanel       = FixedPanel.Panel2;   // code panel stays fixed height
 
                 _topSplit.Panel1MinSize     = 200;
                 _topSplit.Panel2MinSize     = 240;
-                _topSplit.SplitterDistance  = Math.Max(200, _topSplit.Width - 260 - _topSplit.SplitterWidth);
+                _topSplit.SplitterDistance  = AppSettings.TopSplitterDistance > 0
+                    ? Math.Max(200, Math.Min(_topSplit.Width - 240 - _topSplit.SplitterWidth, AppSettings.TopSplitterDistance))
+                    : Math.Max(200, _topSplit.Width - 260 - _topSplit.SplitterWidth);
                 _topSplit.FixedPanel        = FixedPanel.Panel2;   // properties panel stays fixed width
+
+                BuildRecentFilesMenu();
+            };
+
+            FormClosing += (s, e) =>
+            {
+                // Save workspace layout so it can be restored next launch
+                if (WindowState == FormWindowState.Maximized)
+                {
+                    AppSettings.WindowMaximised = true;
+                    // Save the restore bounds, not the maximised screen bounds
+                    var rb = RestoreBounds;
+                    AppSettings.WindowX      = rb.X;
+                    AppSettings.WindowY      = rb.Y;
+                    AppSettings.WindowWidth  = rb.Width;
+                    AppSettings.WindowHeight = rb.Height;
+                }
+                else
+                {
+                    AppSettings.WindowMaximised = false;
+                    AppSettings.WindowX      = Location.X;
+                    AppSettings.WindowY      = Location.Y;
+                    AppSettings.WindowWidth  = Width;
+                    AppSettings.WindowHeight = Height;
+                }
+
+                AppSettings.MainSplitterDistance = _mainSplit?.SplitterDistance ?? 0;
+                AppSettings.WorkSplitterDistance = _workSplit?.SplitterDistance ?? 0;
+                AppSettings.TopSplitterDistance  = _topSplit?.SplitterDistance  ?? 0;
+                AppSettings.Save();
             };
         }
 
