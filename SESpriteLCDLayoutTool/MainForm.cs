@@ -99,6 +99,8 @@ namespace SESpriteLCDLayoutTool
         private CodeDiagnosticsMode _codeDiagnosticsMode = CodeDiagnosticsMode.None;
         private string _compileDiagnosticsCodeSnapshot;
         private const int SyntaxHighlightDebounceMs = 500;
+        private const int PropWriteBackDebounceMs = 350;
+        private System.Windows.Forms.Timer _propWriteBackTimer;
         private Controls.HoverTooltipWindow _codeDiagTooltip;
         private Controls.DiagnosticOverlay _diagnosticOverlay;
         private string _lastCodeDiagTooltipText;
@@ -1294,8 +1296,20 @@ namespace SESpriteLCDLayoutTool
 
             _canvas.Invalidate();
             RefreshLayerList();
-            ClearCodeDirty();
-            RefreshCode(writeBack: true);
+
+            // Debounce the code writeback so rapid typing doesn't stutter.
+            if (_propWriteBackTimer == null)
+            {
+                _propWriteBackTimer = new System.Windows.Forms.Timer { Interval = PropWriteBackDebounceMs };
+                _propWriteBackTimer.Tick += (ts, te) =>
+                {
+                    _propWriteBackTimer.Stop();
+                    ClearCodeDirty();
+                    RefreshCode(writeBack: true);
+                };
+            }
+            _propWriteBackTimer.Stop();
+            _propWriteBackTimer.Start();
         }
 
         private void OnAlphaChanged(object sender, EventArgs e)
@@ -1755,6 +1769,17 @@ namespace SESpriteLCDLayoutTool
                 lines.Add("Code: " + TrimTooltipText(sprite.SourceCodeSnippet, 180));
 
             return string.Join(Environment.NewLine, lines.Where(l => !string.IsNullOrWhiteSpace(l)));
+        }
+
+        /// <summary>Returns the layer-list type hint for a sprite: texture name for textures, truncated quoted text for text sprites.</summary>
+        private static string SpriteTypeHint(SpriteEntry sprite)
+        {
+            if (sprite.Type != SpriteEntryType.Text)
+                return sprite.SpriteName ?? "Texture";
+            if (string.IsNullOrEmpty(sprite.Text))
+                return "Text";
+            string t = sprite.Text.Length > 12 ? sprite.Text.Substring(0, 9) + "..." : sprite.Text;
+            return "TEXT \"" + t + "\"";
         }
 
         private static string TrimTooltipText(string text, int maxLength)
@@ -2257,11 +2282,16 @@ namespace SESpriteLCDLayoutTool
             });
 
             // ── Strategy 1: Type+content matching ──
-            // Text and texture sprites are matched by their exact content
+            // Text and texture sprites are matched by their exact content.
+            // IMPORTANT: use Text for text sprites and SpriteName for texture sprites —
+            // parsed text sprites have SpriteName="SquareSimple" (the default) which must
+            // not be used as the key or it would collide across all text sprites.
             var contentPool = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
             foreach (var ps in parsedSprites)
             {
-                string key = (ps.Type == SpriteEntryType.Text ? "TEXT|" : "TEXTURE|") + (ps.SpriteName ?? ps.Text ?? "");
+                string key = ps.Type == SpriteEntryType.Text
+                    ? "TEXT|" + (ps.Text ?? "")
+                    : "TEXTURE|" + (ps.SpriteName ?? "");
                 if (!contentPool.ContainsKey(key))
                     contentPool[key] = new Queue<SpriteEntry>();
                 contentPool[key].Enqueue(ps);
@@ -2270,7 +2300,9 @@ namespace SESpriteLCDLayoutTool
             int unmatched = 0;
             foreach (var sp in _layout.Sprites)
             {
-                string key = (sp.Type == SpriteEntryType.Text ? "TEXT|" : "TEXTURE|") + (sp.SpriteName ?? sp.Text ?? "");
+                string key = sp.Type == SpriteEntryType.Text
+                    ? "TEXT|" + (sp.Text ?? "")
+                    : "TEXTURE|" + (sp.SpriteName ?? "");
                 if (contentPool.TryGetValue(key, out var queue) && queue.Count > 0)
                 {
                     var parsed = queue.Dequeue();
@@ -2862,7 +2894,7 @@ namespace SESpriteLCDLayoutTool
                     : null;
 
                 string typeHint = sprite.Type == SpriteEntryType.Text
-                    ? "Text"
+                    ? SpriteTypeHint(sprite)
                     : sprite.SpriteName ?? "Texture";
 
                 string label = ctx != null ? $"{ctx}: {typeHint}" : typeHint;

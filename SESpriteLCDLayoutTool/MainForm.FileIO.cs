@@ -686,7 +686,7 @@ namespace SESpriteLCDLayoutTool
                                 : null;
 
                             string typeHint = sprite.Type == SpriteEntryType.Text
-                                ? "Text"
+                                ? SpriteTypeHint(sprite)
                                 : sprite.SpriteName ?? "Texture";
 
                             string label = ctx != null ? $"{ctx}: {typeHint}" : typeHint;

@@ -626,7 +626,7 @@ namespace SESpriteLCDLayoutTool
                 sprite.SpriteName = null;
                 sprite.Text       = glyph.Character.ToString();
                 sprite.FontId     = font;
-                UpdateImportLabel(sprite, "Text");
+                UpdateImportLabel(sprite, SpriteTypeHint(sprite));
                 OnSelectionChanged(_canvas, EventArgs.Empty);
                 _canvas.Invalidate();
                 RefreshLayerList();

@@ -2,6 +2,13 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v3.9.1 - 2026-08-01
+
+### Fixed
+- **Layer list shows actual text content for PB scripts** — text sprite labels in the layer list now display the sprite's text content (e.g. `TEXT "RADAR SWEEP"`) instead of the generic `Text` / `Text.2` placeholder. A shared `SpriteTypeHint()` helper was added and wired into all four `ImportLabel`-setting paths (Apply Code, file load, streaming, glyph replacement).
+- **Properties panel text edit only applies once** — editing a text sprite's content in the properties panel now correctly updates the code on every keystroke. The root cause was `RefreshSourceTracking()` Strategy 1 building pool keys using `SpriteName ?? Text`, which always resolved to `"SquareSimple"` (the default) for text sprites. The key logic now branches explicitly on sprite type, using `"TEXT|" + Text` for text sprites and `"TEXTURE|" + SpriteName` for texture sprites, so `ImportBaseline` is re-established correctly after each patch.
+- **Properties panel typing stutter** — the code writeback triggered by property edits is now debounced (350 ms) so the code panel only updates after a brief pause in typing rather than on every single keystroke.
+
 ## v3.9.0 - 2025-07-15
 
 ### Added
