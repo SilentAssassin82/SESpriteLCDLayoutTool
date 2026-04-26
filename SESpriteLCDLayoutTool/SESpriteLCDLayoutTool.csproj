@@ -229,4 +229,13 @@
     <PackageReference Include="Scintilla.NET" Version="5.3.2.9" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+
+  <Target Name="CopyScintillaNativeDlls" AfterTargets="Build">
+    <PropertyGroup>
+      <ScintillaPackageDir>$(NuGetPackageRoot)scintilla.net\5.3.2.9\build</ScintillaPackageDir>
+    </PropertyGroup>
+    <Copy SourceFiles="$(ScintillaPackageDir)\x64\Scintilla.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ScintillaPackageDir)\x64\Lexilla.dll"   DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

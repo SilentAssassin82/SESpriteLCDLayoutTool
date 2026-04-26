@@ -53,6 +53,9 @@ mkdir "%STAGE%"
 
 copy "%OUT_DIR%\SESpriteLCDLayoutTool.exe"        "%STAGE%\" >nul
 copy "%OUT_DIR%\SESpriteLCDLayoutTool.exe.config"  "%STAGE%\" >nul 2>nul
+copy "%OUT_DIR%\Scintilla.NET.dll"                 "%STAGE%\" >nul
+copy "%OUT_DIR%\Scintilla.dll"                     "%STAGE%\" >nul
+copy "%OUT_DIR%\Lexilla.dll"                       "%STAGE%\" >nul
 copy "README.md"                                   "%STAGE%\" >nul
 copy "LICENSE"                                     "%STAGE%\" >nul
 copy "setup.ps1"                                   "%STAGE%\" >nul
