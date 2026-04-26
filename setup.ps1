@@ -1,4 +1,4 @@
-#Requires -Version 5.0
+﻿#Requires -Version 5.0
 <#
 .SYNOPSIS
     First-time setup for SE Sprite LCD Layout Tool.
@@ -26,14 +26,14 @@ if (-not (Test-Path $exePath)) {
 }
 
 Write-Host ""
-Write-Host " ╔════════════════════════════════════════════╗"
-Write-Host " ║  SE Sprite LCD Layout Tool — First Setup   ║"
-Write-Host " ╚════════════════════════════════════════════╝"
+Write-Host " â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—"
+Write-Host " â•‘  SE Sprite LCD Layout Tool â€” First Setup   â•‘"
+Write-Host " â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•"
 Write-Host ""
 
-# ── Locate Space Engineers ModSDK / game ─────────────────────────────────────
+# â”€â”€ Locate Space Engineers ModSDK / game â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function Find-SEBinDir {
-    # 1. ModSDK (preferred — has the profile DLLs we need)
+    # 1. ModSDK (preferred â€” has the profile DLLs we need)
     $sdkCandidates = @(
         "C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineersModSDK\Bin64_Profile",
         "D:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile",
@@ -75,7 +75,7 @@ function Find-TorchDir {
     return $null
 }
 
-# ── DLLs required from SE ModSDK / game ──────────────────────────────────────
+# â”€â”€ DLLs required from SE ModSDK / game â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 $seDlls = @(
     "Sandbox.Common.dll",
     "Sandbox.Game.dll",
@@ -107,36 +107,36 @@ $seDlls = @(
     "0Harmony.dll"
 )
 
-# ── DLLs required from Torch ─────────────────────────────────────────────────
+# â”€â”€ DLLs required from Torch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 $torchDlls = @(
     "Torch.dll",
     "Torch.API.dll",
     "NLog.dll"
 )
 
-# ── Locate SE ────────────────────────────────────────────────────────────────
+# â”€â”€ Locate SE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Host " [1/3] Locating Space Engineers..."
 $seDir = Find-SEBinDir
 if (-not $seDir) {
     Write-Host ""
-    Write-Host " ✗ Could not find Space Engineers ModSDK or game installation." -ForegroundColor Red
+    Write-Host " âœ— Could not find Space Engineers ModSDK or game installation." -ForegroundColor Red
     Write-Host "   Please enter the full path to your SE Bin64_Profile folder:"
     Write-Host "   (e.g. D:\Steam\steamapps\common\SpaceEngineersModSDK\Bin64_Profile)"
     Write-Host ""
     $seDir = Read-Host "   SE path"
     if (-not (Test-Path (Join-Path $seDir "Sandbox.Common.dll"))) {
-        Write-Error "Sandbox.Common.dll not found at '$seDir' — aborting."
+        Write-Error "Sandbox.Common.dll not found at '$seDir' â€” aborting."
         exit 1
     }
 }
 Write-Host "   Found: $seDir" -ForegroundColor Green
 
-# ── Locate Torch (optional) ───────────────────────────────────────────────────
+# â”€â”€ Locate Torch (optional) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Host ""
 Write-Host " [2/3] Locating Torch (optional)..."
 $torchDir = Find-TorchDir
 if (-not $torchDir) {
-    Write-Host "   Not found — Torch features will be unavailable." -ForegroundColor Yellow
+    Write-Host "   Not found â€” Torch features will be unavailable." -ForegroundColor Yellow
     Write-Host "   If you have Torch installed, enter its path (or press Enter to skip):"
     $input = Read-Host "   Torch path"
     if ($input -and (Test-Path (Join-Path $input "Torch.dll"))) {
@@ -147,7 +147,7 @@ if (-not $torchDir) {
     Write-Host "   Found: $torchDir" -ForegroundColor Green
 }
 
-# ── Copy DLLs ─────────────────────────────────────────────────────────────────
+# â”€â”€ Copy DLLs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Host ""
 Write-Host " [3/3] Copying dependencies..."
 $copied  = 0
@@ -190,9 +190,9 @@ if ($missing.Count -gt 0) {
     Write-Host "   The tool will still run but some features may be unavailable."
 }
 
-# ── Done ─────────────────────────────────────────────────────────────────────
+# â”€â”€ Done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 Write-Host ""
-Write-Host " ──────────────────────────────────────────────"
+Write-Host " â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€"
 Write-Host "  Setup complete!  Run SESpriteLCDLayoutTool.exe"
-Write-Host " ──────────────────────────────────────────────"
+Write-Host " â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€"
 Write-Host ""
