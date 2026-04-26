@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -37,29 +37,29 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="NLog">
-      <HintPath>..\..\..\..\..\..\..\..\Torch\NLog.dll</HintPath>
+      <HintPath>$(TorchDir)\NLog.dll</HintPath>
     </Reference>
     <Reference Include="protobuf-net, Version=2.4.0.0, Culture=neutral, PublicKeyToken=257b51d87d2e4d67, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\..\..\..\..\AppData\Roaming\Pulsar\Libraries\Legacy\protobuf-net.dll</HintPath>
+      <HintPath>$(PulsarLibDir)\protobuf-net.dll</HintPath>
     </Reference>
     <Reference Include="Pulsar.Compiler">
-      <HintPath>..\..\..\..\..\..\AppData\Roaming\Pulsar\Libraries\Legacy\Pulsar.Compiler.dll</HintPath>
+      <HintPath>$(PulsarLibDir)\Pulsar.Compiler.dll</HintPath>
     </Reference>
     <Reference Include="Pulsar.Shared">
-      <HintPath>..\..\..\..\..\..\AppData\Roaming\Pulsar\Libraries\Legacy\Pulsar.Shared.dll</HintPath>
+      <HintPath>$(PulsarLibDir)\Pulsar.Shared.dll</HintPath>
     </Reference>
     <Reference Include="Sandbox.Common">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\Sandbox.Common.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\Sandbox.Common.dll</HintPath>
     </Reference>
     <Reference Include="Sandbox.Game">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\Sandbox.Game.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\Sandbox.Game.dll</HintPath>
     </Reference>
     <Reference Include="Sandbox.Game.XmlSerializers">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\Sandbox.Game.XmlSerializers.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\Sandbox.Game.XmlSerializers.dll</HintPath>
     </Reference>
     <Reference Include="SpaceEngineers.Game">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\SpaceEngineers.Game.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\SpaceEngineers.Game.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -70,28 +70,28 @@
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Xml" />
     <Reference Include="Torch">
-      <HintPath>..\..\..\..\..\..\..\..\Torch\Torch.dll</HintPath>
+      <HintPath>$(TorchDir)\Torch.dll</HintPath>
     </Reference>
     <Reference Include="VRage">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\VRage.dll</HintPath>
     </Reference>
     <Reference Include="VRage.Game">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Game.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\VRage.Game.dll</HintPath>
     </Reference>
     <Reference Include="VRage.Game.XmlSerializers">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Game.XmlSerializers.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\VRage.Game.XmlSerializers.dll</HintPath>
     </Reference>
     <Reference Include="VRage.Library">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Library.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\VRage.Library.dll</HintPath>
     </Reference>
     <Reference Include="VRage.Math">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Math.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\VRage.Math.dll</HintPath>
     </Reference>
     <Reference Include="VRage.Math.XmlSerializers">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Math.XmlSerializers.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\VRage.Math.XmlSerializers.dll</HintPath>
     </Reference>
     <Reference Include="VRage.Mod.Io">
-      <HintPath>G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile\VRage.Mod.Io.dll</HintPath>
+      <HintPath>$(SE_ModSDK)\VRage.Mod.Io.dll</HintPath>
     </Reference>
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />

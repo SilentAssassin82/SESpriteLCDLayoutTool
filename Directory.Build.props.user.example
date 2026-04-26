@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Directory.Build.props.user — PER-MACHINE PATH OVERRIDES
+  =========================================================
+  Copy this file to:  Directory.Build.props.user
+  (remove the .example extension — the .user file is git-ignored)
+
+  Then edit the paths below to match YOUR machine.
+  You only need to set the properties that differ from the defaults in
+  Directory.Build.props.
+-->
+<Project>
+  <PropertyGroup>
+
+    <!--
+      Space Engineers ModSDK  (contains Sandbox.*, VRage.*, SpaceEngineers.Game.dll)
+      Common locations:
+        C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineersModSDK\Bin64_Profile
+        D:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile
+    -->
+    <SE_ModSDK>C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineersModSDK\Bin64_Profile</SE_ModSDK>
+
+    <!--
+      Torch server directory  (contains Torch.dll, NLog.dll, etc.)
+      This is the root of the Torch installation, e.g.:
+        C:\Torch
+        D:\Servers\Torch
+    -->
+    <TorchDir>C:\Torch</TorchDir>
+
+    <!--
+      Pulsar legacy libraries  (contains Pulsar.Compiler.dll, Pulsar.Shared.dll, protobuf-net.dll)
+      Usually lives in AppData — the default $(APPDATA)\Pulsar\Libraries\Legacy
+      should work on most machines without overriding this.
+    -->
+    <!-- <PulsarLibDir>$(APPDATA)\Pulsar\Libraries\Legacy</PulsarLibDir> -->
+
+  </PropertyGroup>
+</Project>

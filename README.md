@@ -249,9 +249,14 @@ The built-in code compiler lets you compile and run SE LCD scripts directly insi
 > **How it works under the hood:** the tool runs `vswhere.exe` (located at `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe`) to find the latest VS installation path, then looks for `csc.exe` inside `MSBuild\Current\Bin\Roslyn\`. The compiler is invoked as an external process — no Roslyn NuGet packages or SDKs are bundled with the tool.
 
 ### Running the Tool
-1. Build the solution or download a release
-2. Run `SESpriteLCDLayoutTool.exe`
-3. The tool auto-detects your Space Engineers path on first launch
+1. Download a release zip and extract it
+2. Run `setup.ps1` once to copy the required SE / Torch DLLs from your local installation:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\setup.ps1
+   ```
+   > The script auto-finds Space Engineers and Torch on your machine and copies the needed DLLs next to the exe.  
+   > You only need to run it once (or again after a game update).
+3. Run `SESpriteLCDLayoutTool.exe`
 
 ### Importing All Sprite Names (Recommended)
 Run this script once in a Programmable Block:

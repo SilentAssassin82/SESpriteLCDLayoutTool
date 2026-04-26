@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Directory.Build.props — solution-wide path configuration
+  =========================================================
+  Defines properties for all external DLL dependencies that live outside this
+  repo (SE ModSDK, Torch, Pulsar).  Each developer must supply their own paths.
+
+  HOW TO CUSTOMISE FOR YOUR MACHINE
+  ----------------------------------
+  1. Copy  Directory.Build.props.user.example
+       to  Directory.Build.props.user        (same folder as this file)
+  2. Edit the paths in .user to match where things are installed on your PC.
+  3. The .user file is git-ignored — it never gets committed.
+
+  If Directory.Build.props.user does not exist the defaults below are used.
+  Defaults match the original developer's machine layout; adjust as needed.
+-->
+<Project>
+
+  <!-- Import per-machine overrides if the file exists (git-ignored) -->
+  <Import Project="$(MSBuildThisFileDirectory)Directory.Build.props.user"
+          Condition="Exists('$(MSBuildThisFileDirectory)Directory.Build.props.user')" />
+
+  <!-- ── Space Engineers ModSDK ─────────────────────────────────────────── -->
+  <!-- Default: common Steam library location on drive G: (original dev PC)  -->
+  <PropertyGroup>
+    <SE_ModSDK Condition="'$(SE_ModSDK)' == ''">G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile</SE_ModSDK>
+  </PropertyGroup>
+
+  <!-- ── Torch server ───────────────────────────────────────────────────── -->
+  <!-- Default: 8 levels up from the solution root, sibling "Torch" folder   -->
+  <PropertyGroup>
+    <TorchDir Condition="'$(TorchDir)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\..\..\..\Torch</TorchDir>
+  </PropertyGroup>
+
+  <!-- ── Pulsar libraries ───────────────────────────────────────────────── -->
+  <!-- Default: current user's AppData\Roaming\Pulsar\Libraries\Legacy       -->
+  <PropertyGroup>
+    <PulsarLibDir Condition="'$(PulsarLibDir)' == ''">$(APPDATA)\Pulsar\Libraries\Legacy</PulsarLibDir>
+  </PropertyGroup>
+
+</Project>

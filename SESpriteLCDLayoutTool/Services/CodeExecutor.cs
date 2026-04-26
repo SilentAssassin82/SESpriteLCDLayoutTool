@@ -3483,5 +3483,90 @@ namespace SESpriteLCDLayoutTool.Services
             }
             sb.AppendLine(indent + cl);
         }
+
+        // ── Headless compile-only API ─────────────────────────────────────────
+
+        /// <summary>
+        /// Result returned by <see cref="CompileOnly"/>.
+        /// Serialises to a small JSON object for the headless CLI / MCP tool.
+        /// </summary>
+        public sealed class CompileResult
+        {
+            /// <summary>true when the script compiled without errors.</summary>
+            public bool Success { get; set; }
+            /// <summary>
+            /// Null on success.  On failure: line-adjusted, human-readable csc
+            /// error text, e.g. "(12,5): error CS0246: …".
+            /// </summary>
+            public string Errors { get; set; }
+            /// <summary>Detected script kind (ProgrammableBlock, LcdHelper, …).</summary>
+            public string ScriptType { get; set; }
+
+            /// <summary>Serialises to a single-line JSON string — no external library needed.</summary>
+            public string ToJson()
+            {
+                string scriptTypeJson = ScriptType == null ? "null" : "\"" + ScriptType.Replace("\"", "\\\"") + "\"";
+                if (Success)
+                    return "{\"success\":true,\"errors\":null,\"scriptType\":" + scriptTypeJson + "}";
+
+                // Escape the error string for embedding in JSON
+                string escaped = (Errors ?? "")
+                    .Replace("\\", "\\\\")
+                    .Replace("\"", "\\\"")
+                    .Replace("\r\n", "\\n")
+                    .Replace("\n", "\\n")
+                    .Replace("\r", "\\n")
+                    .Replace("\t", "\\t");
+                return "{\"success\":false,\"errors\":\"" + escaped + "\",\"scriptType\":" + scriptTypeJson + "}";
+            }
+        }
+
+        /// <summary>
+        /// Compile-only entry point for the headless CLI / MCP tool.
+        /// Wraps <paramref name="userCode"/> in the same SE boilerplate as
+        /// <see cref="Execute"/> but stops after compilation — nothing is executed.
+        /// </summary>
+        /// <param name="userCode">Raw user script text (PB, LCD helper, etc.).</param>
+        /// <returns>
+        /// A <see cref="CompileResult"/> whose <c>Errors</c> property contains
+        /// line-adjusted, human-readable csc error text on failure, or null on success.
+        /// </returns>
+        public static CompileResult CompileOnly(string userCode)
+        {
+            if (string.IsNullOrWhiteSpace(userCode))
+                return new CompileResult { Success = false, Errors = "No code provided.", ScriptType = null };
+
+            userCode = StripPreprocessorDirectives(userCode);
+            var scriptType = DetectScriptType(userCode);
+
+            // Use the PB entry point as a harmless call expression — nothing is run
+            string callExpr = (scriptType == Services.ScriptType.ProgrammableBlock)
+                ? "Main(\"\", UpdateType.None)"
+                : "sprites = RenderPanel(sprites, 512f, 512f, 1f)";
+
+            try
+            {
+                bool hadClassWrapper;
+                string source = BuildSource(userCode, callExpr, 0, scriptType, out hadClassWrapper, null);
+                _userCodeTopLinesRemoved = ComputeStrippedLineOffset(userCode, source);
+                Compile(source);   // throws InvalidOperationException on compile error
+                return new CompileResult { Success = true, ScriptType = scriptType.ToString() };
+            }
+            catch (InvalidOperationException ex)
+            {
+                // ex.Message == "Compilation errors:\n<adjusted errors>\n\n[Diagnostic: ...]"
+                // Strip the diagnostic footer so the MCP client gets clean error text.
+                string msg = ex.Message;
+                int diagIdx = msg.IndexOf("\n\n[Diagnostic:", StringComparison.Ordinal);
+                if (diagIdx >= 0) msg = msg.Substring(0, diagIdx);
+                if (msg.StartsWith("Compilation errors:\n"))
+                    msg = msg.Substring("Compilation errors:\n".Length);
+                return new CompileResult { Success = false, Errors = msg.TrimEnd(), ScriptType = scriptType.ToString() };
+            }
+            catch (Exception ex)
+            {
+                return new CompileResult { Success = false, Errors = ex.Message, ScriptType = scriptType.ToString() };
+            }
+        }
     }
 }

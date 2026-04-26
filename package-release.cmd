@@ -55,6 +55,7 @@ copy "%OUT_DIR%\SESpriteLCDLayoutTool.exe"        "%STAGE%\" >nul
 copy "%OUT_DIR%\SESpriteLCDLayoutTool.exe.config"  "%STAGE%\" >nul 2>nul
 copy "README.md"                                   "%STAGE%\" >nul
 copy "LICENSE"                                     "%STAGE%\" >nul
+copy "setup.ps1"                                   "%STAGE%\" >nul
 
 :: Zip using PowerShell (available on all modern Windows)
 powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%\*' -DestinationPath '%RELEASE_DIR%\%ZIP_NAME%' -Force"
