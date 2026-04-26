@@ -42,7 +42,7 @@ function Find-SEBinDir {
         "G:\SteamLibrary\steamapps\common\SpaceEngineersModSDK\Bin64_Profile"
     )
     foreach ($p in $sdkCandidates) {
-        if (Test-Path (Join-Path $p "Sandbox.Common.dll")) { return $p }
+        try { if (Test-Path (Join-Path $p "Sandbox.Common.dll")) { return $p } } catch { }
     }
 
     # 2. Fall back to Steam libraryfolders.vdf to find any Steam library
@@ -70,7 +70,7 @@ function Find-TorchDir {
         (Join-Path $env:LOCALAPPDATA "Torch")
     )
     foreach ($p in $candidates) {
-        if (Test-Path (Join-Path $p "Torch.dll")) { return $p }
+        try { if (Test-Path (Join-Path $p "Torch.dll")) { return $p } } catch { }
     }
     return $null
 }
