@@ -1776,7 +1776,9 @@ namespace SESpriteLCDLayoutTool
         {
             if (sprite.Type != SpriteEntryType.Text)
                 return sprite.SpriteName ?? "Texture";
-            if (string.IsNullOrEmpty(sprite.Text))
+            // "Hello LCD" is the default placeholder used when Text was never parsed from source
+            // (e.g. interpolated string like $"T:{_tick}  S:{_spriteCount}"). Show generic label.
+            if (string.IsNullOrEmpty(sprite.Text) || sprite.Text == "Hello LCD")
                 return "Text";
             string t = sprite.Text.Length > 12 ? sprite.Text.Substring(0, 9) + "..." : sprite.Text;
             return "TEXT \"" + t + "\"";
