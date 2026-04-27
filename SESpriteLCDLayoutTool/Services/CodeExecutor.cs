@@ -2034,7 +2034,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                 if (!File.Exists(vswhere)) return null;
 
-                var psi = new ProcessStartInfo(vswhere, "-latest -property installationPath")
+                var psi = new ProcessStartInfo(vswhere, "-latest -products * -property installationPath")
                 {
                     CreateNoWindow = true,
                     UseShellExecute = false,
