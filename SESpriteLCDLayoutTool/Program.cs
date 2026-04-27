@@ -19,7 +19,7 @@ namespace SESpriteLCDLayoutTool
             // Output (failure):  {"success":false,"errors":"(3,1): error CS0246: ...","scriptType":"ProgrammableBlock"}
             if (args.Length >= 2 && args[0] == "--compile")
             {
-                Console.OutputEncoding = Encoding.UTF8;
+                try { Console.OutputEncoding = Encoding.UTF8; } catch { }
                 string filePath = args[1];
                 try
                 {
