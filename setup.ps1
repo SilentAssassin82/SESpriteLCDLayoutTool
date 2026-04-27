@@ -103,8 +103,7 @@ $seDlls = @(
     "SharpDX.dll",
     "SharpDX.D3DCompiler.dll",
     "SharpDX.Direct3D11.dll",
-    "SharpDX.DXGI.dll",
-    "0Harmony.dll"
+    "SharpDX.DXGI.dll"
 )
 
 # DLLs required from Torch
