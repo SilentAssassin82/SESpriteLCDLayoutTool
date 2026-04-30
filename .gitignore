@@ -16,6 +16,7 @@ x86/
 [Rr]eleases/
 build/
 bld/
+*.log
 
 ## NuGet
 **/[Pp]ackages/*
@@ -35,6 +36,9 @@ launchSettings.json
 ## Rider / JetBrains
 .idea/
 *.sln.iml
+
+## VS Code
+.vscode/
 
 ## OS files
 Thumbs.db
