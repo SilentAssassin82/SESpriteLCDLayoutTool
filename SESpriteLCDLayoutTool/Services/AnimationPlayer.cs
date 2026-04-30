@@ -44,6 +44,14 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public int FallbackIntervalMs { get; set; } = 166;
 
+        /// <summary>
+        /// When true, the player skips the per-tick history snapshot (field
+        /// reflection + sprite copy) and the FrameRendered side-effects in the
+        /// async timer path are minimised.  Used by the GIF exporter to keep
+        /// frame capture as fast as possible.
+        /// </summary>
+        public bool FastCaptureMode { get; set; }
+
         // ── Internal state ─────────────────────────────────────────────────────
         private CodeExecutor.AnimationContext _ctx;
         private Timer _timer;
@@ -186,6 +194,18 @@ namespace SESpriteLCDLayoutTool.Services
         /// <summary>Executes a single frame (synchronously) and stays paused.</summary>
         public void StepForward()
         {
+            StepForward(0.0);
+        }
+
+        /// <summary>
+        /// Executes a single frame (synchronously) and stays paused.  When
+        /// <paramref name="forcedElapsedSeconds"/> is greater than zero, that
+        /// value is passed to the script in place of the wall-clock delta — used
+        /// by GIF capture so the GIF's encoded frame rate matches the in-script
+        /// time progression regardless of how fast frames are actually rendered.
+        /// </summary>
+        public void StepForward(double forcedElapsedSeconds)
+        {
             if (_ctx == null) return;
 
             IsPlaying = true;
@@ -193,9 +213,17 @@ namespace SESpriteLCDLayoutTool.Services
             _timer.Stop();
 
             var now = DateTime.UtcNow;
-            double elapsed = _lastFrameTime == default(DateTime)
-                ? 1.0 / 60.0   // First frame: assume ~60fps
-                : (now - _lastFrameTime).TotalSeconds;
+            double elapsed;
+            if (forcedElapsedSeconds > 0.0)
+            {
+                elapsed = forcedElapsedSeconds;
+            }
+            else
+            {
+                elapsed = _lastFrameTime == default(DateTime)
+                    ? 1.0 / 60.0   // First frame: assume ~60fps
+                    : (now - _lastFrameTime).TotalSeconds;
+            }
             _lastFrameTime = now;
             CurrentTick++;
 
@@ -213,7 +241,8 @@ namespace SESpriteLCDLayoutTool.Services
 
             LastOutputLines = result.OutputLines;
             LastMethodTimings = result.MethodTimings;
-            RecordTickSnapshot(CurrentTick, result.Sprites);
+            if (!FastCaptureMode)
+                RecordTickSnapshot(CurrentTick, result.Sprites);
             FrameRendered?.Invoke(result.Sprites, CurrentTick);
             UpdateTimerInterval();
         }
@@ -293,6 +322,19 @@ namespace SESpriteLCDLayoutTool.Services
 
             int freq = CodeExecutor.GetUpdateFrequency(_ctx);
 
+            // Plugin / Mod / Torch scripts almost never set Runtime.UpdateFrequency
+            // (it is a Programmable-Block concept), so falling through to the PB
+            // 166 ms Update10 default produces a sluggish ~6 fps that doesn't reflect
+            // how the script actually runs in-game.  Pick a brisker default for those
+            // script types so playback feels responsive while staying readable for
+            // watch / variable inspection.
+            int pluginFallback =
+                _ctx.ScriptType == ScriptType.PulsarPlugin ||
+                _ctx.ScriptType == ScriptType.ModSurface   ||
+                _ctx.ScriptType == ScriptType.TorchPlugin
+                    ? 60   // ≈ 16 fps — smooth-enough preview without overwhelming the UI
+                    : FallbackIntervalMs;
+
             if (freq != 0)
             {
                 // UpdateFrequency flags: None=0, Update1=1, Update10=2, Update100=4, Once=8
@@ -318,13 +360,13 @@ namespace SESpriteLCDLayoutTool.Services
                 }
                 else
                 {
-                    _timer.Interval = FallbackIntervalMs;
+                    _timer.Interval = pluginFallback;
                     _currentUpdateType = 32;
                 }
             }
             else
             {
-                _timer.Interval = FallbackIntervalMs;
+                _timer.Interval = pluginFallback;
                 _currentUpdateType = 32; // Default UpdateType.Update10
             }
         }

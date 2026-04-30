@@ -399,16 +399,13 @@ namespace SESpriteLCDLayoutTool
             // playback avoids any accidental Roslyn parse triggered by other code paths.
             _syntaxTimer?.Stop();
 
-            // Suspend layout to prevent intermediate layout recalcs during batch UI updates
-            SuspendLayout();
-            try
-            {
+            // NOTE: previously this method called SuspendLayout/ResumeLayout on the
+            // whole MainForm.  That triggered a full layout recalculation through
+            // every docked panel for every frame, which alone could exceed our 60 ms
+            // playback budget for plugin-type scripts.  The per-frame visual changes
+            // are confined to the canvas and the tick label, so the form-wide layout
+            // suspend isn't needed.
             OnAnimFrameCore(sprites, tick);
-            }
-            finally
-            {
-            ResumeLayout(false);
-            }
         }
 
         private void OnAnimFrameCore(List<SpriteEntry> sprites, int tick)
@@ -489,6 +486,12 @@ namespace SESpriteLCDLayoutTool
                 _canvas.SelectedSprite = null;
             _canvas.Invalidate();
 
+            // Fast path for GIF capture: skip timeline, console, heatmap, variables,
+            // breakpoint, and tick-label updates — none of those affect the rendered
+            // frame and they noticeably slow down per-frame capture.
+            if (_gifCaptureInProgress)
+                return;
+
             string typeTag = _animPlayer?.ScriptType == ScriptType.ProgrammableBlock ? "PB"
                            : _animPlayer?.ScriptType == ScriptType.ModSurface        ? "Mod"
                            : _animPlayer?.ScriptType == ScriptType.PulsarPlugin      ? "Pulsar"
@@ -507,6 +510,15 @@ namespace SESpriteLCDLayoutTool
             }
             _lblAnimTick.Text = $"{typeTag}  Tick: {tick}  ({ms:F1} ms){focusTag}{heatTag}";
 
+            // Throttle the heavier diagnostic widgets to ~5 Hz so the canvas and
+            // tick counter can update at the player's full rate without being
+            // dragged down by timeline / console / heatmap painting.  Watch
+            // windows still refresh fast enough to feel live.
+            bool runDiagnostics =
+                (DateTime.UtcNow - _lastDiagnosticsUpdateTime).TotalMilliseconds >= 200;
+            if (runDiagnostics)
+                _lastDiagnosticsUpdateTime = DateTime.UtcNow;
+
             // Update Variables tab with current field values during animation.
             // Throttled to ~4 Hz so reflection + ListView updates don't stall the UI thread
             // on every tick (especially costly for complex Pulsar/Torch plugin scenes).
@@ -517,16 +529,19 @@ namespace SESpriteLCDLayoutTool
                 UpdateVariablesDuringAnimation(tick);
             }
 
-            // Keep timeline scrubber in sync
-            UpdateTimelineScrubber(tick);
+            if (runDiagnostics)
+            {
+                // Keep timeline scrubber in sync
+                UpdateTimelineScrubber(tick);
 
-            // Append Echo output to Console tab
-            if (_animPlayer?.LastOutputLines != null && _animPlayer.LastOutputLines.Count > 0)
-                AppendConsoleOutput(_animPlayer.LastOutputLines, tick);
+                // Append Echo output to Console tab
+                if (_animPlayer?.LastOutputLines != null && _animPlayer.LastOutputLines.Count > 0)
+                    AppendConsoleOutput(_animPlayer.LastOutputLines, tick);
 
-            // Apply code heatmap from per-method timing data
-            if (_animPlayer?.LastMethodTimings != null && _animPlayer.LastMethodTimings.Count > 0)
-                ApplyCodeHeatmap(_animPlayer.LastMethodTimings);
+                // Apply code heatmap from per-method timing data
+                if (_animPlayer?.LastMethodTimings != null && _animPlayer.LastMethodTimings.Count > 0)
+                    ApplyCodeHeatmap(_animPlayer.LastMethodTimings);
+            }
 
             // Check conditional breakpoint — pause animation if condition is true
             if (_breakCondition != null && _animPlayer != null && !_animPlayer.IsPaused)
@@ -645,6 +660,7 @@ namespace SESpriteLCDLayoutTool
             // after stopping is always immediate.
             _lastVariablesUpdateTime = DateTime.MinValue;
             _lastHeatmapPaintTime    = DateTime.MinValue;
+            _lastDiagnosticsUpdateTime = DateTime.MinValue;
 
             // Clear focused animation state
             _animFocusCall = null;

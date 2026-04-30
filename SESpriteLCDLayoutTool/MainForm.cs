@@ -194,6 +194,7 @@ namespace SESpriteLCDLayoutTool
         // ── Animation playback ────────────────────────────────────────────────
         private AnimationPlayer _animPlayer;
         private DateTime _lastVariablesUpdateTime;
+        private DateTime _lastDiagnosticsUpdateTime;   // throttle timeline/console/heatmap during playback
         private string _animFocusCall;                // non-null = focused animation mode
         private HashSet<string> _animFocusSprites;    // Type+Data keys of the focused method's sprites
         private Panel  _animBar;

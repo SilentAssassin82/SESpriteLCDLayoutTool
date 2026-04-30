@@ -55,28 +55,37 @@ namespace SESpriteLCDLayoutTool.Services
                 _headerWritten = true;
             }
 
-            // Resize to canvas size if needed
-            Bitmap toEncode = frame;
-            bool ownsBmp = false;
-            if (frame.Width != _width || frame.Height != _height)
+            // Resize to canvas size if needed.
+            Bitmap rgb;
+            bool ownsRgb = false;
+            if (frame.Width != _width || frame.Height != _height
+                || frame.PixelFormat != PixelFormat.Format32bppArgb)
             {
-                toEncode = new Bitmap(_width, _height, PixelFormat.Format32bppArgb);
-                ownsBmp = true;
-                using (var g = Graphics.FromImage(toEncode))
+                rgb = new Bitmap(_width, _height, PixelFormat.Format32bppArgb);
+                ownsRgb = true;
+                using (var g = Graphics.FromImage(rgb))
                 {
                     g.Clear(Color.Black);
                     g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g.PixelOffsetMode   = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
                     g.DrawImage(frame, 0, 0, _width, _height);
                 }
             }
+            else
+            {
+                rgb = frame;
+            }
 
+            // Encode the frame as a single-frame GIF via GDI+ so it handles
+            // palette quantisation and LZW compression for us, then we splice
+            // it into the animated stream below.
             byte[] singleFrame;
             using (var ms = new MemoryStream())
             {
-                toEncode.Save(ms, ImageFormat.Gif);
+                rgb.Save(ms, ImageFormat.Gif);
                 singleFrame = ms.ToArray();
             }
-            if (ownsBmp) toEncode.Dispose();
+            if (ownsRgb) rgb.Dispose();
 
             ParseSingleFrameGif(singleFrame, out byte[] palette, out int paletteEntries,
                                 out byte[] lzwBlock, out int frameW, out int frameH);

@@ -13,6 +13,13 @@ namespace SESpriteLCDLayoutTool
         // ── Animated GIF export ───────────────────────────────────────────────────
 
         /// <summary>
+        /// While true, <see cref="OnAnimFrameCore"/> only updates the layout/canvas
+        /// and skips timeline / console / heatmap / variables work.  Set by the GIF
+        /// exporter so capture frames are not throttled by editor side-effects.
+        /// </summary>
+        private bool _gifCaptureInProgress;
+
+        /// <summary>
         /// Shows the GIF export dialog, runs the animation in-place to capture frames,
         /// and writes an animated GIF89a file. Restores the pre-export layout when done.
         /// </summary>
@@ -202,6 +209,7 @@ namespace SESpriteLCDLayoutTool
                                        int warmupFrames, bool useExistingSession, bool hideReferenceBoxes)
         {
             bool wasPaused = false;
+            bool prevFastCapture = _animPlayer != null && _animPlayer.FastCaptureMode;
 
             if (useExistingSession && _animPlayer != null && _animPlayer.IsPlaying)
             {
@@ -261,12 +269,18 @@ namespace SESpriteLCDLayoutTool
 
                 try
                 {
+                    // Enable fast-capture path: AnimationPlayer skips per-tick history
+                    // snapshots and OnAnimFrameCore skips timeline/console/heatmap work.
+                    if (_animPlayer != null) _animPlayer.FastCaptureMode = true;
+                    _gifCaptureInProgress = true;
+
                     // Warm-up: step the animation forward without recording, so
                     // long spin-up sequences (intro frames, splash text, etc.)
                     // are skipped before we start writing the GIF.
+                    double warmupSeconds = delayCs / 100.0;
                     for (int w = 0; w < warmupFrames; w++)
                     {
-                        _animPlayer.StepForward();
+                        _animPlayer.StepForward(warmupSeconds);
                         bar.Value = w + 1;
                         if ((w & 3) == 0)
                         {
@@ -279,24 +293,42 @@ namespace SESpriteLCDLayoutTool
                     using (var fs = File.Create(outputPath))
                     using (var gif = new GifExporter(fs, width, height) { FrameDelayCs = delayCs, LoopCount = loopCount })
                     {
+                        // Feed the script a deterministic elapsed-time per frame so the
+                        // animation's in-script time matches the GIF's encoded frame rate.
+                        // Without this, capture runs as fast as the CPU allows and the
+                        // wall-clock delta is tiny, but the GIF is encoded at the chosen
+                        // fps — making playback look sped up.
+                        double frameSeconds = delayCs / 100.0;
+
+                        // Throttle progress UI repaints — refreshing the dialog and
+                        // pumping DoEvents on every frame visibly slows capture for
+                        // small frame budgets and contributes to jerky GIFs.
+                        var lastUiPump = Environment.TickCount;
                         for (int i = 0; i < totalFrames; i++)
                         {
                             // StepForward fires FrameRendered synchronously, which causes
                             // OnAnimFrame to swap _layout.Sprites with the new frame data.
-                            _animPlayer.StepForward();
+                            _animPlayer.StepForward(frameSeconds);
 
                             using (var bmp = _canvas.RenderLayoutToBitmap(width, height, hideReferenceBoxes))
                                 gif.AddFrame(bmp);
 
                             bar.Value = warmupFrames + i + 1;
-                            lbl.Text  = $"Capturing frame {i + 1} of {totalFrames}…";
-                            progress.Refresh();
-                            Application.DoEvents();
+                            int nowMs = Environment.TickCount;
+                            if (i == totalFrames - 1 || (nowMs - lastUiPump) >= 100)
+                            {
+                                lbl.Text = $"Capturing frame {i + 1} of {totalFrames}…";
+                                progress.Refresh();
+                                Application.DoEvents();
+                                lastUiPump = nowMs;
+                            }
                         }
                     }
                 }
                 finally
                 {
+                    _gifCaptureInProgress = false;
+                    if (_animPlayer != null) _animPlayer.FastCaptureMode = prevFastCapture;
                     progress.Close();
                 }
             }

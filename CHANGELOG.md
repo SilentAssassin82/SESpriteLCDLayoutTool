@@ -2,6 +2,13 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v3.10.1 - 2026-04-29
+
+### Fixed
+- **Plugin-type animation playback was sluggish** — `PulsarPlugin`, `ModSurface`, and `TorchPlugin` scripts didn't expose a PB-style `UpdateFrequency`, so the animation timer fell back to its slowest interval (~10 fps). `AnimationPlayer.UpdateTimerInterval()` now applies a ~60 ms (≈16 fps) fallback for plugin script types, and per-frame snapshot/UI work was throttled to keep the watch window readable without choking playback.
+- **GIF playback animated at wrong speed during capture** — capture was driven by wall-clock deltas while the GIF was encoded at the chosen FPS, so on-screen playback during export looked sped up and the resulting GIF could end up time-skewed. `AnimationPlayer.StepForward(double forcedElapsedSeconds)` now lets the GIF exporter feed a deterministic per-frame elapsed time, so the script's in-animation clock matches the encoded frame rate exactly. Heavy diagnostics (timeline scrubber, console output, heatmap, variable inspector) are also skipped while `_gifCaptureInProgress` is set.
+- **GIF export progress UI starving the message pump** — `MainForm.GifExport` now updates the progress label/bar and pumps `Application.DoEvents()` at most every few frames during warm-up and capture, eliminating the redraw thrash that contributed to the perceived slowdown.
+
 ## v3.10.0 - 2026-04-28
 
 ### Added
