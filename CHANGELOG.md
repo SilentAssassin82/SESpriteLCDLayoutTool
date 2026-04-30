@@ -98,6 +98,533 @@ All notable changes to SE Sprite LCD Layout Tool will be documented in this file
 
 ### Changed
 - Animation playback update cadence now throttles expensive inspector and watch refresh paths for smoother complex scenes.
+
+### Fixed
+- Code editor diagnostics: improved false-positive undefined symbol suppression for SE ecosystem scripts.
+- Multi-sprite timeline open flow and batch code update path hardened for timeline-generated edits.
+
+---
+
+## v3.2.0 - 2026-04-15
+
+### Added
+- **Wavy red underlines on syntax errors** — native RichEdit wavy red underlines with SE/Torch/Pulsar-aware false-positive filtering.
+- **Bare PB script wrapping** — diagnostic-only wrapping in dummy class for Roslyn parse, corrected span offsets for accurate underlines.
+
+### Fixed
+- **From-scratch animation flow restored** — RoslynAnimationInjector now only accepts complete PB programs; bare snippets fall through to complete generators.
+- **Simple-animation apply flow** — Apply button correctly uses `GenerateSimpleComplete` for method-body snippets.
+- **Variables panel now shows mod fields by default** — `_`-prefixed fields visible for ModSurface/PulsarPlugin/TorchPlugin; only infrastructure fields hidden.
+- **Sparklines work for mod scripts** — numeric mod fields populate Trend column with inline charts.
+- **Mod state-update method detection** — `UpdateAfterSimulation`/`UpdateBeforeSimulation` regex now includes session component overrides.
+- **Bare mod script stub fields** — bare mod scripts receive observable stub fields for Variables panel display.
+
+---
+
+## v3.1.0 - 2026-04-10
+
+### Added
+- **Stackable animation effects** — apply multiple simple animations to same sprite without overwriting.
+- **Ordinal-aware sprite matching** — duplicate sprite names resolve by position among all layout sprites.
+- **Global `_tick` counter** — all animation effects share single field, eliminating undefined variable errors.
+
+### Fixed
+- **Blink guard cleanup** — blink wrappers bracketed with marker comments, cleanly unwrapped before re-injection.
+- **Span-based blink wrapping** — uses `addNode.Span` to avoid capturing leading trivia inside `if` block.
+- **Missing Add block insertion** — `EnsureAllSpritesHaveAddBlocks` inserts only deficit blocks at correct positions.
+
+---
+
+## v3.0.0 - 2026-04-05
+
+### Added
+- **Roslyn-based animation injection** — structural AST approach replacing text-surgery code merging.
+- **`IAnimationEffect` data model** — 8 concrete effect types with typed list in `SpriteEntry.AnimationEffects`.
+- **`RoslynAnimationInjector` service** — parses AST, injects animation fields/compute/property-overrides with marker comments for idempotent updates.
+- **Stacking multiple animations** — rotation keyframes + position keyframes + color cycle simultaneously on same sprite.
+- **Group follower animation overhaul** — references leader's computed variables via `LeaderSuffix` with delta-based position/size.
+- **Custom code editor undo/redo** — `CodeUndoManager` text-only undo stack immune to syntax highlighting formatting noise.
+- **Enhanced syntax highlighting** — type names in member access expressions correctly highlighted in teal.
+
+### Changed
+- **Suffix resolution step** — maps `KeyframeEffect` instances to array suffixes for leader lookup.
+
+---
+
+## v2.9.9 - 2026-03-28
+
+### Added
+- **Sprite lock flag** — per-sprite lock state with 🔒 icon in layer list; locked sprites skip canvas hit-testing.
+- **Lock/Unlock context menu** — right-click selected sprite(s) for Lock/Unlock Layer.
+- Lock state preserved through undo/redo and `.seld` project files via `SpriteEntry.IsLocked`.
+
+---
+
+## v2.9.8 - 2026-03-25
+
+### Added
+- **Canvas rulers + snap-to-sprite edges** — 20px rulers with adaptive tick intervals, cursor crosshairs, magnetic edge snapping.
+- **Show Rulers / Snap to Sprite Edges toggles** — View menu controls, default ON.
+- **Keyboard shortcut** `Ctrl+Shift+G` toggles both.
+
+---
+
+## v2.9.7 - 2026-03-20
+
+### Added
+- **Multi-select + group move + align tools** — box-select (rubber band), Shift+click, Ctrl+A, group drag/nudge.
+- **Align / Distribute submenu** — align edges/centers, space evenly (H/V) when 2+ sprites selected.
+
+---
+
+## v2.9.6 - 2026-03-15
+
+### Fixed
+- **Rotation precision** — rotation fields now support 4 decimal places (0.0001 increment, range −100 to 100); exact 2π (6.2832) enterable.
+
+---
+
+## v2.9.5 - 2026-03-10
+
+### Changed
+- **Simple animation generator upgraded to round-trip apply** — Rotate/Oscillate/Pulse/Fade/Blink/ColorCycle now work identically to keyframe generator.
+- **3-tier merge strategy:** block replace, in-place variable merge, or complete program generation with footer marker.
+- Dialog pre-populates with existing animation settings; Apply button closes dialog and updates Diff tab + script sync.
+
+---
+
+## v2.9.4 - 2026-03-05
+
+### Fixed
+- **Syntax highlighting after `#if` conditionals** — switched to `SourceCodeKind.Regular` with TORCH/STABLE/DEBUG/RELEASE symbols; inactive branches render in dark grey.
+
+---
+
+## v2.9.3 - 2026-03-01
+
+### Changed
+- **Services layer partial class refactor** — CodeExecutor split into SEStubs; CodeGenerator split into CodePatcher; AnimationSnippetGenerator split into KeyframedCodeGenerator.
+- **MainForm split** — UIBuilder, Variables partials added; MainForm.cs reduced from 5,573 → 2,515 lines.
+
+---
+
+## v2.9.2 - 2026-02-25
+
+### Changed
+- **MainForm partial class refactor** — split into 7 focused partial files (Streaming, Animation, FileIO, ContextMenus, Watch, DebugTools, DarkTheme).
+- UTF-8 BOM encoding fix for Unicode characters in button labels.
+
+---
+
+## v2.9.1 - 2026-02-20
+
+### Added
+- **Syntax highlighting** — C# keywords, types, strings, comments, numbers with custom SyntaxHighlighter service.
+
+---
+
+## v2.9.0 - 2026-02-15
+
+### Added
+- **Animation Groups** — link sprites into groups with leader keyframe data + automatic per-sprite offsets.
+- **Create/Join/Leave Animation Group** context menu; layer list shows 🎬/🎭 indicators.
+- **Group-aware code generation** — single shared keyframe arrays with delta offsets.
+- **Group animation undo/redo** — deep-clones `AnimationGroupId` and `KeyframeAnimation` data.
+- **Reusable compilation context** — `AnimationPlayer.AdoptContext()` for seamless field inspection.
+- **Pre-computed call detection** — skips expensive Roslyn pass when calls already known.
+
+### Changed
+- **RoslynCodeMerger: always emit Alignment & RotationOrScale** — prevents data loss on round-trip.
+
+---
+
+## v2.8.3 - 2026-02-10
+
+### Added
+- **Copy/Paste Animation** — right-click sprite with keyframe animation → Copy Animation, paste to any other sprite.
+
+---
+
+## v2.8.2 - 2026-02-05
+
+### Fixed
+- **Variables panel flicker** — enabled double buffering on owner-drawn ListView.
+- **Console tab flicker** — `WM_SETREDRAW` paint suppression for batch Echo updates.
+- **Console line trimming** — caps at 2,000 lines, trims to 1,500 when exceeded.
+
+---
+
+## v2.8.1 - 2026-01-30
+
+### Added
+- **Visual Keyframe Animation Editor** — interactive timeline with draggable keyframe diamonds, per-keyframe property editing.
+- **KeyframeTimeline control** — click-to-select, right-click add/delete, tick ruler.
+- **7 easing types, 3 loop modes** — Linear/SineInOut/Bounce/Elastic, Loop/PingPong/Once.
+- **Live preview** — renders sprite shapes with interpolated properties; texture-aware via `SpriteTextureCache`.
+- **✏ Update Code button** — 3-tier merge strategy (block replace, smart array merge, append fallback).
+
+### Changed
+- **Code round-trip for keyframe animations** — `TryParseKeyframed()` parses arrays back into visual editor.
+- **Script-type aware generation** — target-specific comments, field/render hints for PB/Mod/Plugin/Pulsar/LCD.
+
+---
+
+## v2.8.0 - 2026-01-25
+
+### Fixed
+- **Animation playback code destruction** — `IsPlaying` guard freezes code panel during playback.
+- **Undo/redo code sync** — snapshots/restores `OriginalSourceCode` and `SourceLineNumber` alongside sprite state.
+
+---
+
+## v2.7.0 - 2026-01-20
+
+### Added
+- **Code Navigation Overhaul** — 6+ strategy chain with `SpriteNavigationIndex`, `CallerLineNumber` pipeline, loop-aware `SpriteAddMapper`.
+- **Snapshot Comparison Bookmarks** — bookmark ticks A/B, diff sprite state changes with `SnapshotComparer`.
+- **`DebugVariable` model** — structured debug variables from `// @DebugVar:` annotations.
+- **Code injection instrumentation improvements** — switch-case `SetCurrentMethod`, local List PreRecord, StripTrailingAttributes fix.
+
+### Changed
+- **Navigation lands on sprite CREATION line** — not `.Add()` line; loop-aware helper navigates to text content line.
+
+---
+
+## v2.6.0 - 2026-01-15
+
+### Added
+- **Runtime Variable Inspector** — Variables tab with reflection-based field discovery, sparkline mini-charts, linked highlighting, double-click edit.
+- **Watch Expressions** — custom C# expressions compiled via Roslyn, evaluated each tick with zero overhead.
+- **Conditional Breakpoints** — boolean expression pauses animation on false→true transition.
+- **Console / Output Tab** — captures `Echo()` output with tick tagging.
+- **Method Performance Heatmap** — code editor background colored by execution time (green → red).
+- **Timeline Scrubber** — TrackBar scrubs through 500-tick history; Variables panel shows historical values.
+- **Sprite-to-Code Navigation** — double-click sprite in layer list to jump to source; `CodeNavigationService` multi-strategy.
+- **Template Gallery** — 15+ pre-built LCD layout templates ready to insert.
+- **Line Number Gutter** — custom control with synced line numbers and current-line highlighting.
+
+### Changed
+- **Roslyn Code Merger: Data property patching** — patches sprite name/text content changes.
+- **Source tracking stabilization** — stable LINQ sort preserves execution order.
+- **Layer list consistency** — shared `_layerListSprites` list eliminates index mismatches.
+
+### Fixed
+- **`.seld` serialization** — `[XmlIgnore]` on `SpriteMapping` prevents XML failures.
+- **CodeExecutor** — `AddRange` instrumentation, `InjectMethodTimings` CurrentMethod save/restore, exposed `Compile()`.
+- **Variables tab auto-switch** — no longer force-switches when selecting sprites.
+- **Layer list focus theft** — `BeginInvoke` defers focus transfer after double-click navigation.
+
+---
+
+## v2.5.0 - 2026-01-10
+
+### Added
+- **Execute & Isolate: X-Coordinate Indexing** — O(1) lookup by X coordinate instead of O(n) linear search.
+- **Roslyn Syntax Tree Merge** — `RoslynCodeMerger` service with AST-aware merging, preserves formatting/comments.
+- **MethodBodyAnalyzer service** — extracts method bodies via Roslyn syntax trees.
+
+### Changed
+- **ElementSpriteMapping enhancements** — `.sprmap` v3 with Y offset persistence, position-based signatures.
+- **SpriteMappingBuilder improvements** — multi-frame orchestrator, X-coordinate indexed matching.
+
+### Fixed
+- **Text sprite label fix** — always display `"TEXT 'content'"` instead of texture sprite names.
+
+---
+
+## v2.4.0 - 2026-01-05
+
+### Added
+- **Canvas multi-select** — Shift+click sprites on canvas for batch operations.
+- **Hide Selected context menu** — right-click canvas shows count badge when multi-selected.
+- **Smart brace-aware auto-indent** — Tab/Shift+Tab reformats based on brace nesting.
+- **Auto-indent on Enter** — new lines match current indentation.
+
+### Fixed
+- **Switch-case method detection** — regex matches fully-qualified enum names.
+- **Source file write prevention** — bidirectional sync only writes when content hash changed.
+- **Code jump accuracy** — line-based position mapping for navigation.
+
+---
+
+## v2.3.0 - 2026-01-01
+
+### Added
+- **Layout file persistence for animation** — `.seld` files save/restore original source code.
+- **VS Code bidirectional file sync** — watches `.cs` file for external edits, writes canvas changes back.
+- **Auto-detect script type on import** — switches dropdown based on 6 regex patterns.
+
+### Fixed
+- **Indentation loss on round-trip** — leading whitespace preserved across 3 fix points.
+- **FillPie crash** — guards against zero-size sprites.
+- **Clipboard paste indentation** — normalizes `\n` to `\r\n`.
+- **CS0841 in Mod/Pulsar animation** — declares `sprites` variable before call lines.
+- **Sprite doubling in Mod/Pulsar** — conditional merge, FilterTopLevelCalls, full replacement in execute/isolate.
+- **Isolate mode for Mod/Pulsar** — direct sprite replacement instead of snapshot merge.
+- **Animation Play/Step ignoring selected method** — checks detected-calls list for focused animation.
+
+---
+
+## v2.2.0 - 2025-12-28
+
+### Added
+- **Script-type aware animation snippets** — auto-default `ListVarName`, target label in dialog title, context-aware comments.
+- `TargetScriptType` enum with `TargetLabel()`, `FieldHint()`, `RenderHint()` helpers.
+
+---
+
+## v2.1.0 - 2025-12-25
+
+### Added
+- **Pulsar plugin support** — new Pulsar code style for `VRage.Plugins.IPlugin`.
+- **Multi-select layer list** — Shift+click, Ctrl+click; batch operations with dynamic labels.
+- **Snapshot tagging** — `_snapshotTag` field emits header, displayed in status bar on import.
+
+### Fixed
+- **Code jumping offset** — strips `\r` from Text before position calculation.
+
+---
+
+## v2.0.7 - 2025-12-20
+
+### Added
+- **Hide Layers Above** — right-click layer list; Show All Layers restores visibility.
+- **Constrain to Surface toggle** — clamps drag/nudge to LCD bounds.
+- **Deferred code refresh during drag** — shows `⟳ dragging…`, refreshes on mouse-up.
+- **Coding-mode indicator** — label shows round-trip vs generated mode.
+
+### Changed
+- **Structural edits invalidate original source** — add/delete/duplicate clears round-trip tracking.
+- **Post-parse sprite validation** — checks for NaN/Infinity/out-of-range after parsing.
+
+### Fixed
+- **Apply Code button visibility** — persists in round-trip mode.
+- **Glyph replacement Scale** — preserves existing text scale value.
+- **Layer list selection in isolation mode** — correctly tracks selected index.
+- **Color swatch refresh** — updates after expression edits via auto re-execution.
+
+---
+
+## v2.0.6 - 2025-12-15
+
+### Added
+- **Animation snippet "Replace in Code"** — button auto-locates sprite's Add block, replaces with snippet.
+
+### Fixed
+- **Selection overwrite bug** — manual text selection preserved when clicking Insert.
+
+---
+
+## v2.0.5 - 2025-12-10
+
+### Fixed
+- **Round-trip patching for constructor + trailing-assignment sprites** — trailing properties included in tracked range.
+- **`RefreshCode` unconditional sync** — always updates code panel regardless of dirty flag.
+- **Apply Code button persists** — remains visible in round-trip mode.
+
+---
+
+## v2.0.4 - 2025-12-05
+
+### Fixed
+- **Canvas-edit-to-code sync** — editing sprites always updates generated code.
+- **Detected methods desync** — stays in sync after canvas modification.
+- **Insert at Cursor dirty flag** — no longer marks code panel as user-edited.
+
+---
+
+## v2.0.3 - 2025-12-01
+
+### Added
+- **List variable selector** — dropdown for `sprites` vs `frame` in animation snippet dialog.
+- **Insert at Cursor** — non-modal dialog, button inserts snippet at cursor position.
+- **Code editor context menu** — Select All/Cut/Copy/Paste, Set Indentation submenu.
+
+### Fixed
+- **Correct alignment** — texture sprites use actual `TextAlignment` value.
+
+---
+
+## v2.0.2 - 2025-11-28
+
+### Added
+- **Double-click to jump to method definition**.
+- **Right-click context menu on detected methods** — Start Focused Animation, Jump to Definition.
+- **Constructor-aware code execution** — uses animation pipeline for single-shot execution.
+- **Focused animation mode** — non-focused sprites rendered at 20% opacity with 🔍 indicator.
+
+---
+
+## v2.0.1 - 2025-11-25
+
+### Added
+- **Context-aware code autocomplete** — dot-access completion, variable-type resolution, sprite/font name completion.
+- 30+ SE types, all SE enums, keyboard navigation, double-click commit.
+
+---
+
+## v2.0.0 - 2025-11-20
+
+### Added
+- **Debug analysis tools** — Debug Stats Panel, Overdraw Heatmap, Bounding Box Overlay, Texture Size Warnings, VRAM Budget Dialog.
+- **Animation Frame Timing** — Stopwatch-measured execution time in tick label.
+- **`DebugAnalyzer` service** — Analyze(), AnalyzeTextureMemory(), AnalyzeSizeWarnings(), ComputeOverdrawMap().
+- **Original texture dimension tracking** — GetOriginalSize() for VRAM estimation.
+- **`AnimationPlayer.LastFrameMs`** — exposes recent frame execution time.
+
+---
+
+## v1.11.0 - 2025-11-15
+
+### Added
+- **Advancing `ElapsedPlayTime` for animations** — wall-clock delta advances Session.ElapsedPlayTime each frame.
+- SetElapsedPlayTime() method generated; AnimInit() resets clock to 120s.
+
+### Fixed
+- **Compilation & runtime for mod session components** — using Sandbox.ModAPI auto-import, IMyCubeGrid ambiguity resolved, Vector2(float) constructor, DetectSurfaceCalls namespace-aware, LcdRunner base class preserved.
+
+---
+
+## v1.10.0 - 2025-11-10
+
+### Added
+- **Expanded SE mod/session component stubs** — MySessionComponentBase, MyAPIGateway, mod-side interfaces, power producers, entity/grid types, extended IMyTerminalBlock, upgraded StubTextSurface, additional colors, logging/misc.
+- Detection regex updated for IMyTextPanel, auto-imported namespaces, base class inheritance preserved.
+
+---
+
+## v1.9.0 - 2025-11-05
+
+### Added
+- **Animation code snippets** — right-click sprite → Add Animation… generates ready-to-paste C# for 6 animation types.
+- Parameter dialog with live code preview, Copy to Clipboard, supports TEXTURE/TEXT sprites.
+
+---
+
+## v1.8.0 - 2025-11-01
+
+### Added
+- **Animation orchestrator detection** — state-update method injection (Advance/Update/Tick) before rendering.
+
+### Fixed
+- **Double-advance bug** — timer/event wrappers excluded from state-update detection.
+- **Simplified animation rendering** — removed key-based sprite merge, executor output shown directly.
+- **Snapshot on empty layout** — creates blank layout, populates snapshot sprites as additions.
+
+---
+
+## v1.7.0 - 2025-10-28
+
+### Added
+- **Animation playback system** — Play/Pause/Stop/Step controls, multi-call animation, auto-detection, snapshot-anchored playback.
+- **Async texture loading** — background thread fixes ContextSwitchDeadlock.
+- **Texture decode error logging** — View → View Texture Load Errors….
+
+### Changed
+- **Position/Size precision** — F4 serialization (was F1).
+- **SnapshotMerger** — occurrence-order matching instead of proximity.
+
+### Fixed
+- **UI fixes** — toolbar wrapping, capture/show-all buttons moved, TextBox.MaxLength set to 0.
+- **Bug fixes** — hasDynamicPositions false-trigger, removed broken offset animation.
+
+---
+
+## v1.6.0 - 2025-10-25
+
+### Added
+- **Expanded SE API stubs** — block interfaces, IMyShipController, IMyBlockGroup, inventory system, IMyTerminalBlock extended, IMyTextSurface extended, Vector3D, enums, auto-imported namespaces.
+
+---
+
+## v1.5.0 - 2025-10-20
+
+### Added
+- **Full Programmable Block script execution** — mod/plugin script execution, script type auto-detection, sprite capture via SpriteCollector.
+- **Functional concrete stubs** — StubTextSurface, StubProgrammableBlock, StubRuntime, StubGridTerminalSystem, StubTerminalBlock.
+- **Extended math/color stubs** — MathHelper, Color constructors, operator, named colors, CreateSprite().
+- **PB constructor extraction** — inlines constructor body before Main().
+- **Script-type-aware UI** — result labels with tags, context-appropriate error hints.
+- **`MyGridProgram` base class** — LcdRunner extends for PB scripts.
+
+---
+
+## v1.3.5 - 2025-10-15
+
+### Added
+- **Expression literal extraction & editing** — Vector2, float, string literals with offset-targeted patchers.
+- **Unified offset management** — ShiftExpressionOffsets helper.
+- **Expression model hierarchy** — ExpressionLiteral base class with typed subclasses.
+
+---
+
+## v1.3.4 - 2025-10-10
+
+### Fixed
+- **Live streaming visual** — canvas shows full runtime sprite list at all times.
+- **User colour edits survive pause/resume** — baseline tracking prevents overwrite.
+
+---
+
+## v1.3.3 - 2025-10-05
+
+### Changed
+- **Live streaming round-trip** — merge in-place preserves SourceStart/SourceEnd/ImportBaseline.
+- **`IsActivelyStreaming` pause-aware** — excludes paused state.
+- **`RefreshCode` on pause toggle** — instant update when pausing/resuming.
+
+---
+
+## v1.3.2 - 2025-10-01
+
+### Changed
+- **Plugin snippet: FindPanel two-pass search** — CustomName first pass before CustomData fallback.
+- **Snapshot file extension** — writes `.cs` instead of `.txt`.
+
+---
+
+## v1.3.0 - 2025-09-28
+
+### Added
+- **Live LCD Streaming** — named pipe real-time frame streaming, Pause/Resume editing.
+- **Snapshot Helper Snippets** — four variants (PB/Mod/Plugin/Pulsar) generated by tool.
+- **Snapshot Merge Workflow** — split paste dialog, sprites matched by (Type + Data), import baselines refreshed.
+- **Automated Tint Detection** — analyzes atlas pixel data for grayscale vs coloured.
+- **Expression-Aware Code Parsing** — ParseFloat extracts leading numeric literals.
+- **Dynamic Position Detection** — (0,0) positions detected and auto-stacked.
+
+---
+
+## v1.2.0 - 2025-09-25
+
+### Added
+- **Code Round-Trip** — region-based and per-sprite dynamic round-trip, expression literal extraction, offset-targeted patching, unified offset management.
+- **Layer List Context Menu** — right-click for Move Up/Down, Duplicate, Delete, Hide Layer/Layers Above, Show All.
+- **Sprite Catalog Replace** — right-click catalog sprite to replace selected sprite's texture/glyph.
+
+---
+
+## v1.1.0 - 2025-09-20
+
+### Added
+- **SE Font Atlas Rendering** — PUA glyphs from DDS font atlas textures with tinting.
+- **Expanded Glyph Catalog** — 10 Unicode categories, 123+ characters.
+- **Font Selection Persistence** — selected font sticks when adding sprites.
+- **Font Mixing Warning** — warns when switching fonts if canvas has other font family.
+- **Stretch to Surface** — right-click context menu option.
+
+### Changed
+- **Color Swatch Labels** — PUA swatches labelled "(in-game only)" with explanation.
+
+### Fixed
+- **Glyph Add** — double-click correctly applies glyph character and font.
+
+---
+
+## v1.0.0 - 2025-09-15
+
+### Added
+- Initial release — WYSIWYG canvas, real SE texture loading, code generation (PB/Mod/Plugin/Pulsar), smart code parser, LCD snapshot capture, undo/redo, layer ordering, dark theme UI.
 - Code heatmap updates now skip insignificant timing jitter and use a lower-frequency visual refresh cadence.
 - Code diagnostics filtering now suppresses common false positives for implicit Space Engineers/Torch/Pulsar runtime symbols.
 
