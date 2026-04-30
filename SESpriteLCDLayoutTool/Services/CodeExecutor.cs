@@ -2891,10 +2891,23 @@ namespace SESpriteLCDLayoutTool.Services
         {
             if (string.IsNullOrEmpty(code)) return code;
 
-            // Match method declarations (access modifier + optional static + return type + name + params + {)
-            // Use [ \t] instead of \s in return-type class to prevent cross-newline greedy matching
+            // Match method declarations (optional access modifier + optional static + return type + name + params + {)
+            // Access modifier is OPTIONAL because PB scripts commonly declare
+            // `void Main(...)` and `void Save()` with no modifier, and we want
+            // those timed for the heatmap.
+            // Return type MUST contain a real word token (not just whitespace) so
+            // control-flow constructs like `for (...) { }` are not mistaken for
+            // method declarations when only leading indentation precedes them.
             var rxMethod = new Regex(
-                @"(?:private|public|internal|protected)[ \t]+(?:static[ \t]+)?(?:override[ \t]+)?(?:void|[\w<>\[\], \t]+)[ \t]+(\w+)\s*\([^)]*\)\s*\{");
+                @"(?:(?:private|public|internal|protected)[ \t]+)?(?:static[ \t]+)?(?:override[ \t]+)?(?:void|[\w<>\[\],][\w<>\[\], \t]*)[ \t]+(\w+)\s*\([^)]*\)\s*\{");
+
+            // C# keywords that can be followed by `(...) {` and would otherwise be
+            // captured as a method name (e.g. `for`, `if`, `while`, `switch`).
+            var keywordFilter = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "if", "for", "foreach", "while", "switch", "catch", "using", "lock",
+                "do", "else", "return", "throw", "new", "fixed", "unchecked", "checked"
+            };
 
             // Collect all matches first, then process from end to start so char positions stay valid
             var matches = new List<Match>();
@@ -2914,6 +2927,11 @@ namespace SESpriteLCDLayoutTool.Services
                 if (methodName.StartsWith("_") || methodName == "GetEchoLog" ||
                     methodName == "GetMethodTimings" || methodName == "RunAllData" ||
                     methodName == "RunFrame")
+                    continue;
+
+                // Skip C# control-flow keywords that the regex may have captured
+                // (e.g. `for (...) { }` inside a method body).
+                if (keywordFilter.Contains(methodName))
                     continue;
 
                 int braceOpen = m.Index + m.Length - 1; // position of the opening {

@@ -2,6 +2,25 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v3.10.0 - 2026-04-28
+
+### Added
+- **Animated GIF export** (`File → Export Animated GIF…`) — capture a few seconds of any animated layout straight to a looping `.gif` for quick demos and bug reports.
+  - **Two capture modes**: *Fresh run* (compiles and runs the script from tick 0) or *Continue from current tick* (records from the live/paused animation session, preserving state). The latter is essential for layouts with long warm-up/intro phases that exceed the recording window.
+  - **Warm-up frames**: skip a configurable number of frames before recording starts (fresh-run mode) so intro animations can settle.
+  - Configurable duration, FPS, output pixel size, and looping; written via a built-in GIF89a encoder (`Services/GifExporter.cs`) with NETSCAPE 2.0 loop extension.
+  - **Hide reference boxes (gold)** checkbox in the export dialog produces a clean GIF even if the editor has the bounding boxes turned on.
+- **View → Show Text Bounding Boxes** toggle — the gold dashed outline around every text sprite is now optional. Hide it for cleaner editing/screenshots without affecting the export pipeline. Defaults to on.
+
+### Fixed
+- **Properties panel edits silently dropped on helper-call sprites** — sprites authored via helper functions (e.g. `DrawGauge(s, "POWER", …)` → `MySprite.CreateText(label, …)`) couldn't be source-tracked because the parser doesn't follow the helper's parameter back to the call-site literal. Without an `ImportBaseline`, property edits never reached the code panel. `ExecuteCode` now seeds a baseline-only entry for every untracked sprite (Strategy 4) so `CodePatcher` pass 2 can resolve the literal via the sprite navigation index at edit time.
+- **CodePatcher unpatched-change reporting** — when an edit hits a non-literal (interpolated string, ternary, expression-based property), `CodePatcher.PatchOriginalSource` now records the count and a human-readable reason via `LastUnpatchedChangeCount` / `LastUnpatchedReason` so the UI can surface a status warning instead of looking like a silent failure.
+- **Heatmap colours all-green for single-method scripts** — switched from relative min/max normalisation to absolute millisecond thresholds. PB scripts (often a single instrumented `Main`) now show meaningful per-method colour, not a flat baseline.
+- **Heatmap regex misidentifying `for (...) {` etc. as a method declaration** — the method-detection regex (in both `MainForm.cs` and `Services/CodeExecutor.cs`) now requires a real return-type token and rejects the C# control-flow keyword set (`if`, `for`, `foreach`, `while`, `switch`, `catch`, `using`, `lock`, `do`, `else`, `return`, `throw`, `new`, `fixed`, `unchecked`, `checked`). PB-style modifierless declarations (`void Main(...)`, `void Save()`) and `override` are now matched correctly.
+
+### Repository hygiene
+- `.gitignore` extended for Copilot/local-AI workspace caches (`**/.localpilot/`, `**/.copilot/`) and ad-hoc helper scripts (`_*.ps1`).
+
 ## v3.9.1 - 2026-08-01
 
 ### Fixed

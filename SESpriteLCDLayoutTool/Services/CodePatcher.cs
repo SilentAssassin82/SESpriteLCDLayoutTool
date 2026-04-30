@@ -11,6 +11,21 @@ namespace SESpriteLCDLayoutTool.Services
         // ── Per-sprite dynamic round-trip ─────────────────────────────────────
 
         /// <summary>
+        /// Number of sprite property changes from the most recent <see cref="PatchOriginalSource"/>
+        /// call that could not be applied because the source uses an expression
+        /// (interpolated string, ternary, variable, etc.) instead of a literal value.
+        /// MainForm reads this to show a status warning so the user understands why
+        /// the code panel didn't reflect their edit.
+        /// </summary>
+        public static int LastUnpatchedChangeCount { get; private set; }
+
+        /// <summary>
+        /// Description of the first unpatched change in the most recent
+        /// <see cref="PatchOriginalSource"/> call (e.g. "Text on TEXT sprite #3").
+        /// </summary>
+        public static string LastUnpatchedReason { get; private set; }
+
+        /// <summary>
         /// Per-sprite property patching for dynamic code (loops, switch/case, expressions).
         /// Compares each sprite's current values against its ImportBaseline and surgically
         /// replaces only the literal values (colors, textures, fonts) that changed,
@@ -19,19 +34,31 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public static string PatchOriginalSource(LcdLayout layout)
         {
+            LastUnpatchedChangeCount = 0;
+            LastUnpatchedReason = null;
+
             string original = layout.OriginalSourceCode;
             if (string.IsNullOrWhiteSpace(original)) return null;
 
-            // Collect sprites that have source tracking and a baseline
+            // Collect sprites that have source tracking AND a baseline (chunk patching).
             var patchable = new System.Collections.Generic.List<SpriteEntry>();
+            // Collect sprites that only have a baseline (for nav-index pass 2 — covers
+            // helper-call sprites like DrawGauge(s, "POWER", ...) where the runtime
+            // sprite couldn't be matched to a parsed code chunk).
+            var baselineOnly = new System.Collections.Generic.List<SpriteEntry>();
             foreach (var sp in layout.Sprites)
             {
                 if (sp.IsReferenceLayout) continue;
-                if (sp.SourceStart < 0 || sp.SourceEnd < 0 || sp.ImportBaseline == null) continue;
+                if (sp.ImportBaseline == null) continue;
+                if (sp.SourceStart < 0 || sp.SourceEnd < 0)
+                {
+                    baselineOnly.Add(sp);
+                    continue;
+                }
                 patchable.Add(sp);
             }
 
-            if (patchable.Count == 0) return null;
+            if (patchable.Count == 0 && baselineOnly.Count == 0) return null;
 
             // Sort by SourceStart descending so we patch from end-to-start (preserves offsets)
             patchable.Sort((a, b) => b.SourceStart.CompareTo(a.SourceStart));
@@ -51,7 +78,9 @@ namespace SESpriteLCDLayoutTool.Services
                     bl.SpriteName != sp.SpriteName &&
                     bl.SpriteName != null && sp.SpriteName != null)
                 {
+                    string before = patched;
                     patched = ReplaceStringLiteral(patched, bl.SpriteName, sp.SpriteName);
+                    if (patched == before) NoteUnpatched(sp, "sprite name (expression in source)");
                 }
 
                 // Patch text content (string literal)
@@ -59,57 +88,345 @@ namespace SESpriteLCDLayoutTool.Services
                     bl.Text != sp.Text &&
                     bl.Text != null && sp.Text != null)
                 {
+                    string before = patched;
                     patched = ReplaceStringLiteral(patched, bl.Text, sp.Text);
+                    if (patched == before) NoteUnpatched(sp, "text (interpolated/expression $\"...\" in source)");
                 }
 
                 // Patch font name (string literal)
                 if (bl.FontId != sp.FontId &&
                     bl.FontId != null && sp.FontId != null)
                 {
+                    string before = patched;
                     patched = ReplaceStringLiteral(patched, bl.FontId, sp.FontId);
+                    if (patched == before) NoteUnpatched(sp, "font (expression in source)");
                 }
 
                 // Patch color (new Color(...) literals or named colors like Color.White)
                 if (bl.ColorR != sp.ColorR || bl.ColorG != sp.ColorG ||
                     bl.ColorB != sp.ColorB || bl.ColorA != sp.ColorA)
                 {
+                    string before = patched;
                     patched = PatchColorLiteral(patched, bl, sp);
+                    if (patched == before) NoteUnpatched(sp, "color (expression in source)");
                 }
 
                 // Patch position (literal Vector2)
                 if (Math.Abs(bl.X - sp.X) > 0.05f || Math.Abs(bl.Y - sp.Y) > 0.05f)
                 {
+                    string before = patched;
                     patched = PatchVector2Literal(patched, "Position", sp.X, sp.Y);
+                    if (patched == before) NoteUnpatched(sp, "position (expression in source)");
                 }
 
                 // Patch size (literal Vector2, texture sprites only)
                 if (sp.Type == SpriteEntryType.Texture &&
                     (Math.Abs(bl.Width - sp.Width) > 0.05f || Math.Abs(bl.Height - sp.Height) > 0.05f))
                 {
+                    string before = patched;
                     patched = PatchVector2Literal(patched, "Size", sp.Width, sp.Height);
+                    if (patched == before) NoteUnpatched(sp, "size (expression in source)");
                 }
 
                 // Patch rotation/scale (literal float)
                 if (sp.Type == SpriteEntryType.Texture && Math.Abs(bl.Rotation - sp.Rotation) > 0.0005f)
                 {
+                    string before = patched;
                     patched = PatchFloatLiteral(patched, "RotationOrScale", sp.Rotation, 4);
+                    if (patched == before) NoteUnpatched(sp, "rotation (expression in source)");
                 }
                 else if (sp.Type == SpriteEntryType.Text && Math.Abs(bl.Scale - sp.Scale) > 0.005f)
                 {
+                    string before = patched;
                     patched = PatchFloatLiteral(patched, "RotationOrScale", sp.Scale, 2);
+                    if (patched == before) NoteUnpatched(sp, "scale (expression in source)");
                 }
 
                 // Only substitute if something actually changed
                 if (patched != chunk)
                 {
-                    result.Remove(sp.SourceStart, sp.SourceEnd - sp.SourceStart);
+                    int oldLen = sp.SourceEnd - sp.SourceStart;
+                    int newLen = patched.Length;
+                    result.Remove(sp.SourceStart, oldLen);
                     result.Insert(sp.SourceStart, patched);
+
+                    // Update the sprite's own end so the next edit reads the
+                    // full patched chunk (not a truncated one), and refresh
+                    // its baseline so the next diff is computed against the
+                    // values we just persisted to source.  Sprites are patched
+                    // in descending SourceStart order, so earlier sprites are
+                    // unaffected by this delta.
+                    sp.SourceEnd = sp.SourceStart + newLen;
+                    sp.ImportBaseline = sp.CloneValues();
                 }
+            }
+
+            // ── Pass 2: out-of-chunk literal fallback (Torch / helper code) ──
+            // For string properties (text / sprite name / font) where the
+            // in-chunk patch failed because the literal lives OUTSIDE the
+            // sprite's source chunk (e.g. helper call-site argument like
+            // DrawGauge(s, "POWER", ...) where the chunk is the helper's
+            // CreateText(label, ...) line), use the Roslyn-backed
+            // SpriteNavigationIndex to map the value to the correct call-site
+            // literal — disambiguated by method name / index when the same
+            // string appears multiple times.  Falls back to global unique-
+            // literal replacement only if the index can't resolve.
+            //
+            // Pass 2 sprites are processed in descending SourceStart order
+            // so earlier offsets stay valid as later edits shift the buffer.
+            // We also build a fresh nav index after each successful edit
+            // (rare and cheap) so subsequent lookups see the new positions.
+            SpriteNavigationIndex navIndex = SpriteNavigationIndex.Build(result.ToString());
+
+            // Pass 2 runs over BOTH chunk-tracked sprites (where in-chunk patch may
+            // have failed for an out-of-chunk literal) AND baseline-only sprites
+            // (helper-call sprites like DrawGauge(s, "POWER", ...) that have no
+            // source chunk at all).  The nav index is the only source of truth for
+            // these — ShiftSpritePositions only shifts entries that have offsets.
+            var allBaselined = new System.Collections.Generic.List<SpriteEntry>(patchable);
+            allBaselined.AddRange(baselineOnly);
+
+            foreach (var sp in allBaselined)
+            {
+                var bl = sp.ImportBaseline;
+                if (bl == null) continue;
+
+                bool changed = false;
+
+                if (sp.Type == SpriteEntryType.Text &&
+                    bl.Text != sp.Text && bl.Text != null && sp.Text != null)
+                {
+                    if (TryTargetedLiteralReplace(result, sp, bl.Text, sp.Text, navIndex,
+                        out int editPos, out int delta))
+                    {
+                        ShiftSpritePositions(patchable, editPos, delta, sp);
+                        sp.ImportBaseline = sp.CloneValues();
+                        changed = true;
+                    }
+                }
+
+                if (sp.Type == SpriteEntryType.Texture &&
+                    bl.SpriteName != sp.SpriteName &&
+                    bl.SpriteName != null && sp.SpriteName != null)
+                {
+                    if (TryTargetedLiteralReplace(result, sp, bl.SpriteName, sp.SpriteName, navIndex,
+                        out int editPos, out int delta))
+                    {
+                        ShiftSpritePositions(patchable, editPos, delta, sp);
+                        sp.ImportBaseline = sp.CloneValues();
+                        changed = true;
+                    }
+                }
+
+                if (bl.FontId != sp.FontId && bl.FontId != null && sp.FontId != null)
+                {
+                    if (TryTargetedLiteralReplace(result, sp, bl.FontId, sp.FontId, navIndex,
+                        out int editPos, out int delta))
+                    {
+                        ShiftSpritePositions(patchable, editPos, delta, sp);
+                        sp.ImportBaseline = sp.CloneValues();
+                        changed = true;
+                    }
+                }
+
+                // Rebuild the nav index if the buffer shifted (offsets are now stale).
+                if (changed)
+                    navIndex = SpriteNavigationIndex.Build(result.ToString());
             }
 
             string final = result.ToString();
             // Return the (possibly unchanged) original — null only when patching is not applicable
             return final;
+        }
+
+        /// <summary>
+        /// Locates the best-matching string literal for a sprite property edit
+        /// using the Roslyn-backed <see cref="SpriteNavigationIndex"/>, which
+        /// understands helper-method call sites (e.g. <c>DrawGauge(s, "POWER", ...)</c>)
+        /// and uses the sprite's runtime <c>SourceMethodName</c> /
+        /// <c>SourceMethodIndex</c> for disambiguation.  Falls back to the
+        /// global unique-literal scan when the index cannot resolve.
+        /// On success, replaces the literal's content in <paramref name="buffer"/>
+        /// and reports the absolute edit position and length delta.
+        /// </summary>
+        private static bool TryTargetedLiteralReplace(StringBuilder buffer,
+            SpriteEntry sprite, string oldValue, string newValue,
+            SpriteNavigationIndex navIndex,
+            out int editPos, out int delta)
+        {
+            editPos = -1;
+            delta = 0;
+            if (string.IsNullOrEmpty(oldValue) || newValue == null) return false;
+
+            // 1) Ask the navigation index for the best location.  It already
+            //    prefers CallSiteArg / DirectSprite over generic literals and
+            //    disambiguates using SourceMethodName / SourceMethodIndex.
+            int charOffset = -1;
+            if (navIndex != null)
+            {
+                var entry = navIndex.Lookup(oldValue, sprite.SourceMethodName, sprite.SourceMethodIndex);
+                if (entry != null)
+                    charOffset = entry.CharOffset;
+            }
+
+            string text = buffer.ToString();
+            var literals = FindStringLiterals(text);
+            if (literals.Count == 0) return false;
+
+            // Find candidate non-interpolated literals matching the old value.
+            var candidates = new List<int>();
+            for (int i = 0; i < literals.Count; i++)
+            {
+                var lit = literals[i];
+                string content = text.Substring(lit.ContentStart, lit.ContentEnd - lit.ContentStart);
+                string decoded = DecodeForLiteral(content, lit.Kind);
+                if (decoded.IndexOf('\uFFFF') >= 0) continue;
+                if (!string.Equals(decoded, oldValue, StringComparison.Ordinal)) continue;
+                candidates.Add(i);
+            }
+            if (candidates.Count == 0) return false;
+
+            int matchIndex = -1;
+
+            // 2) If the nav index gave us an offset, find the literal whose
+            //    quote-start matches it (literals[i].ContentStart - 1 for "..." form,
+            //    or use proximity since interpolated/verbatim shift the offset).
+            if (charOffset >= 0)
+            {
+                int bestDist = int.MaxValue;
+                foreach (int ci in candidates)
+                {
+                    var lit = literals[ci];
+                    int litStart = lit.ContentStart - 1; // skip opening quote
+                    int dist = Math.Abs(litStart - charOffset);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        matchIndex = ci;
+                    }
+                }
+                // Tight tolerance — the nav index produces exact spans.
+                if (bestDist > 8) matchIndex = -1;
+            }
+
+            // 3) Fallback: if exactly one candidate exists in the whole file, use it.
+            if (matchIndex < 0 && candidates.Count == 1)
+                matchIndex = candidates[0];
+
+            // 4) Fallback: pick the candidate nearest to the sprite's source anchor.
+            //    Real-world Torch helpers usually have the call-site close to the
+            //    helper invocation chain that produced the sprite.
+            if (matchIndex < 0 && sprite.SourceStart >= 0 && candidates.Count > 1)
+            {
+                int anchor = sprite.SourceStart;
+                int bestDist = int.MaxValue;
+                foreach (int ci in candidates)
+                {
+                    int dist = Math.Abs(literals[ci].ContentStart - anchor);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        matchIndex = ci;
+                    }
+                }
+            }
+
+            if (matchIndex < 0) return false;
+
+            var hit = literals[matchIndex];
+            string ins = EscForLiteral(newValue, hit.Kind);
+            int contentLen = hit.ContentEnd - hit.ContentStart;
+            buffer.Remove(hit.ContentStart, contentLen);
+            buffer.Insert(hit.ContentStart, ins);
+
+            editPos = hit.ContentStart;
+            delta = ins.Length - contentLen;
+            return true;
+        }
+
+        /// <summary>
+        /// Searches the whole source for non-interpolated string literals whose
+        /// decoded content equals <paramref name="oldValue"/>.  If exactly one
+        /// such literal exists, replaces its content with the appropriately
+        /// escaped form of <paramref name="newValue"/> and returns the absolute
+        /// edit position and length delta.  Returns false when zero or
+        /// multiple matches are found (ambiguous — leave for the user).
+        /// </summary>
+        private static bool TryGlobalUniqueLiteralReplace(StringBuilder buffer,
+            string oldValue, string newValue, out int editPos, out int delta)
+        {
+            editPos = -1;
+            delta = 0;
+            if (string.IsNullOrEmpty(oldValue) || newValue == null) return false;
+
+            string text = buffer.ToString();
+            var literals = FindStringLiterals(text);
+            if (literals.Count == 0) return false;
+
+            int matchIndex = -1;
+            for (int i = 0; i < literals.Count; i++)
+            {
+                var lit = literals[i];
+                string content = text.Substring(lit.ContentStart, lit.ContentEnd - lit.ContentStart);
+                string decoded = DecodeForLiteral(content, lit.Kind);
+                // Only consider non-interpolated literals (no holes).
+                if (decoded.IndexOf('\uFFFF') >= 0) continue;
+                if (!string.Equals(decoded, oldValue, StringComparison.Ordinal)) continue;
+
+                if (matchIndex >= 0) return false; // ambiguous — bail
+                matchIndex = i;
+            }
+
+            if (matchIndex < 0) return false;
+
+            var hit = literals[matchIndex];
+            string ins = EscForLiteral(newValue, hit.Kind);
+            int contentLen = hit.ContentEnd - hit.ContentStart;
+            buffer.Remove(hit.ContentStart, contentLen);
+            buffer.Insert(hit.ContentStart, ins);
+
+            editPos = hit.ContentStart;
+            delta = ins.Length - contentLen;
+            return true;
+        }
+
+        /// <summary>
+        /// Adjusts <c>SourceStart</c>/<c>SourceEnd</c> of every patchable sprite
+        /// (except the originating one) whose range starts after a global edit
+        /// position so subsequent in-chunk reads stay aligned to the buffer.
+        /// </summary>
+        private static void ShiftSpritePositions(List<SpriteEntry> sprites,
+            int editPos, int delta, SpriteEntry origin)
+        {
+            if (delta == 0) return;
+            foreach (var sp in sprites)
+            {
+                // Shift any sprite whose chunk starts AT or AFTER the edit.
+                if (sp.SourceStart >= editPos)
+                {
+                    sp.SourceStart += delta;
+                    sp.SourceEnd += delta;
+                }
+                else if (sp.SourceEnd > editPos)
+                {
+                    // Edit landed inside this sprite's chunk — extend its end.
+                    // (Rare: only when the unique literal happens to be inside
+                    // another sprite's range, which means in-chunk patching
+                    // would have caught it — but stay safe.)
+                    sp.SourceEnd += delta;
+                }
+            }
+        }
+
+        private static void NoteUnpatched(SpriteEntry sp, string reason)
+        {
+            LastUnpatchedChangeCount++;
+            if (LastUnpatchedReason == null)
+            {
+                string label = sp.UserLabel
+                    ?? (sp.Type == SpriteEntryType.Text ? "TEXT sprite" : (sp.SpriteName ?? "TEXTURE sprite"));
+                LastUnpatchedReason = $"{label}: {reason}";
+            }
         }
 
         /// <summary>
@@ -348,14 +665,474 @@ namespace SESpriteLCDLayoutTool.Services
             return sb.ToString();
         }
 
-        /// <summary>Replaces a quoted string literal in the source text.</summary>
+        /// <summary>
+        /// Replaces a quoted string literal in the source text.
+        /// Falls back to a smart edit when the exact baseline literal isn't present
+        /// (e.g. interpolated strings, verbatim strings, concatenations) by detecting
+        /// append/prepend/middle-replace edits and applying them inside the source
+        /// literal that holds the changed segment.
+        /// </summary>
         private static string ReplaceStringLiteral(string text, string oldValue, string newValue)
         {
+            // Fast path: exact literal in source.
             string escapedOld = $"\"{Esc(oldValue)}\"";
             string escapedNew = $"\"{Esc(newValue)}\"";
             int idx = text.IndexOf(escapedOld, StringComparison.Ordinal);
-            if (idx < 0) return text;
-            return text.Substring(0, idx) + escapedNew + text.Substring(idx + escapedOld.Length);
+            if (idx >= 0)
+                return text.Substring(0, idx) + escapedNew + text.Substring(idx + escapedOld.Length);
+
+            if (oldValue == null || newValue == null) return text;
+
+            // Smart path: find a literal whose decoded content (with interpolation
+            // holes as wildcards) matches the baseline value, then apply the
+            // append/prepend/middle edit inside the static segment that contains it.
+            var literals = FindStringLiterals(text);
+            if (literals.Count == 0) return text;
+
+            // What changed?
+            int commonPrefix = 0;
+            int maxPrefix = Math.Min(oldValue.Length, newValue.Length);
+            while (commonPrefix < maxPrefix && oldValue[commonPrefix] == newValue[commonPrefix])
+                commonPrefix++;
+
+            int commonSuffix = 0;
+            int maxSuffix = Math.Min(oldValue.Length - commonPrefix, newValue.Length - commonPrefix);
+            while (commonSuffix < maxSuffix &&
+                   oldValue[oldValue.Length - 1 - commonSuffix] == newValue[newValue.Length - 1 - commonSuffix])
+                commonSuffix++;
+
+            string oldMiddle = oldValue.Substring(commonPrefix, oldValue.Length - commonPrefix - commonSuffix);
+            string newMiddle = newValue.Substring(commonPrefix, newValue.Length - commonPrefix - commonSuffix);
+            int changeStart = commonPrefix;                       // index in baseline where change starts
+            int changeEnd   = oldValue.Length - commonSuffix;     // exclusive end in baseline
+
+            foreach (var lit in literals)
+            {
+                string content = text.Substring(lit.ContentStart, lit.ContentEnd - lit.ContentStart);
+                string decoded = DecodeForLiteral(content, lit.Kind);
+
+                // Anchor the literal's static segments against the baseline.  Each
+                // static run between interpolation holes must appear in baseline,
+                // in order, with the first run at index 0 and the last run flush
+                // with baseline.Length.
+                int[] segStarts; // start index in baseline of each segment
+                int[] segLengths;
+                if (!TryAnchorLiteral(decoded, oldValue, out segStarts, out segLengths))
+                    continue;
+
+                // Walk segments to find the one that holds (changeStart..changeEnd).
+                // segCount may be 1 (no holes) or more (interpolated).
+                int segCount = segStarts.Length;
+                for (int s = 0; s < segCount; s++)
+                {
+                    int segBaseStart = segStarts[s];
+                    int segBaseEnd   = segStarts[s] + segLengths[s];
+
+                    // The change region [changeStart, changeEnd] must be fully
+                    // contained in this segment's baseline range.  Pure insertions
+                    // at segment boundaries (changeStart == changeEnd == segBaseStart
+                    // or == segBaseEnd) also fall through here naturally.
+                    if (changeStart < segBaseStart || changeEnd > segBaseEnd) continue;
+
+                    // Locate this segment inside the raw literal content.
+                    int segRawStart, segRawEnd;
+                    if (!TryFindSegmentRawRange(content, lit.Kind, s, out segRawStart, out segRawEnd))
+                        continue;
+
+                    int relStart = changeStart - segBaseStart;
+                    int relEnd   = changeEnd   - segBaseStart;
+                    int rawAtStart = MapSegmentDecodedToRaw(content, lit.Kind, segRawStart, segRawEnd, relStart);
+                    int rawAtEnd   = MapSegmentDecodedToRaw(content, lit.Kind, segRawStart, segRawEnd, relEnd);
+                    if (rawAtStart < 0 || rawAtEnd < 0) continue;
+
+                    int absStart = lit.ContentStart + rawAtStart;
+                    int absEnd   = lit.ContentStart + rawAtEnd;
+                    string ins = EscForLiteral(newMiddle, lit.Kind);
+                    return text.Substring(0, absStart) + ins + text.Substring(absEnd);
+                }
+            }
+
+            return text;
+        }
+
+        /// <summary>
+        /// Tries to anchor a literal's decoded content (with '\uFFFF' placeholders for
+        /// interpolation holes) against a baseline runtime string.  Returns the
+        /// baseline start index and length of each static segment when the segments
+        /// appear in order with the first anchored at 0 and the last flush with
+        /// baseline.Length.
+        /// </summary>
+        private static bool TryAnchorLiteral(string decoded, string baseline,
+                                             out int[] segStarts, out int[] segLengths)
+        {
+            segStarts = null;
+            segLengths = null;
+            var segments = decoded.Split('\uFFFF');
+            var starts = new int[segments.Length];
+            var lengths = new int[segments.Length];
+            int pos = 0;
+            for (int i = 0; i < segments.Length; i++)
+            {
+                string seg = segments[i];
+                lengths[i] = seg.Length;
+                if (seg.Length == 0)
+                {
+                    starts[i] = pos;
+                    continue;
+                }
+                int hit = baseline.IndexOf(seg, pos, StringComparison.Ordinal);
+                if (hit < 0) return false;
+                // First segment must anchor at start; otherwise the literal isn't
+                // the producer of this baseline.
+                if (i == 0 && hit != 0) return false;
+                starts[i] = hit;
+                pos = hit + seg.Length;
+            }
+            // Last non-empty segment must end at baseline.Length so the literal
+            // fully covers the baseline.
+            for (int i = segments.Length - 1; i >= 0; i--)
+            {
+                if (segments[i].Length > 0)
+                {
+                    if (starts[i] + lengths[i] != baseline.Length) return false;
+                    break;
+                }
+            }
+            // Patch up empty trailing segments to point at baseline.Length
+            for (int i = segments.Length - 1; i >= 0 && segments[i].Length == 0; i--)
+                starts[i] = baseline.Length;
+
+            segStarts = starts;
+            segLengths = lengths;
+            return true;
+        }
+
+        /// <summary>
+        /// Returns the raw-content range [start, end) of the Nth static segment
+        /// inside a literal (segments are separated by interpolation holes).
+        /// </summary>
+        private static bool TryFindSegmentRawRange(string raw, LiteralKind kind, int segmentIndex,
+                                                   out int rawStart, out int rawEnd)
+        {
+            rawStart = -1;
+            rawEnd = -1;
+            bool verbatim = kind == LiteralKind.Verbatim || kind == LiteralKind.InterpolatedVerbatim;
+            bool interp = kind == LiteralKind.Interpolated || kind == LiteralKind.InterpolatedVerbatim;
+            int currentSeg = 0;
+            int segStart = 0;
+            int i = 0;
+            while (i < raw.Length)
+            {
+                char c = raw[i];
+                if (interp && c == '{' && i + 1 < raw.Length && raw[i + 1] == '{') { i += 2; continue; }
+                if (interp && c == '}' && i + 1 < raw.Length && raw[i + 1] == '}') { i += 2; continue; }
+                if (interp && c == '{')
+                {
+                    if (currentSeg == segmentIndex) { rawStart = segStart; rawEnd = i; return true; }
+                    int depth = 1; i++;
+                    while (i < raw.Length && depth > 0)
+                    {
+                        if (raw[i] == '{') depth++;
+                        else if (raw[i] == '}') depth--;
+                        i++;
+                    }
+                    currentSeg++;
+                    segStart = i;
+                    continue;
+                }
+                if (verbatim && c == '"' && i + 1 < raw.Length && raw[i + 1] == '"') { i += 2; continue; }
+                if (!verbatim && c == '\\' && i + 1 < raw.Length) { i += 2; continue; }
+                i++;
+            }
+            if (currentSeg == segmentIndex)
+            {
+                rawStart = segStart;
+                rawEnd = raw.Length;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Maps a decoded-offset within a single static segment back to its raw
+        /// content index, accounting for verbatim/regular escapes.  No interpolation
+        /// holes can appear inside the segment by definition.
+        /// </summary>
+        private static int MapSegmentDecodedToRaw(string raw, LiteralKind kind,
+                                                  int segRawStart, int segRawEnd,
+                                                  int decodedOffset)
+        {
+            bool verbatim = kind == LiteralKind.Verbatim || kind == LiteralKind.InterpolatedVerbatim;
+            int rawIdx = segRawStart;
+            int decIdx = 0;
+            while (rawIdx < segRawEnd)
+            {
+                if (decIdx == decodedOffset) return rawIdx;
+                char c = raw[rawIdx];
+                if (verbatim)
+                {
+                    if (c == '"' && rawIdx + 1 < segRawEnd && raw[rawIdx + 1] == '"') { rawIdx += 2; decIdx++; continue; }
+                    rawIdx++; decIdx++;
+                }
+                else
+                {
+                    if (c == '\\' && rawIdx + 1 < segRawEnd) { rawIdx += 2; decIdx++; continue; }
+                    rawIdx++; decIdx++;
+                }
+            }
+            return decIdx == decodedOffset ? rawIdx : -1;
+        }
+
+        private enum LiteralKind { Regular, Verbatim, Interpolated, InterpolatedVerbatim }
+
+        private struct StringLiteralRange
+        {
+            public int Start;          // position of the opening punctuation (e.g. $, @, ")
+            public int ContentStart;   // first character of content (after opening quote)
+            public int ContentEnd;     // exclusive index of closing quote
+            public int End;            // ContentEnd + 1
+            public LiteralKind Kind;
+        }
+
+        /// <summary>
+        /// Locates string literals in a code chunk: "x", @"x", $"x", $@"x", @$"x".
+        /// Skips comments. Returns the literals in source order.
+        /// </summary>
+        private static List<StringLiteralRange> FindStringLiterals(string text)
+        {
+            var list = new List<StringLiteralRange>();
+            int i = 0;
+            while (i < text.Length)
+            {
+                char c = text[i];
+
+                // Skip line comment
+                if (c == '/' && i + 1 < text.Length && text[i + 1] == '/')
+                {
+                    while (i < text.Length && text[i] != '\n') i++;
+                    continue;
+                }
+                // Skip block comment
+                if (c == '/' && i + 1 < text.Length && text[i + 1] == '*')
+                {
+                    i += 2;
+                    while (i + 1 < text.Length && !(text[i] == '*' && text[i + 1] == '/')) i++;
+                    i = Math.Min(text.Length, i + 2);
+                    continue;
+                }
+                // Skip char literal
+                if (c == '\'')
+                {
+                    i++;
+                    while (i < text.Length && text[i] != '\'')
+                    {
+                        if (text[i] == '\\' && i + 1 < text.Length) i++;
+                        i++;
+                    }
+                    if (i < text.Length) i++;
+                    continue;
+                }
+
+                LiteralKind kind;
+                int prefixLen;
+                if (c == '"') { kind = LiteralKind.Regular; prefixLen = 1; }
+                else if (c == '@' && i + 1 < text.Length && text[i + 1] == '"') { kind = LiteralKind.Verbatim; prefixLen = 2; }
+                else if (c == '$' && i + 1 < text.Length && text[i + 1] == '"') { kind = LiteralKind.Interpolated; prefixLen = 2; }
+                else if (c == '$' && i + 2 < text.Length && text[i + 1] == '@' && text[i + 2] == '"') { kind = LiteralKind.InterpolatedVerbatim; prefixLen = 3; }
+                else if (c == '@' && i + 2 < text.Length && text[i + 1] == '$' && text[i + 2] == '"') { kind = LiteralKind.InterpolatedVerbatim; prefixLen = 3; }
+                else { i++; continue; }
+
+                int start = i;
+                int contentStart = i + prefixLen;
+                int p = contentStart;
+                bool verbatim = kind == LiteralKind.Verbatim || kind == LiteralKind.InterpolatedVerbatim;
+                bool interp = kind == LiteralKind.Interpolated || kind == LiteralKind.InterpolatedVerbatim;
+                int braceDepth = 0;
+
+                while (p < text.Length)
+                {
+                    char pc = text[p];
+                    if (interp && braceDepth == 0 && pc == '{' && p + 1 < text.Length && text[p + 1] == '{') { p += 2; continue; }
+                    if (interp && braceDepth == 0 && pc == '}' && p + 1 < text.Length && text[p + 1] == '}') { p += 2; continue; }
+                    if (interp && pc == '{') { braceDepth++; p++; continue; }
+                    if (interp && pc == '}' && braceDepth > 0) { braceDepth--; p++; continue; }
+
+                    if (braceDepth > 0) { p++; continue; }
+
+                    if (verbatim)
+                    {
+                        if (pc == '"')
+                        {
+                            if (p + 1 < text.Length && text[p + 1] == '"') { p += 2; continue; }
+                            break;
+                        }
+                        p++;
+                    }
+                    else
+                    {
+                        if (pc == '\\' && p + 1 < text.Length) { p += 2; continue; }
+                        if (pc == '"') break;
+                        if (pc == '\n') break; // unterminated
+                        p++;
+                    }
+                }
+
+                if (p < text.Length && text[p] == '"')
+                {
+                    list.Add(new StringLiteralRange
+                    {
+                        Start = start,
+                        ContentStart = contentStart,
+                        ContentEnd = p,
+                        End = p + 1,
+                        Kind = kind
+                    });
+                    i = p + 1;
+                }
+                else
+                {
+                    i++;
+                }
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// Decodes a literal's raw content into its runtime string value, treating
+        /// interpolation holes as opaque placeholders that don't appear in the
+        /// runtime text seen by the editor.  Holes are replaced with "\uFFFF" so
+        /// they don't accidentally match any user text.
+        /// </summary>
+        private static string DecodeForLiteral(string raw, LiteralKind kind)
+        {
+            var sb = new StringBuilder(raw.Length);
+            bool verbatim = kind == LiteralKind.Verbatim || kind == LiteralKind.InterpolatedVerbatim;
+            bool interp = kind == LiteralKind.Interpolated || kind == LiteralKind.InterpolatedVerbatim;
+            int i = 0;
+            while (i < raw.Length)
+            {
+                char c = raw[i];
+                if (interp && c == '{' && i + 1 < raw.Length && raw[i + 1] == '{') { sb.Append('{'); i += 2; continue; }
+                if (interp && c == '}' && i + 1 < raw.Length && raw[i + 1] == '}') { sb.Append('}'); i += 2; continue; }
+                if (interp && c == '{')
+                {
+                    // Skip the hole
+                    int depth = 1;
+                    i++;
+                    while (i < raw.Length && depth > 0)
+                    {
+                        if (raw[i] == '{') depth++;
+                        else if (raw[i] == '}') depth--;
+                        i++;
+                    }
+                    sb.Append('\uFFFF'); // unmatchable placeholder
+                    continue;
+                }
+                if (verbatim)
+                {
+                    if (c == '"' && i + 1 < raw.Length && raw[i + 1] == '"') { sb.Append('"'); i += 2; continue; }
+                    sb.Append(c);
+                    i++;
+                }
+                else
+                {
+                    if (c == '\\' && i + 1 < raw.Length)
+                    {
+                        char n = raw[i + 1];
+                        switch (n)
+                        {
+                            case 'n': sb.Append('\n'); break;
+                            case 'r': sb.Append('\r'); break;
+                            case 't': sb.Append('\t'); break;
+                            case '0': sb.Append('\0'); break;
+                            case '"': sb.Append('"'); break;
+                            case '\\': sb.Append('\\'); break;
+                            default: sb.Append(n); break;
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    sb.Append(c);
+                    i++;
+                }
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Maps a decoded-content index back to the corresponding raw-content index
+        /// inside the literal.  Returns -1 if the decoded index falls inside an
+        /// interpolation hole (cannot be mapped unambiguously).
+        /// </summary>
+        private static int MapDecodedToRaw(string raw, LiteralKind kind, int decodedIndex)
+        {
+            bool verbatim = kind == LiteralKind.Verbatim || kind == LiteralKind.InterpolatedVerbatim;
+            bool interp = kind == LiteralKind.Interpolated || kind == LiteralKind.InterpolatedVerbatim;
+            int rawIdx = 0;
+            int decIdx = 0;
+            while (rawIdx < raw.Length)
+            {
+                if (decIdx == decodedIndex) return rawIdx;
+                char c = raw[rawIdx];
+                if (interp && c == '{' && rawIdx + 1 < raw.Length && raw[rawIdx + 1] == '{') { rawIdx += 2; decIdx++; continue; }
+                if (interp && c == '}' && rawIdx + 1 < raw.Length && raw[rawIdx + 1] == '}') { rawIdx += 2; decIdx++; continue; }
+                if (interp && c == '{')
+                {
+                    int depth = 1; rawIdx++;
+                    while (rawIdx < raw.Length && depth > 0)
+                    {
+                        if (raw[rawIdx] == '{') depth++;
+                        else if (raw[rawIdx] == '}') depth--;
+                        rawIdx++;
+                    }
+                    decIdx++; // hole counts as one decoded char (the placeholder)
+                    continue;
+                }
+                if (verbatim)
+                {
+                    if (c == '"' && rawIdx + 1 < raw.Length && raw[rawIdx + 1] == '"') { rawIdx += 2; decIdx++; continue; }
+                    rawIdx++; decIdx++;
+                }
+                else
+                {
+                    if (c == '\\' && rawIdx + 1 < raw.Length) { rawIdx += 2; decIdx++; continue; }
+                    rawIdx++; decIdx++;
+                }
+            }
+            return decIdx == decodedIndex ? rawIdx : -1;
+        }
+
+        /// <summary>Escapes a runtime string slice for insertion into a literal of the given kind.</summary>
+        private static string EscForLiteral(string s, LiteralKind kind)
+        {
+            if (s == null) return "";
+            bool verbatim = kind == LiteralKind.Verbatim || kind == LiteralKind.InterpolatedVerbatim;
+            bool interp = kind == LiteralKind.Interpolated || kind == LiteralKind.InterpolatedVerbatim;
+            var sb = new StringBuilder(s.Length);
+            foreach (char c in s)
+            {
+                if (interp && c == '{') { sb.Append("{{"); continue; }
+                if (interp && c == '}') { sb.Append("}}"); continue; }
+                if (verbatim)
+                {
+                    if (c == '"') sb.Append("\"\"");
+                    else sb.Append(c);
+                }
+                else
+                {
+                    switch (c)
+                    {
+                        case '\\': sb.Append("\\\\"); break;
+                        case '"':  sb.Append("\\\""); break;
+                        case '\n': sb.Append("\\n"); break;
+                        case '\r': sb.Append("\\r"); break;
+                        case '\t': sb.Append("\\t"); break;
+                        case '\0': sb.Append("\\0"); break;
+                        default: sb.Append(c); break;
+                    }
+                }
+            }
+            return sb.ToString();
         }
 
         /// <summary>

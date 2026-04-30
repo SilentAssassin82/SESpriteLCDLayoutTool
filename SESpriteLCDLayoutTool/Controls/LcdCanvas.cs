@@ -185,8 +185,20 @@ namespace SESpriteLCDLayoutTool.Controls
             set { _showSizeWarnings = value; Invalidate(); }
         }
 
+        /// <summary>
+        /// When true (default), each text sprite is drawn with a gold dashed
+        /// bounding-box outline as a layout aid. Turn off for clean screenshots
+        /// or GIF exports.
+        /// </summary>
+        public bool ShowTextBoundingBoxes
+        {
+            get => _showTextBoundingBoxes;
+            set { _showTextBoundingBoxes = value; Invalidate(); }
+        }
+
         private DebugOverlayMode _overlayMode = DebugOverlayMode.None;
         private bool _showSizeWarnings;
+        private bool _showTextBoundingBoxes = true;
 
         /// <summary>Cached size warnings, refreshed externally when layout changes.</summary>
         internal List<Services.DebugAnalyzer.SizeWarning> SizeWarnings { get; set; }
@@ -539,6 +551,64 @@ namespace SESpriteLCDLayoutTool.Controls
                 _dragCache = null;
             }
 
+            /// <summary>
+            /// Renders the current layout (background + visible sprites) to a fresh bitmap
+            /// of the given pixel size, with no overlays, no grid, no selection handles,
+            /// no dimming, and no zoom/pan applied. Used by the animated-GIF exporter.
+            /// </summary>
+            public Bitmap RenderLayoutToBitmap(int pixelWidth, int pixelHeight, bool hideReferenceBoxes = false)
+            {
+                if (pixelWidth  < 1) pixelWidth  = 1;
+                if (pixelHeight < 1) pixelHeight = 1;
+
+                var bmp = new Bitmap(pixelWidth, pixelHeight, PixelFormat.Format32bppArgb);
+                if (_layout == null)
+                    return bmp;
+
+                float scale = Math.Min(
+                    pixelWidth  / (float)_layout.SurfaceWidth,
+                    pixelHeight / (float)_layout.SurfaceHeight);
+                float displayW = _layout.SurfaceWidth  * scale;
+                float displayH = _layout.SurfaceHeight * scale;
+                var origin = new PointF((pixelWidth - displayW) / 2f, (pixelHeight - displayH) / 2f);
+
+                // Temporarily clear the highlight set so the GIF output never shows dimming.
+                var savedHighlight = HighlightedSprites;
+                HighlightedSprites = null;
+                // Optionally suppress the gold text bounding boxes for a cleaner GIF.
+                bool savedBoxes = _showTextBoundingBoxes;
+                if (hideReferenceBoxes) _showTextBoundingBoxes = false;
+                try
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        g.SmoothingMode     = SmoothingMode.AntiAlias;
+                        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+
+                        // Black bezel
+                        g.Clear(Color.Black);
+                        // LCD surface background (matches PaintScene)
+                        using (var bg = new SolidBrush(Color.FromArgb(12, 18, 30)))
+                            g.FillRectangle(bg, origin.X, origin.Y, displayW, displayH);
+
+                        foreach (var sprite in _layout.Sprites)
+                        {
+                            if (sprite.IsHidden) continue;
+                            if (hideReferenceBoxes && sprite.IsReferenceLayout) continue;
+                            DrawSprite(g, sprite, selected: false, scale: scale, origin: origin);
+                        }
+                    }
+                }
+                finally
+                {
+                    HighlightedSprites = savedHighlight;
+                    _showTextBoundingBoxes = savedBoxes;
+                }
+
+                return bmp;
+            }
+
             private void DrawSprite(Graphics g, SpriteEntry sprite, bool selected, float scale, PointF origin)
         {
             var rect = GetSpriteScreenRect(sprite, scale, origin);
@@ -615,9 +685,12 @@ namespace SESpriteLCDLayoutTool.Controls
         {
             var color = sprite.Color;
 
-            // Dashed bounding box (always shown for text)
-            using (var boxPen = new Pen(Color.FromArgb(100, 255, 200, 0), 1f) { DashStyle = DashStyle.Dash })
-                g.DrawRectangle(boxPen, rect.X, rect.Y, rect.Width, rect.Height);
+            // Dashed bounding box (layout aid — toggleable via ShowTextBoundingBoxes)
+            if (_showTextBoundingBoxes)
+            {
+                using (var boxPen = new Pen(Color.FromArgb(100, 255, 200, 0), 1f) { DashStyle = DashStyle.Dash })
+                    g.DrawRectangle(boxPen, rect.X, rect.Y, rect.Width, rect.Height);
+            }
 
             string text = sprite.Text ?? "";
             if (text.Length == 0) return;

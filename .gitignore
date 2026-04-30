@@ -60,3 +60,12 @@ SESpriteLCDLayoutTool/SESpriteLCDLayoutTool/
 
 # Per-machine build path overrides
 Directory.Build.props.user
+/.roslyn-mcp
+
+# Copilot / local AI workspace caches
+**/.localpilot/
+**/.copilot/
+
+# Ad-hoc helper scripts (not part of the build)
+_addgif.ps1
+_*.ps1

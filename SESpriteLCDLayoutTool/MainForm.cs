@@ -85,10 +85,24 @@ namespace SESpriteLCDLayoutTool
         private Dictionary<string, double> _lastHeatmapTimings;
         private bool _heatmapEnabled = true;
         private DateTime _lastHeatmapPaintTime;
+        // Match methods with or without explicit access modifiers.  PB scripts
+        // typically declare `void Main(...)` and `void Save()` with no modifier,
+        // and the heatmap has to colour those too.  The return-type group must
+        // contain at least one word/type character so leading indentation alone
+        // can't make `for (...) {` look like a method declaration.
         private static readonly System.Text.RegularExpressions.Regex _heatmapMethodRegex =
             new System.Text.RegularExpressions.Regex(
-                @"(?:private|public|internal|protected)[ \t]+(?:static[ \t]+)?(?:void|[\w<>\[\], \t]+)[ \t]+(\w+)\s*\([^)]*\)\s*\{",
+                @"(?:(?:private|public|internal|protected)[ \t]+)?(?:static[ \t]+)?(?:override[ \t]+)?(?:void|[\w<>\[\],][\w<>\[\], \t]*)[ \t]+(\w+)\s*\([^)]*\)\s*\{",
                 System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        // C# control-flow keywords that the heatmap method regex must not treat
+        // as method names (they can appear as `keyword (...) { }`).
+        private static readonly HashSet<string> _heatmapMethodKeywordBlacklist =
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                "if", "for", "foreach", "while", "switch", "catch", "using", "lock",
+                "do", "else", "return", "throw", "new", "fixed", "unchecked", "checked"
+            };
 
         // ── Syntax highlighting ───────────────────────────────────────────────
         private System.Windows.Forms.Timer _syntaxTimer;
@@ -603,6 +617,7 @@ namespace SESpriteLCDLayoutTool
             foreach (System.Text.RegularExpressions.Match m in rxMethod.Matches(code))
             {
                 string name = m.Groups[1].Value;
+                if (_heatmapMethodKeywordBlacklist.Contains(name)) continue;
                 if (!timings.ContainsKey(name)) continue;
 
                 int bodyStart = m.Index + m.Length;
@@ -628,21 +643,16 @@ namespace SESpriteLCDLayoutTool
             {
                 _codeBox.ClearBackColors();
 
-                // Compute timing range for relative scaling
-                double minMs = double.MaxValue, maxMs = double.MinValue;
-                foreach (var kv in methodRanges)
-                {
-                    if (!timings.TryGetValue(kv.Key, out double v)) continue;
-                    if (v < minMs) minMs = v;
-                    if (v > maxMs) maxMs = v;
-                }
-                double range = maxMs - minMs;
-
+                // Use ABSOLUTE millisecond thresholds rather than relative min/max
+                // normalisation.  Many scripts (e.g. simple PB programs) only have a
+                // single instrumented method, so a relative scale always collapses
+                // to t=0 and the whole body shows up green even when the frame is
+                // expensive.  Absolute thresholds give a consistent, meaningful
+                // colouring whether there is one method or twenty.
                 foreach (var kv in methodRanges)
                 {
                     if (!timings.TryGetValue(kv.Key, out double ms)) continue;
-                    // Normalise to 0–1 within the observed range
-                    double t = range > 1e-9 ? (ms - minMs) / range : 0.0;
+                    double t = HeatmapTFromMs(ms);
                     var color = HeatmapColor(t);
                     _codeBox.SetRangeBackColor(kv.Value.start, kv.Value.end - kv.Value.start, color);
                 }
@@ -659,6 +669,29 @@ namespace SESpriteLCDLayoutTool
             if (_codeBox == null || _lastHeatmapTimings == null) return;
             _lastHeatmapTimings = null;
             _codeBox.ClearBackColors();
+        }
+
+        /// <summary>
+        /// Maps an absolute method execution time (in milliseconds) onto a 0–1
+        /// heat scale used by <see cref="HeatmapColor"/>.
+        ///
+        /// Anchors:
+        ///   ≤ 0.10 ms  → 0.00 (pure green; trivial)
+        ///   ≈ 0.50 ms  → 0.33 (green→yellow; mild cost)
+        ///   ≈ 2.00 ms  → 0.66 (yellow→orange; noticeable)
+        ///   ≥ 8.00 ms  → 1.00 (red; PB tick budget at risk)
+        ///
+        /// Uses log-style piecewise interpolation so that small differences at
+        /// the low end (0.1–1 ms) are still visible while large outliers don't
+        /// crush everything else into the same bucket.
+        /// </summary>
+        private static double HeatmapTFromMs(double ms)
+        {
+            if (ms <= 0.10) return 0.0;
+            if (ms <= 0.50) return 0.00 + (ms - 0.10) / (0.50 - 0.10) * 0.33;
+            if (ms <= 2.00) return 0.33 + (ms - 0.50) / (2.00 - 0.50) * 0.33;
+            if (ms <= 8.00) return 0.66 + (ms - 2.00) / (8.00 - 2.00) * 0.34;
+            return 1.0;
         }
 
         /// <summary>
@@ -2627,8 +2660,46 @@ namespace SESpriteLCDLayoutTool
             while (lineStart > 0 && fullText[lineStart - 1] != '\n')
                 lineStart--;
 
+            // Detect a base indent across the selected region.  Class-body
+            // fragments (PB scripts) carry an implicit wrapper indent — every
+            // top-level member is, say, 8 spaces in.  We translate that into
+            // a starting brace depth so a stray closing '}' (which would
+            // close the implicit wrapper) renders one level shallower than
+            // the body, instead of getting clamped flush with it.
+            int baseLevels = 0;
+            {
+                int blockEnd = selStart + _codeBox.SelectionLength;
+                int minLead = int.MaxValue;
+                int p = lineStart;
+                while (p < blockEnd && p < fullText.Length)
+                {
+                    int ls = p;
+                    int le = ls;
+                    while (le < fullText.Length && fullText[le] != '\n') le++;
+
+                    // Measure leading whitespace, skip blank/whitespace-only lines.
+                    int w = ls;
+                    int leadCols = 0;
+                    while (w < le && (fullText[w] == ' ' || fullText[w] == '\t'))
+                    {
+                        leadCols += (fullText[w] == '\t') ? 4 : 1;
+                        w++;
+                    }
+                    bool blank = w == le || (w + 1 == le && fullText[w] == '\r');
+                    if (!blank)
+                    {
+                        if (leadCols < minLead) minLead = leadCols;
+                        if (minLead == 0) break;
+                    }
+
+                    p = le + 1;
+                }
+                if (minLead != int.MaxValue && minLead > 0)
+                    baseLevels = minLead / 4;
+            }
+
             // Calculate starting brace depth by counting { and } from document start
-            int depth = 0;
+            int depth = baseLevels;
             bool inString = false;
             bool inChar = false;
             bool inLineComment = false;
@@ -2682,11 +2753,12 @@ namespace SESpriteLCDLayoutTool
 
                 // If line starts with }, decrease depth BEFORE indenting
                 if (content.StartsWith("}") || content.StartsWith(")"))
-                    depth = Math.Max(0, depth - 1);
+                    depth--;
 
-                // Apply indentation
+                // Apply indentation (clamp negative depth at column 0)
                 if (i > 0) sb.Append('\n');
-                for (int d = 0; d < depth; d++)
+                int emitDepth = depth > 0 ? depth : 0;
+                for (int d = 0; d < emitDepth; d++)
                     sb.Append(indent);
                 sb.Append(content);
 
@@ -2714,7 +2786,7 @@ namespace SESpriteLCDLayoutTool
                     if (lineInString || lineInChar) continue;
 
                     if (c == '{') depth++;
-                    else if (c == '}') depth = Math.Max(0, depth - 1);
+                    else if (c == '}') depth--;
                 }
             }
 

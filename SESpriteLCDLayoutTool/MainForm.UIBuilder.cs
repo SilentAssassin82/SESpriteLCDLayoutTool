@@ -173,6 +173,7 @@ namespace SESpriteLCDLayoutTool
             file.DropDownItems.Add("Save",            null, (s, e) => SaveLayout(false));
             file.DropDownItems.Add("Save As...",      null, (s, e) => SaveLayout(true));
             file.DropDownItems.Add("Export Script…\tCtrl+Shift+S", null, (s, e) => ExportScript());
+            file.DropDownItems.Add("Export Animated GIF…", null, (s, e) => ShowExportGifDialog());
             file.DropDownItems.Add(new ToolStripSeparator());
             _mnuRecentFiles = new ToolStripMenuItem("Recent Files");
             file.DropDownItems.Add(_mnuRecentFiles);
@@ -249,6 +250,21 @@ namespace SESpriteLCDLayoutTool
                 if (_rulerCorner != null) _rulerCorner.Visible = show;
             };
             view.DropDownItems.Add(rulersItem);
+
+            var textBoxesItem = new ToolStripMenuItem("Show Text Bounding Boxes")
+            {
+                CheckOnClick = true,
+                Checked = true
+            };
+            textBoxesItem.CheckedChanged += (s, e) =>
+            {
+                if (_canvas == null) return;
+                _canvas.ShowTextBoundingBoxes = textBoxesItem.Checked;
+                SetStatus(textBoxesItem.Checked
+                    ? "Text bounding boxes shown"
+                    : "Text bounding boxes hidden (cleaner view for screenshots/GIFs)");
+            };
+            view.DropDownItems.Add(textBoxesItem);
 
             var constrainItem = new ToolStripMenuItem("Constrain Sprites to Surface") { CheckOnClick = true };
             constrainItem.CheckedChanged += (s, e) =>
@@ -1139,6 +1155,25 @@ namespace SESpriteLCDLayoutTool
                             System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Strategy 3 (index-based): type mismatch, skipping");
                         }
                     }
+
+                    // ── Strategy 4: baseline-only fallback ────────────────────────
+                    // Helper-call sprites (e.g. DrawGauge -> MySprite.CreateText(label,...))
+                    // often can't be source-tracked because the parser doesn't follow
+                    // the helper's parameter back to the call-site literal. Without an
+                    // ImportBaseline these sprites can NEVER round-trip property edits.
+                    // Seed a baseline anyway so CodePatcher pass 2 can use the
+                    // SpriteNavigationIndex (which understands helper call sites) to
+                    // resolve the correct literal at edit time.
+                    int baselineOnly = 0;
+                    foreach (var sp in _layout.Sprites)
+                    {
+                        if (sp.IsReferenceLayout) continue;
+                        if (sp.ImportBaseline != null) continue;
+                        sp.ImportBaseline = sp.CloneValues();
+                        baselineOnly++;
+                    }
+                    if (baselineOnly > 0)
+                        System.Diagnostics.Debug.WriteLine($"[ExecuteCode] Strategy 4 (baseline-only): {baselineOnly} sprites seeded with baseline for nav-index patching");
                 }
             }
             else
