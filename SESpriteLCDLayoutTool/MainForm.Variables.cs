@@ -1180,6 +1180,8 @@ namespace SESpriteLCDLayoutTool
             {
                 Dock = DockStyle.Fill,
             };
+            _codeBox.IndentCallback = () => CodeBoxIndentSelection();
+            _codeBox.OutdentCallback = () => CodeBoxOutdentSelection();
             _codeDiagTooltip = new Controls.HoverTooltipWindow();
             // ── Syntax-highlight debounce timer ───────────────────────────────
             _syntaxTimer = new System.Windows.Forms.Timer { Interval = SyntaxHighlightDebounceMs };

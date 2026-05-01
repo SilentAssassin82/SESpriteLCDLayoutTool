@@ -37,6 +37,18 @@ namespace SESpriteLCDLayoutTool
                     Keys keyCode = keyData & Keys.KeyCode;
                     Keys modifiers = keyData & Keys.Modifiers;
 
+                    // Tab / Shift+Tab for indent/outdent
+                    if (keyCode == Keys.Tab && modifiers == Keys.None)
+                    {
+                        CodeBoxIndentSelection();
+                        return true;
+                    }
+                    if (keyCode == Keys.Tab && modifiers == Keys.Shift)
+                    {
+                        CodeBoxOutdentSelection();
+                        return true;
+                    }
+
                     // Find / Find+Replace in code editor
                     if (keyCode == Keys.F && modifiers == Keys.Control)
                     {

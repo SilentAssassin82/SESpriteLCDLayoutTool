@@ -2700,6 +2700,8 @@ namespace SESpriteLCDLayoutTool
             }
 
             // Calculate starting brace depth by counting { and } from document start
+            // up through any lines BEFORE the selection.  When the selection starts
+            // at line 0, there's nothing to scan, so depth remains = baseLevels.
             int depth = baseLevels;
             bool inString = false;
             bool inChar = false;
@@ -2792,9 +2794,27 @@ namespace SESpriteLCDLayoutTool
             }
 
             int pos = _codeBox.SelectionStart;
-            _codeBox.Text = sb.ToString();
-            _codeBox.SelectionStart = Math.Min(pos, _codeBox.TextLength);
+            _codeBox.SelectedText = sb.ToString();
+            _codeBox.SelectionStart = pos;
+            _codeBox.SelectionLength = sb.Length;
             SetStatus($"Auto-indented {lines.Length} line(s)");
+
+            // Force immediate syntax refresh so the user sees the change
+            _syntaxTimer.Stop();
+            if (_codeBox.TextLength <= LiveHighlightMaxChars)
+            {
+                try
+                {
+                    _suppressCodeBoxEvents = true;
+                    SyntaxHighlighter.Highlight(_codeBox, includeSemantics: false, skipDiagnostics: true);
+                    _lastHighlightedCode = _codeBox.Text;
+                    _diagnosticOverlay?.InvalidateEditor();
+                }
+                finally
+                {
+                    _suppressCodeBoxEvents = false;
+                }
+            }
         }
 
         /// <summary>
@@ -2841,9 +2861,32 @@ namespace SESpriteLCDLayoutTool
             }
 
             string result = string.Join("\n", lines);
-            _codeBox.SelectedText = result;
-            _codeBox.SelectionStart = lineStart;
-            _codeBox.SelectionLength = result.Length;
+
+            // Suppress events during the text replacement and syntax refresh
+            _suppressCodeBoxEvents = true;
+            try
+            {
+                _codeBox.SelectedText = result;
+                _codeBox.SelectionStart = lineStart;
+                _codeBox.SelectionLength = result.Length;
+
+                // Force immediate syntax refresh so the user sees the change
+                _syntaxTimer.Stop();
+                if (_codeBox.TextLength <= LiveHighlightMaxChars)
+                {
+                    SyntaxHighlighter.Highlight(_codeBox, includeSemantics: false, skipDiagnostics: true);
+                    _lastHighlightedCode = _codeBox.Text;
+                    _diagnosticOverlay?.InvalidateEditor();
+                }
+            }
+            finally
+            {
+                _suppressCodeBoxEvents = false;
+            }
+
+            // Now push to undo AFTER the operation is complete
+            if (!_codeUndo.IsUndoRedoing)
+                _codeUndo.Push(_codeBox.Text, _codeBox.SelectionStart);
         }
 
         /// <summary>

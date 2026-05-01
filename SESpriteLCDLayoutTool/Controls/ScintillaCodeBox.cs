@@ -297,14 +297,15 @@ namespace SESpriteLCDLayoutTool.Controls
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
-            base.OnKeyDown(e);
-            if (e.Handled) return;
-
+            // Handle custom keys BEFORE calling base to prevent Scintilla's default behavior
             if (e.KeyCode == Keys.Enter && !e.Control && !e.Alt)
             {
                 e.Handled = true;
                 HandleEnter();
+                return;
             }
+
+            base.OnKeyDown(e);
         }
 
         protected override void OnKeyPress(KeyPressEventArgs e)
@@ -400,6 +401,58 @@ namespace SESpriteLCDLayoutTool.Controls
             string text = Lines[line].Text.TrimEnd('\r', '\n');
             int len = text.Length - text.TrimStart(' ', '\t').Length;
             return text.Substring(0, len);
+        }
+
+        /// <summary>
+        /// Optional callback invoked when user presses Tab to indent selection.
+        /// If null, default behavior inserts spaces at caret.
+        /// </summary>
+        public Action IndentCallback { get; set; }
+
+        /// <summary>
+        /// Optional callback invoked when user presses Shift+Tab to outdent selection.
+        /// If null, default behavior removes leading spaces from current line.
+        /// </summary>
+        public Action OutdentCallback { get; set; }
+
+        private void HandleIndent()
+        {
+            if (IndentCallback != null)
+            {
+                IndentCallback.Invoke();
+            }
+            else
+            {
+                // Default: insert 4 spaces at caret
+                ReplaceSelection("    ");
+            }
+        }
+
+        private void HandleOutdent()
+        {
+            if (OutdentCallback != null)
+            {
+                OutdentCallback.Invoke();
+                return; // explicit return to prevent any fallthrough
+            }
+
+            // Default: remove up to 4 leading spaces from current line
+            int line = LineFromPosition(CurrentPosition);
+            if (line < 0 || line >= Lines.Count) return;
+            string lineText = Lines[line].Text;
+            int removed = 0;
+            int j = 0;
+            while (j < lineText.Length && removed < 4)
+            {
+                if (lineText[j] == ' ') { removed++; j++; }
+                else if (lineText[j] == '\t') { removed = 4; j++; }
+                else break;
+            }
+            if (removed > 0)
+            {
+                int lineStart = Lines[line].Position;
+                DeleteRange(lineStart, removed);
+            }
         }
 
         // ── RichTextBox-compatible API shims ──────────────────────────────────
