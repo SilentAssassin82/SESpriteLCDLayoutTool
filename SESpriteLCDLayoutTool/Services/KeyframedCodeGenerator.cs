@@ -1015,152 +1015,245 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public static string MergeKeyframedIntoCode(string existingCode, string newSnippetCode)
         {
+            // Step 7: the new injector is the SOLE merge engine. Validity gating
+            // (null inputs, missing tick array on either side) lives in the plan
+            // builder, which returns null when no merge is possible.
             if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(newSnippetCode))
                 return null;
 
-            // ── Step 1: Determine which animation suffix we're merging (e.g. "" or "2") ──
-            string snippetTickName = ExtractTickArrayName(newSnippetCode);
-            if (snippetTickName == null) return null;
-            string targetSuffix = GetArraySuffix(snippetTickName);
-
-            // Parse array declarations, filtering by the target suffix so we only
-            // touch the correct animation's arrays (kfTick2/kfRot2, not kfTick/kfRot).
-            var existingArrays = new Dictionary<string, (string varName, string values, string fullMatch)>();
-            foreach (Match m in RxArrayDecl.Matches(existingCode))
+            CodeInjection.InjectionPlan plan;
+            try
             {
-                string varName = m.Groups[3].Value;
-                string kind = GetArrayKind(varName);
-                if (kind != null && GetArraySuffix(varName) == targetSuffix && !existingArrays.ContainsKey(kind))
-                    existingArrays[kind] = (varName, m.Groups[4].Value.Trim(), m.Value);
+                plan = BuildShadowPlanForKeyframeMerge(existingCode, newSnippetCode);
+            }
+            catch
+            {
+                return null;
             }
 
-            var newArrays = new Dictionary<string, (string varName, string values, string fullMatch)>();
-            foreach (Match m in RxArrayDecl.Matches(newSnippetCode))
-            {
-                string varName = m.Groups[3].Value;
-                string kind = GetArrayKind(varName);
-                if (kind != null && GetArraySuffix(varName) == targetSuffix && !newArrays.ContainsKey(kind))
-                    newArrays[kind] = (varName, m.Groups[4].Value.Trim(), m.Value);
-            }
-
-            // Must have tick arrays on both sides
-            if (!existingArrays.ContainsKey("tick") || !newArrays.ContainsKey("tick"))
+            if (plan == null)
                 return null;
 
-            // ── Step 2: For each new array kind, find matching existing array and replace values only ──
-            string result = existingCode;
-            string lastExistingLine = null;
-
-            foreach (var kvp in newArrays)
+            try
             {
-                string kind = kvp.Key;
-                string newValues = kvp.Value.values;
-
-                if (existingArrays.TryGetValue(kind, out var existing))
+                var injected = new CodeInjection.RoslynCodeInjector().Apply(existingCode, plan);
+                if (injected != null && injected.Success &&
+                    !string.IsNullOrEmpty(injected.RewrittenSource))
                 {
-                    // Replace ONLY the values portion: { OLD_VALUES } → { NEW_VALUES }
-                    // Keep the existing variable name, type, indent, and trailing comment structure
-                    string oldFullLine = existing.fullMatch;
-                    // Build replacement: same line but swap values inside braces
-                    string replaced = RxArrayDecl.Replace(oldFullLine, m =>
+                    return injected.RewrittenSource;
+                }
+            }
+            catch
+            {
+                // Injector must never break the host.
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Builds a best-effort <see cref="CodeInjection.InjectionPlan"/> describing
+        /// what the legacy keyframe merge just did. Used by shadow-compare logging
+        /// to express keyframe array updates structurally so the new injector can
+        /// reproduce them via <see cref="CodeInjection.ArrayValueSwapOp"/>.
+        /// Arrays present in the new snippet but missing from the target are
+        /// surfaced as <see cref="CodeInjection.ClassFieldOp"/> Adds.
+        ///
+        /// Length-driven rewrites (loop bounds, modulo, ping-pong) formerly
+        /// performed by the legacy regex engine are reproduced here as
+        /// <see cref="CodeInjection.PropertyPatchOp"/>s targeting
+        /// the numeric literal spans inside <paramref name="existingCode"/>. The
+        /// shadow plan therefore expresses the FULL legacy mutation for both pure
+        /// value swaps and length-changing merges, which is also the production
+        /// path the new injector now drives directly.
+        /// </summary>
+        private static CodeInjection.InjectionPlan BuildShadowPlanForKeyframeMerge(
+            string existingCode, string newSnippetCode)
+        {
+            if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(newSnippetCode))
+                return null;
+
+            // Validity gate: both sides must declare a kfTick array of the same suffix.
+            string snippetTickName = ExtractTickArrayName(newSnippetCode);
+            string existingTickName = ExtractTickArrayName(existingCode);
+            if (snippetTickName == null || existingTickName == null) return null;
+            if (GetArraySuffix(snippetTickName) != GetArraySuffix(existingTickName)) return null;
+
+            var plan = new CodeInjection.InjectionPlan
+            {
+                Description = "Keyframe array value merge (legacy regex engine)",
+            };
+
+            foreach (Match m in RxArrayDecl.Matches(newSnippetCode ?? string.Empty))
+            {
+                string name = m.Groups[3].Value;
+                if (GetArrayKind(name) == null) continue;
+
+                string values = m.Groups[4].Value.Trim();
+
+                bool existsInTarget = existingCode != null
+                    && Regex.IsMatch(existingCode,
+                        @"(?:int\[\]|float\[\])\s+" + Regex.Escape(name) + @"\s*=");
+
+                if (existsInTarget)
+                {
+                    plan.ArrayValueSwaps.Add(new CodeInjection.ArrayValueSwapOp
                     {
-                        string indent = m.Groups[1].Value;
-                        string type = m.Groups[2].Value;
-                        string name = m.Groups[3].Value;
-                        // Keep trailing comment only if values didn't change shape
-                        return $"{indent}{type}[] {name} = {{ {newValues} }};";
+                        Name = name,
+                        NewValuesText = values,
+                        Action = CodeInjection.InjectionAction.Update,
                     });
-                    result = result.Replace(oldFullLine, replaced);
-                    lastExistingLine = replaced;
                 }
-                else if (lastExistingLine != null)
+                else
                 {
-                    // New property array that didn't exist before (e.g., adding color animation).
-                    // Insert after the last matched array line, using the NEW snippet's variable name.
-                    int insertIdx = result.IndexOf(lastExistingLine, StringComparison.Ordinal);
-                    if (insertIdx >= 0)
+                    plan.Fields.Add(new CodeInjection.ClassFieldOp
                     {
-                        string indent = GetIndent(lastExistingLine);
-                        string newLine = kvp.Value.fullMatch.TrimStart();
-                        string toInsert = indent + newLine;
-                        int eol = result.IndexOf('\n', insertIdx);
-                        if (eol >= 0)
-                            result = result.Insert(eol + 1, toInsert + Environment.NewLine);
-                        else
-                            result += Environment.NewLine + toInsert;
-                        lastExistingLine = toInsert;
-                    }
+                        Name = name,
+                        Declaration = m.Value.TrimEnd(';', ' ', '\t', '\r', '\n'),
+                        Action = CodeInjection.InjectionAction.Add,
+                    });
                 }
             }
 
-            // ── Step 3: Remove existing arrays whose kind is no longer in the new snippet ──
-            // (e.g., user removed color animation — remove kfR, kfG, kfB, kfA arrays)
-            foreach (var kvp in existingArrays)
-            {
-                string kind = kvp.Key;
-                if (kind == "tick" || kind == "ease") continue; // never remove tick/ease
-                if (!newArrays.ContainsKey(kind))
-                {
-                    result = RemoveCodeLine(result, kvp.Value.fullMatch);
-                }
-            }
+            AddLengthRewritePatches(plan, existingCode, newSnippetCode);
 
-            // ── Step 4: Update keyframe count references if array length changed ──
-            int[] existingTicks = ParseIntArray(existingCode, existingArrays["tick"].varName);
-            int[] newTicks = ParseIntArray(newSnippetCode, newArrays["tick"].varName);
-            if (existingTicks != null && newTicks != null && existingTicks.Length != newTicks.Length)
+            return plan;
+        }
+
+        /// <summary>
+        /// Reproduces the legacy length-driven rewrites (loop bounds, modulo,
+        /// ping-pong) as a set of
+        /// span-precise <see cref="CodeInjection.PropertyPatchOp"/>s on
+        /// <paramref name="existingCode"/>. Emits nothing when the existing/new
+        /// tick arrays cannot be parsed or when length and total tick are both
+        /// unchanged. Never throws — shadow-plan building is best-effort.
+        /// </summary>
+        private static void AddLengthRewritePatches(
+            CodeInjection.InjectionPlan plan,
+            string existingCode,
+            string newSnippetCode)
+        {
+            if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(newSnippetCode))
+                return;
+
+            string existingTickName = ExtractTickArrayName(existingCode);
+            string newTickName = ExtractTickArrayName(newSnippetCode);
+            if (existingTickName == null || newTickName == null) return;
+            if (GetArraySuffix(existingTickName) != GetArraySuffix(newTickName)) return;
+
+            int[] existingTicks = ParseIntArray(existingCode, existingTickName);
+            int[] newTicks = ParseIntArray(newSnippetCode, newTickName);
+            if (existingTicks == null || newTicks == null) return;
+
+            // Length change → loop-bound rewrites. Keyed on existing array length
+            // so spans land inside `existingCode`.
+            if (existingTicks.Length != newTicks.Length)
             {
                 int oldCount = existingTicks.Length;
                 int newCount = newTicks.Length;
+                string oldStr = oldCount.ToString(CultureInfo.InvariantCulture);
+                string newStr = newCount.ToString(CultureInfo.InvariantCulture);
 
-                // for (int i = 1; i < N; i++)
-                result = Regex.Replace(result,
-                    @"(for\s*\(\s*int\s+\w+\s*=\s*1\s*;\s*\w+\s*<\s*)" + oldCount + @"(\s*;)",
-                    "${1}" + newCount + "${2}");
+                // for (int i = 1; i < OLD; …)  — number is the OLD literal
+                EmitNumberPatches(
+                    plan, existingCode,
+                    @"for\s*\(\s*int\s+\w+\s*=\s*1\s*;\s*\w+\s*<\s*(" + Regex.Escape(oldStr) + @")\s*;",
+                    newStr,
+                    "kfMerge:loopBound");
 
-                // (seg + 1 < N)
-                result = Regex.Replace(result,
-                    @"(\(\s*\w+\s*\+\s*1\s*<\s*)" + oldCount + @"(\s*\))",
-                    "${1}" + newCount + "${2}");
+                // (seg + 1 < OLD)
+                EmitNumberPatches(
+                    plan, existingCode,
+                    @"\(\s*\w+\s*\+\s*1\s*<\s*(" + Regex.Escape(oldStr) + @")\s*\)",
+                    newStr,
+                    "kfMerge:segBound");
             }
 
-            // ── Step 5: Update tick modulo if total ticks changed ──
-            if (existingTicks != null && newTicks != null)
+            // Total ticks change → modulo / ping-pong rewrites. Scoped to this
+            // animation's _tick / raw counters via the existing tick array name.
+            int oldTotal = existingTicks[existingTicks.Length - 1];
+            int newTotal = newTicks[newTicks.Length - 1];
+            if (oldTotal != newTotal && oldTotal > 0 && newTotal > 0)
             {
-                int oldTotal = existingTicks.Last();
-                int newTotal = newTicks.Last();
-                if (oldTotal != newTotal && oldTotal > 0 && newTotal > 0)
+                string tickVar = existingTickName.Replace("kfTick", "_tick");
+                string rawVar = existingTickName.Replace("kfTick", "raw");
+                string tickEsc = Regex.Escape(tickVar);
+                string rawEsc = Regex.Escape(rawVar);
+                string oldStr = oldTotal.ToString(CultureInfo.InvariantCulture);
+                string newStr = newTotal.ToString(CultureInfo.InvariantCulture);
+                int oldDouble = oldTotal * 2;
+                int newDouble = newTotal * 2;
+                string oldDbl = oldDouble.ToString(CultureInfo.InvariantCulture);
+                string newDbl = newDouble.ToString(CultureInfo.InvariantCulture);
+
+                // _tick % OLD;   (loop mode)
+                EmitNumberPatches(
+                    plan, existingCode,
+                    tickEsc + @"\s*%\s*(" + Regex.Escape(oldStr) + @")\s*;",
+                    newStr,
+                    "kfMerge:tickModulo");
+
+                // Math.Min(_tick, OLD)   (once mode)
+                EmitNumberPatches(
+                    plan, existingCode,
+                    @"Math\.Min\s*\(\s*" + tickEsc + @"\s*,\s*(" + Regex.Escape(oldStr) + @")\s*\)",
+                    newStr,
+                    "kfMerge:tickMathMin");
+
+                // raw % (OLD*2);   (ping-pong)
+                EmitNumberPatches(
+                    plan, existingCode,
+                    rawEsc + @"\s*%\s*(" + Regex.Escape(oldDbl) + @")\s*;",
+                    newDbl,
+                    "kfMerge:rawModulo");
+
+                // (OLD*2) - raw   (ping-pong) — legacy emits "NEWDBL - rawVar",
+                // i.e. it ALSO renormalises whitespace around the dash. The
+                // structured patch must produce the same byte sequence, so the
+                // span covers the full "OLDDBL - rawVar" form.
+                var pingPongPattern = @"(" + Regex.Escape(oldDbl) + @"\s*-\s*" + rawEsc + @")";
+                foreach (Match m in Regex.Matches(existingCode, pingPongPattern))
                 {
-                    // Derive the tick counter and raw variable names from the kfTick array name
-                    // e.g. "kfTick" → "_tick" / "raw", "kfTick2" → "_tick2" / "raw2"
-                    string tickVarRaw = existingArrays["tick"].varName.Replace("kfTick", "_tick");
-                    string rawVarRaw  = existingArrays["tick"].varName.Replace("kfTick", "raw");
-                    string tickEsc    = Regex.Escape(tickVarRaw);
-                    string rawEsc     = Regex.Escape(rawVarRaw);
-
-                    // _tick % OLD → _tick % NEW  (loop mode) — scoped to this animation's counter
-                    result = Regex.Replace(result,
-                        @"(" + tickEsc + @"\s*%\s*)" + oldTotal + @"(\s*;)",
-                        "${1}" + newTotal + "${2}");
-
-                    // Math.Min(_tick, OLD) (once mode) — scoped to this animation's counter
-                    result = Regex.Replace(result,
-                        @"(Math\.Min\s*\(\s*" + tickEsc + @"\s*,\s*)" + oldTotal + @"(\s*\))",
-                        "${1}" + newTotal + "${2}");
-
-                    // raw{suffix} % (OLD*2) and (OLD*2) - raw{suffix} (ping-pong)
-                    int oldDouble = oldTotal * 2;
-                    int newDouble = newTotal * 2;
-                    result = Regex.Replace(result,
-                        @"(" + rawEsc + @"\s*%\s*)" + oldDouble + @"(\s*;)",
-                        "${1}" + newDouble + "${2}");
-                    result = Regex.Replace(result,
-                        @"(" + oldDouble + @"\s*-\s*" + rawEsc + @")",
-                        newDouble + " - " + rawVarRaw);
+                    var grp = m.Groups[1];
+                    plan.PropertyPatches.Add(new CodeInjection.PropertyPatchOp
+                    {
+                        Anchor = "kfMerge:rawPingPong",
+                        Start = grp.Index,
+                        End = grp.Index + grp.Length,
+                        ExpectedOldText = grp.Value,
+                        NewText = newDbl + " - " + rawVar,
+                        Action = CodeInjection.InjectionAction.Update,
+                    });
                 }
             }
+        }
 
-            return result;
+        /// <summary>
+        /// Finds every match of <paramref name="pattern"/> in <paramref name="source"/>
+        /// and emits a <see cref="CodeInjection.PropertyPatchOp"/> over capture
+        /// group 1 (the numeric literal), replacing it with <paramref name="replacement"/>.
+        /// </summary>
+        private static void EmitNumberPatches(
+            CodeInjection.InjectionPlan plan,
+            string source,
+            string pattern,
+            string replacement,
+            string anchor)
+        {
+            foreach (Match m in Regex.Matches(source, pattern))
+            {
+                if (m.Groups.Count < 2 || !m.Groups[1].Success) continue;
+                var g = m.Groups[1];
+                plan.PropertyPatches.Add(new CodeInjection.PropertyPatchOp
+                {
+                    Anchor = anchor,
+                    Start = g.Index,
+                    End = g.Index + g.Length,
+                    ExpectedOldText = g.Value,
+                    NewText = replacement,
+                    Action = CodeInjection.InjectionAction.Update,
+                });
+            }
         }
 
         /// <summary>
@@ -1171,23 +1264,143 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public static string MergeSnippetIntoCompleteProgram(string existingCode, string snippetCode, string spriteName = null)
         {
+            // Step 8b: the new injector is the SOLE merge engine. Validity
+            // gating (null inputs, snippet contributes no fields and no render
+            // block) lives in the plan builder, which returns null when no
+            // merge is possible.
             if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(snippetCode))
                 return null;
 
-            // ── Remove the original static sprite block for this sprite ──
-            // SourceStart/End offsets become stale after earlier merges modify the code,
-            // so we find the static block by matching Data = "SpriteName" in a frame.Add block
-            // that does NOT contain interpolation variables (i.e. not already animated).
-            if (!string.IsNullOrEmpty(spriteName))
+            CodeInjection.InjectionPlan plan;
+            try
             {
-                existingCode = RemoveStaticSpriteBlock(existingCode, spriteName);
+                plan = BuildShadowPlanForSnippetMerge(existingCode, snippetCode, spriteName);
+            }
+            catch
+            {
+                return null;
             }
 
-            // ── Extract field-level declarations from snippet ──
-            // These are: tick variable (int _tick2 = 0;) and kf arrays (int[] kfTick2 = {...};)
-            // They appear between "// ── Keyframe data ──" and the render hint or interpolation start.
-            var fieldLines = new List<string>();
-            var renderLines = new List<string>();
+            if (plan == null)
+                return null;
+
+            try
+            {
+                var injected = new CodeInjection.RoslynCodeInjector().Apply(existingCode, plan);
+                if (injected != null && injected.Success &&
+                    !string.IsNullOrEmpty(injected.RewrittenSource))
+                {
+                    return injected.RewrittenSource;
+                }
+            }
+            catch
+            {
+                // Injector must never break the host.
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Best-effort structured description of what the legacy whole-program snippet
+        /// merge does. Encodes the static sprite removal, the field-block insertion
+        /// before <c>Ease(</c>, and the render-block insertion before <c>frame.Dispose()</c>
+        /// as injector ops so the new pipeline can reproduce the legacy output byte-for-byte.
+        /// Returns null when the snippet contributes neither fields nor a render block.
+        /// </summary>
+        private static CodeInjection.InjectionPlan BuildShadowPlanForSnippetMerge(
+            string existingCode, string snippetCode, string spriteName)
+        {
+            if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(snippetCode))
+                return null;
+
+            var plan = new CodeInjection.InjectionPlan
+            {
+                Description = "Whole-program snippet merge"
+                    + (string.IsNullOrEmpty(spriteName) ? "" : ": " + spriteName),
+            };
+
+            // 1. Static sprite removal (op runs first inside the injector pre-parse pass).
+            string codeAfterRemove = existingCode;
+            if (!string.IsNullOrEmpty(spriteName))
+            {
+                plan.StaticSpriteRemoves.Add(new CodeInjection.StaticSpriteRemoveOp
+                {
+                    AnchorMethod = "Main",
+                    SpriteName = spriteName,
+                    Action = CodeInjection.InjectionAction.Remove,
+                });
+                codeAfterRemove = RemoveStaticSpriteBlock(existingCode, spriteName);
+            }
+
+            // 2. Parse the snippet into field lines / render lines (legacy parity).
+            ParseSnippetSections(snippetCode, out var fieldLines, out var renderLines);
+            if (fieldLines.Count == 0 && renderLines.Count == 0)
+                return null;
+
+            // 3. Field block insertion before "Ease(". Computed against the
+            //    post-removal buffer; the injector applies patches in descending
+            //    Start order so this and the render-block patch can both reference
+            //    codeAfterRemove offsets safely.
+            if (fieldLines.Count > 0)
+            {
+                int easeIdx = codeAfterRemove.IndexOf("public float Ease(", StringComparison.Ordinal);
+                if (easeIdx < 0)
+                    easeIdx = codeAfterRemove.IndexOf("float Ease(", StringComparison.Ordinal);
+                if (easeIdx < 0)
+                    easeIdx = codeAfterRemove.IndexOf("// ── Easing helper", StringComparison.Ordinal);
+
+                if (easeIdx >= 0)
+                {
+                    int lineStart = easeIdx;
+                    while (lineStart > 0 && codeAfterRemove[lineStart - 1] != '\n') lineStart--;
+                    string fieldBlock = string.Join(Environment.NewLine, fieldLines) + Environment.NewLine;
+                    plan.PropertyPatches.Add(new CodeInjection.PropertyPatchOp
+                    {
+                        Anchor = "snippet-fields:" + (spriteName ?? "anonymous"),
+                        Start = lineStart,
+                        End = lineStart,
+                        NewText = fieldBlock,
+                        Action = CodeInjection.InjectionAction.Update,
+                    });
+                }
+            }
+
+            // 4. Render block insertion before "frame.Dispose()".
+            if (renderLines.Count > 0)
+            {
+                int disposeIdx = codeAfterRemove.IndexOf("frame.Dispose()", StringComparison.Ordinal);
+                if (disposeIdx >= 0)
+                {
+                    int lineStart = disposeIdx;
+                    while (lineStart > 0 && codeAfterRemove[lineStart - 1] != '\n') lineStart--;
+                    string renderBlock = string.Join(Environment.NewLine, renderLines) + Environment.NewLine + Environment.NewLine;
+                    plan.PropertyPatches.Add(new CodeInjection.PropertyPatchOp
+                    {
+                        Anchor = "snippet-render:" + (spriteName ?? "anonymous"),
+                        Start = lineStart,
+                        End = lineStart,
+                        NewText = renderBlock,
+                        Action = CodeInjection.InjectionAction.Update,
+                    });
+                }
+            }
+
+            return plan;
+        }
+
+        /// <summary>
+        /// Splits a generated keyframe snippet into the field-declaration block
+        /// (tick + array fields, with their banner) and the render block
+        /// (interpolation + sprite Add lines, indented for inside Main()).
+        /// This shape is what the injection plan in
+        /// <see cref="BuildShadowPlanForSnippetMerge"/> describes byte-for-byte.
+        /// </summary>
+        private static void ParseSnippetSections(
+            string snippetCode, out List<string> fieldLines, out List<string> renderLines)
+        {
+            fieldLines = new List<string>();
+            renderLines = new List<string>();
             bool inFields = false;
             bool inRender = false;
             string[] snippetLines = snippetCode.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
@@ -1197,10 +1410,8 @@ namespace SESpriteLCDLayoutTool.Services
                 string line = snippetLines[i];
                 string trimmed = line.TrimStart();
 
-                // Skip the Ease function block in the snippet (already in existing code)
                 if (trimmed.StartsWith("// ── Easing helper", StringComparison.Ordinal))
                 {
-                    // Skip until closing brace of the function
                     int braceDepth = 0;
                     bool enteredFunction = false;
                     for (; i < snippetLines.Length; i++)
@@ -1216,7 +1427,6 @@ namespace SESpriteLCDLayoutTool.Services
                     continue;
                 }
 
-                // Start collecting field declarations
                 if (trimmed.StartsWith("// ── Keyframe data", StringComparison.Ordinal))
                 {
                     inFields = true;
@@ -1225,19 +1435,15 @@ namespace SESpriteLCDLayoutTool.Services
                     continue;
                 }
 
-                // Transition from fields to render (interpolation) section
                 if (inFields && (trimmed.StartsWith("// In your Main()", StringComparison.Ordinal)
                     || trimmed.StartsWith("// In your render method", StringComparison.Ordinal)
                     || trimmed.StartsWith("// Field —", StringComparison.Ordinal)))
                 {
-                    // Skip hint comments
                     continue;
                 }
 
                 if (inFields && !inRender)
                 {
-                    // Once we hit a non-array, non-empty, non-comment line that looks like
-                    // interpolation code (tick increment), switch to render section
                     if (trimmed.Length > 0 && !trimmed.StartsWith("//")
                         && !trimmed.StartsWith("int[]") && !trimmed.StartsWith("float[]")
                         && !trimmed.StartsWith("int _tick") && !trimmed.StartsWith("int _anim"))
@@ -1254,13 +1460,11 @@ namespace SESpriteLCDLayoutTool.Services
                     }
                     else if (trimmed.Length == 0)
                     {
-                        // blank line in fields section - keep it
                         fieldLines.Add(line);
                         continue;
                     }
                     else
                     {
-                        // comment line in fields section
                         fieldLines.Add(line);
                         continue;
                     }
@@ -1268,62 +1472,12 @@ namespace SESpriteLCDLayoutTool.Services
 
                 if (inRender)
                 {
-                    // Collect all render lines (interpolation + sprite block)
-                    // Indent them for inside Main()
                     if (trimmed.Length > 0)
                         renderLines.Add("    " + trimmed);
                     else
                         renderLines.Add("");
                 }
             }
-
-            if (fieldLines.Count == 0 && renderLines.Count == 0)
-                return null;
-
-            string result = existingCode;
-
-            // ── Insert field declarations before the Ease function ──
-            if (fieldLines.Count > 0)
-            {
-                // Look for "public float Ease(" or "float Ease(" as insertion point
-                int easeIdx = result.IndexOf("public float Ease(", StringComparison.Ordinal);
-                if (easeIdx < 0)
-                    easeIdx = result.IndexOf("float Ease(", StringComparison.Ordinal);
-                if (easeIdx < 0)
-                {
-                    // Fallback: look for "// ── Easing helper"
-                    easeIdx = result.IndexOf("// ── Easing helper", StringComparison.Ordinal);
-                }
-
-                if (easeIdx >= 0)
-                {
-                    // Walk back to line start
-                    int lineStart = easeIdx;
-                    while (lineStart > 0 && result[lineStart - 1] != '\n') lineStart--;
-
-                    // Also skip preceding blank lines and the "// ── Easing helper" comment
-                    // to insert right before them
-                    string fieldBlock = string.Join(Environment.NewLine, fieldLines) + Environment.NewLine;
-                    result = result.Insert(lineStart, fieldBlock);
-                }
-            }
-
-            // ── Insert interpolation + sprite block before frame.Dispose() ──
-            if (renderLines.Count > 0)
-            {
-                int disposeIdx = result.IndexOf("frame.Dispose()", StringComparison.Ordinal);
-                if (disposeIdx >= 0)
-                {
-                    // Walk back to line start
-                    int lineStart = disposeIdx;
-                    while (lineStart > 0 && result[lineStart - 1] != '\n') lineStart--;
-
-                    string renderBlock = string.Join(Environment.NewLine, renderLines) + Environment.NewLine + Environment.NewLine;
-                    result = result.Insert(lineStart, renderBlock);
-                }
-            }
-
-            return result;
         }
 
         /// <summary>

@@ -388,6 +388,164 @@ namespace SESpriteLCDLayoutTool.Tests
             Assert.AreEqual(EmptyClass, r.RewrittenSource);
         }
 
+        // ─── PropertyPatchOp ─────────────────────────────────────────────────
+
+        [TestMethod]
+        public void PropertyPatch_Update_ReplacesSpanAndReportsEdit()
+        {
+            // Source has a single string literal we want to surgically patch.
+            string src = "public class P { void M() { var s = \"OLD\"; } }";
+            int start = src.IndexOf("\"OLD\"", System.StringComparison.Ordinal);
+            int end = start + "\"OLD\"".Length;
+
+            var plan = new InjectionPlan();
+            plan.PropertyPatches.Add(new PropertyPatchOp
+            {
+                Action = InjectionAction.Update,
+                Anchor = "sprite#0:Text",
+                Start = start,
+                End = end,
+                ExpectedOldText = "\"OLD\"",
+                NewText = "\"NEW-VAL\""
+            });
+
+            var r = Apply(src, plan);
+
+            Assert.IsTrue(r.Success);
+            StringAssert.Contains(r.RewrittenSource, "\"NEW-VAL\"");
+            Assert.IsFalse(r.RewrittenSource.Contains("\"OLD\""));
+            Assert.AreEqual(1, r.Edits.Count);
+            Assert.AreEqual(start, r.Edits[0].Start);
+            Assert.AreEqual(end, r.Edits[0].End);
+            Assert.AreEqual("\"NEW-VAL\"".Length - "\"OLD\"".Length, r.Edits[0].Delta);
+        }
+
+        [TestMethod]
+        public void PropertyPatch_TwoNonOverlappingSpans_AppliedDescendingPreservesOffsets()
+        {
+            // Patches are expressed in ORIGINAL source coords; injector must
+            // apply them so both spans land correctly even though the first
+            // patch lengthens the buffer.
+            string src = "public class P { void M() { var a = \"A\"; var b = \"B\"; } }";
+            int aStart = src.IndexOf("\"A\"", System.StringComparison.Ordinal);
+            int bStart = src.IndexOf("\"B\"", System.StringComparison.Ordinal);
+
+            var plan = new InjectionPlan();
+            plan.PropertyPatches.Add(new PropertyPatchOp
+            {
+                Action = InjectionAction.Update,
+                Anchor = "a", Start = aStart, End = aStart + 3,
+                NewText = "\"AAA\""
+            });
+            plan.PropertyPatches.Add(new PropertyPatchOp
+            {
+                Action = InjectionAction.Update,
+                Anchor = "b", Start = bStart, End = bStart + 3,
+                NewText = "\"BBBB\""
+            });
+
+            var r = Apply(src, plan);
+
+            Assert.IsTrue(r.Success);
+            StringAssert.Contains(r.RewrittenSource, "var a = \"AAA\";");
+            StringAssert.Contains(r.RewrittenSource, "var b = \"BBBB\";");
+            Assert.AreEqual(2, r.Edits.Count);
+            // Edits reported in pre-edit coords.
+            foreach (var e in r.Edits)
+                Assert.IsTrue(e.Start == aStart || e.Start == bStart);
+        }
+
+        [TestMethod]
+        public void PropertyPatch_StaleExpectedText_WarnsAndSkips()
+        {
+            string src = "public class P { void M() { var s = \"CURRENT\"; } }";
+            int start = src.IndexOf("\"CURRENT\"", System.StringComparison.Ordinal);
+
+            var plan = new InjectionPlan();
+            plan.PropertyPatches.Add(new PropertyPatchOp
+            {
+                Action = InjectionAction.Update,
+                Anchor = "stale", Start = start, End = start + "\"CURRENT\"".Length,
+                ExpectedOldText = "\"WAS_DIFFERENT\"",
+                NewText = "\"NEW\""
+            });
+
+            var r = Apply(src, plan);
+
+            Assert.IsTrue(r.Success);
+            Assert.AreEqual(src, r.RewrittenSource);
+            Assert.AreEqual(0, r.Edits.Count);
+            Assert.IsTrue(r.Warnings.Count >= 1);
+        }
+
+        [TestMethod]
+        public void PropertyPatch_OverlappingSpans_KeepsOnePatchOneWarn()
+        {
+            string src = "public class P { void M() { var s = \"ABCDEF\"; } }";
+            int start = src.IndexOf("\"ABCDEF\"", System.StringComparison.Ordinal);
+
+            var plan = new InjectionPlan();
+            plan.PropertyPatches.Add(new PropertyPatchOp
+            {
+                Action = InjectionAction.Update,
+                Anchor = "outer", Start = start, End = start + "\"ABCDEF\"".Length,
+                NewText = "\"X\""
+            });
+            plan.PropertyPatches.Add(new PropertyPatchOp
+            {
+                Action = InjectionAction.Update,
+                Anchor = "inner", Start = start + 1, End = start + 4, // overlaps outer
+                NewText = "ZZ"
+            });
+
+            var r = Apply(src, plan);
+
+            Assert.IsTrue(r.Success);
+            Assert.AreEqual(1, r.Edits.Count, "Overlapping patch must be skipped, not double-applied.");
+            Assert.IsTrue(r.Warnings.Count >= 1);
+        }
+
+        [TestMethod]
+        public void PropertyPatch_Idempotent_ReplayProducesSameSource()
+        {
+            string src = "public class P { void M() { var s = \"OLD\"; } }";
+            int start = src.IndexOf("\"OLD\"", System.StringComparison.Ordinal);
+
+            var plan = new InjectionPlan();
+            plan.PropertyPatches.Add(new PropertyPatchOp
+            {
+                Action = InjectionAction.Update,
+                Anchor = "x", Start = start, End = start + "\"OLD\"".Length,
+                NewText = "\"OLD\""
+            });
+
+            var r = Apply(src, plan);
+
+            Assert.IsTrue(r.Success);
+            Assert.AreEqual(src, r.RewrittenSource);
+            Assert.AreEqual(0, r.Edits.Count, "No-change patch must not record an edit.");
+        }
+
+        [TestMethod]
+        public void PropertyPatch_OutOfRange_WarnsAndPreservesSource()
+        {
+            string src = "public class P { void M() { } }";
+
+            var plan = new InjectionPlan();
+            plan.PropertyPatches.Add(new PropertyPatchOp
+            {
+                Action = InjectionAction.Update,
+                Anchor = "bad", Start = 9000, End = 9100,
+                NewText = "ignored"
+            });
+
+            var r = Apply(src, plan);
+
+            Assert.IsTrue(r.Success);
+            Assert.AreEqual(src, r.RewrittenSource);
+            Assert.IsTrue(r.Warnings.Count >= 1);
+        }
+
         // ─── Cross-cutting ───────────────────────────────────────────────────
 
         [TestMethod]

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
 using SESpriteLCDLayoutTool.Models;
+using SESpriteLCDLayoutTool.Services.CodeInjection;
 
 namespace SESpriteLCDLayoutTool.Services
 {
@@ -25,6 +26,12 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public static string LastUnpatchedReason { get; private set; }
 
+        /// <summary>Diagnostic counter: number of <see cref="SourceEdit"/>s the
+        /// round-trip planner pre-pass applied during the most recent
+        /// <see cref="PatchOriginalSource"/> call (0 when the flag is off, the
+        /// planner produced no ops, or the injector refused).</summary>
+        public static int LastInjectorEditCount { get; private set; }
+
         /// <summary>
         /// Per-sprite property patching for dynamic code (loops, switch/case, expressions).
         /// Compares each sprite's current values against its ImportBaseline and surgically
@@ -36,9 +43,20 @@ namespace SESpriteLCDLayoutTool.Services
         {
             LastUnpatchedChangeCount = 0;
             LastUnpatchedReason = null;
+            LastInjectorEditCount = 0;
 
             string original = layout.OriginalSourceCode;
             if (string.IsNullOrWhiteSpace(original)) return null;
+
+            // ── Central-injector pre-pass: the planner emits PropertyPatchOps
+            //    for every (sprite, property) pair it can express as an exact
+            //    span rewrite (text/sprite name/font/color/position/size/
+            //    rotation/scale).  The injector applies them and reports
+            //    SourceEdits we use to shift SourceStart/SourceEnd in lockstep
+            //    with the legacy offset contract.  Covered baselines are
+            //    advanced so the legacy string-literal fallback below sees no
+            //    diff for those properties and never double-patches.
+            original = ApplyRoundTripPlannerPrePass(layout, original);
 
             // Collect sprites that have source tracking AND a baseline (chunk patching).
             var patchable = new System.Collections.Generic.List<SpriteEntry>();
@@ -102,45 +120,12 @@ namespace SESpriteLCDLayoutTool.Services
                     if (patched == before) NoteUnpatched(sp, "font (expression in source)");
                 }
 
-                // Patch color (new Color(...) literals or named colors like Color.White)
-                if (bl.ColorR != sp.ColorR || bl.ColorG != sp.ColorG ||
-                    bl.ColorB != sp.ColorB || bl.ColorA != sp.ColorA)
-                {
-                    string before = patched;
-                    patched = PatchColorLiteral(patched, bl, sp);
-                    if (patched == before) NoteUnpatched(sp, "color (expression in source)");
-                }
-
-                // Patch position (literal Vector2)
-                if (Math.Abs(bl.X - sp.X) > 0.05f || Math.Abs(bl.Y - sp.Y) > 0.05f)
-                {
-                    string before = patched;
-                    patched = PatchVector2Literal(patched, "Position", sp.X, sp.Y);
-                    if (patched == before) NoteUnpatched(sp, "position (expression in source)");
-                }
-
-                // Patch size (literal Vector2, texture sprites only)
-                if (sp.Type == SpriteEntryType.Texture &&
-                    (Math.Abs(bl.Width - sp.Width) > 0.05f || Math.Abs(bl.Height - sp.Height) > 0.05f))
-                {
-                    string before = patched;
-                    patched = PatchVector2Literal(patched, "Size", sp.Width, sp.Height);
-                    if (patched == before) NoteUnpatched(sp, "size (expression in source)");
-                }
-
-                // Patch rotation/scale (literal float)
-                if (sp.Type == SpriteEntryType.Texture && Math.Abs(bl.Rotation - sp.Rotation) > 0.0005f)
-                {
-                    string before = patched;
-                    patched = PatchFloatLiteral(patched, "RotationOrScale", sp.Rotation, 4);
-                    if (patched == before) NoteUnpatched(sp, "rotation (expression in source)");
-                }
-                else if (sp.Type == SpriteEntryType.Text && Math.Abs(bl.Scale - sp.Scale) > 0.005f)
-                {
-                    string before = patched;
-                    patched = PatchFloatLiteral(patched, "RotationOrScale", sp.Scale, 2);
-                    if (patched == before) NoteUnpatched(sp, "scale (expression in source)");
-                }
+                // Color / Position / Size / Rotation / Scale literals are owned
+                // by the central-injector pre-pass above (RoundTripPatchPlanner
+                // emits PropertyPatchOps for every literal form the legacy
+                // helpers used to handle).  Anything the planner can't express
+                // (expression-only forms, interpolated literals, baseline-not-
+                // in-chunk) is reported via NoteUnpatched in the pre-pass.
 
                 // Only substitute if something actually changed
                 if (patched != chunk)
@@ -237,6 +222,106 @@ namespace SESpriteLCDLayoutTool.Services
             string final = result.ToString();
             // Return the (possibly unchanged) original — null only when patching is not applicable
             return final;
+        }
+
+        /// <summary>
+        /// Round-trip planner pre-pass.
+        ///
+        /// Builds a <see cref="RoundTripPatchPlanner.PlannerReport"/> for the
+        /// layout, runs the resulting <see cref="InjectionPlan"/> through
+        /// <see cref="RoslynCodeInjector"/>, and uses the reported
+        /// <see cref="SourceEdit"/>s to shift each sprite's
+        /// <c>SourceStart</c>/<c>SourceEnd</c> in lockstep with the rewritten
+        /// buffer — preserving the line-jump contract that the canvas relies
+        /// on.  For every covered (sprite, property) pair the sprite's
+        /// <see cref="SpriteEntry.ImportBaseline"/> field is advanced to the
+        /// new value, so the legacy string-literal fallback that runs after
+        /// this returns "no diff" for those properties and never double-patches
+        /// them.
+        ///
+        /// Anything the planner couldn't cover (interpolated literals,
+        /// ambiguous duplicates, escape-required values, baseline-only
+        /// sprites) is left in the baseline untouched, so the legacy
+        /// <c>ReplaceStringLiteral</c> / nav-index passes inside
+        /// <see cref="PatchOriginalSource"/> still own those cases.
+        /// </summary>
+        private static string ApplyRoundTripPlannerPrePass(LcdLayout layout, string original)
+        {
+            var report = RoundTripPatchPlanner.BuildPlan(layout);
+            if (report.Plan.PropertyPatches.Count == 0) return original;
+
+            var injector = new RoslynCodeInjector();
+            var injResult = injector.Apply(original, report.Plan);
+            if (!injResult.Success || injResult.Edits.Count == 0)
+            {
+                // Injector refused to apply (parse error, all spans stale,
+                // overlaps etc.).  Leave the buffer untouched and let the
+                // legacy literal pass try again — it owns the diff diagnostics
+                // through NoteUnpatched.
+                return original;
+            }
+
+            LastInjectorEditCount = injResult.Edits.Count;
+
+            // Apply each edit's pre-edit (Start, End, Delta) to every sprite's
+            // SourceStart/SourceEnd using exactly the same rule
+            // ShiftSpritePositions uses, so the canvas sees identical offsets
+            // whether the legacy or new path applied the patch.
+            foreach (var edit in injResult.Edits)
+            {
+                int editStart = edit.Start;
+                int delta = edit.Delta;
+                if (delta == 0) continue;
+                foreach (var sp in layout.Sprites)
+                {
+                    if (sp.SourceStart < 0 || sp.SourceEnd < 0) continue;
+                    if (sp.SourceStart >= editStart)
+                    {
+                        sp.SourceStart += delta;
+                        sp.SourceEnd += delta;
+                    }
+                    else if (sp.SourceEnd > editStart)
+                    {
+                        // Edit landed inside this sprite's chunk — extend its end.
+                        sp.SourceEnd += delta;
+                    }
+                }
+            }
+
+            // Advance baselines on covered (sprite, property) pairs so the
+            // legacy literal pass sees no diff and skips them entirely.
+            foreach (var c in report.Covered)
+            {
+                if (c.Sprite == null || c.Sprite.ImportBaseline == null) continue;
+                switch (c.Property)
+                {
+                    case "Text":       c.Sprite.ImportBaseline.Text = c.NewValue; break;
+                    case "SpriteName": c.Sprite.ImportBaseline.SpriteName = c.NewValue; break;
+                    case "FontId":     c.Sprite.ImportBaseline.FontId = c.NewValue; break;
+                    case "Color":
+                        c.Sprite.ImportBaseline.ColorR = c.NewColorR;
+                        c.Sprite.ImportBaseline.ColorG = c.NewColorG;
+                        c.Sprite.ImportBaseline.ColorB = c.NewColorB;
+                        c.Sprite.ImportBaseline.ColorA = c.NewColorA;
+                        break;
+                    case "Position":
+                        c.Sprite.ImportBaseline.X = c.NewFloatX;
+                        c.Sprite.ImportBaseline.Y = c.NewFloatY;
+                        break;
+                    case "Size":
+                        c.Sprite.ImportBaseline.Width = c.NewFloatX;
+                        c.Sprite.ImportBaseline.Height = c.NewFloatY;
+                        break;
+                    case "Rotation":
+                        c.Sprite.ImportBaseline.Rotation = c.NewFloatScalar;
+                        break;
+                    case "Scale":
+                        c.Sprite.ImportBaseline.Scale = c.NewFloatScalar;
+                        break;
+                }
+            }
+
+            return injResult.RewrittenSource;
         }
 
         /// <summary>
@@ -1133,86 +1218,6 @@ namespace SESpriteLCDLayoutTool.Services
                 }
             }
             return sb.ToString();
-        }
-
-        /// <summary>
-        /// Patches a color literal in the source text. Handles new Color(R,G,B),
-        /// new Color(R,G,B,A), and named colors like Color.White.
-        /// </summary>
-        private static string PatchColorLiteral(string text, SpriteEntry baseline, SpriteEntry current)
-        {
-            string newColor = current.ColorA != 255
-                ? $"new Color({current.ColorR}, {current.ColorG}, {current.ColorB}, {current.ColorA})"
-                : $"new Color({current.ColorR}, {current.ColorG}, {current.ColorB})";
-
-            // Try matching "new Color(R, G, B)" or "new Color(R, G, B, A)"
-            var colorPattern = new Regex(
-                @"new\s+Color\s*\(\s*" + baseline.ColorR + @"\s*,\s*" + baseline.ColorG +
-                @"\s*,\s*" + baseline.ColorB + @"(?:\s*,\s*\d+)?\s*\)");
-
-            if (colorPattern.IsMatch(text))
-                return colorPattern.Replace(text, newColor, 1);
-
-            // Try named colors: Color.White → (255,255,255), Color.Red → (255,0,0), etc.
-            string namedColor = MatchNamedColor(baseline);
-            if (namedColor != null)
-            {
-                int idx = text.IndexOf(namedColor, StringComparison.Ordinal);
-                if (idx >= 0)
-                    return text.Substring(0, idx) + newColor + text.Substring(idx + namedColor.Length);
-            }
-
-            return text; // color is an expression — can't patch
-        }
-
-        /// <summary>Returns the C# named color expression that matches the baseline values, or null.</summary>
-        private static string MatchNamedColor(SpriteEntry bl)
-        {
-            if (bl.ColorA == 255)
-            {
-                if (bl.ColorR == 255 && bl.ColorG == 255 && bl.ColorB == 255) return "Color.White";
-                if (bl.ColorR == 0   && bl.ColorG == 0   && bl.ColorB == 0)   return "Color.Black";
-                if (bl.ColorR == 255 && bl.ColorG == 0   && bl.ColorB == 0)   return "Color.Red";
-                if (bl.ColorR == 0   && bl.ColorG == 255 && bl.ColorB == 0)   return "Color.Green";
-                if (bl.ColorR == 0   && bl.ColorG == 0   && bl.ColorB == 255) return "Color.Blue";
-                if (bl.ColorR == 255 && bl.ColorG == 255 && bl.ColorB == 0)   return "Color.Yellow";
-            }
-            if (bl.ColorR == 0 && bl.ColorG == 0 && bl.ColorB == 0 && bl.ColorA == 0)
-                return "Color.Transparent";
-            return null;
-        }
-
-        /// <summary>
-        /// Patches a literal Vector2 assignment (e.g. Position = new Vector2(100.0f, 200.0f))
-        /// in a source chunk.  Only replaces when both components are literal numbers.
-        /// </summary>
-        private static string PatchVector2Literal(string text, string propName, float newX, float newY)
-        {
-            var pattern = new Regex(
-                @"(" + Regex.Escape(propName) + @"\s*=\s*new\s+Vector2\s*\(\s*)" +
-                @"-?[\d.]+f?\s*,\s*-?[\d.]+f?" +
-                @"(\s*\))");
-
-            if (!pattern.IsMatch(text)) return text;
-            return pattern.Replace(text, m =>
-                m.Groups[1].Value + $"{newX:F1}f, {newY:F1}f" + m.Groups[2].Value, 1);
-        }
-
-        /// <summary>
-        /// Patches a literal float assignment (e.g. RotationOrScale = 0.5000f)
-        /// in a source chunk.  Only replaces when the value is a literal number.
-        /// </summary>
-        private static string PatchFloatLiteral(string text, string propName, float newValue, int decimals)
-        {
-            var pattern = new Regex(
-                @"(" + Regex.Escape(propName) + @"\s*=\s*)" +
-                @"-?[\d.]+f" +
-                @"(\s*[,;])");
-
-            if (!pattern.IsMatch(text)) return text;
-            string formatted = newValue.ToString($"F{decimals}") + "f";
-            return pattern.Replace(text, m =>
-                m.Groups[1].Value + formatted + m.Groups[2].Value, 1);
         }
 
         /// <summary>

@@ -187,6 +187,7 @@
     <Compile Include="Services\CodeInjection\CodeInjectionFeatureFlags.cs" />
     <Compile Include="Services\CodeInjection\InjectionPlan.cs" />
     <Compile Include="Services\CodeInjection\RoslynCodeInjector.cs" />
+    <Compile Include="Services\CodeInjection\RoundTripPatchPlanner.cs" />
     <Compile Include="Services\CodeInjection\ShadowCompareRunner.cs" />
     <Compile Include="Services\CodeUndoManager.cs" />
     <Compile Include="Services\GifExporter.cs" />

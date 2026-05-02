@@ -111,6 +111,15 @@ namespace SESpriteLCDLayoutTool.Services.CodeInjection
         /// </summary>
         public RenderBlockPlacement Placement { get; set; } = RenderBlockPlacement.BeforeFirstAdd;
 
+        /// <summary>
+        /// Literal token to anchor against when <see cref="Placement"/> is
+        /// <see cref="RenderBlockPlacement.BeforeToken"/>. The injector locates
+        /// the first occurrence of this exact substring inside the anchor
+        /// method's body and inserts the block at the start of that line.
+        /// Ignored for other placements.
+        /// </summary>
+        public string AnchorToken { get; set; }
+
         /// <summary>The raw statement text (without enclosing braces). Newlines preserved.</summary>
         public string BodyText { get; set; }
 
@@ -131,7 +140,15 @@ namespace SESpriteLCDLayoutTool.Services.CodeInjection
         AfterLastAdd,
 
         /// <summary>At the very end of the method body, before the closing brace.</summary>
-        MethodEnd
+        MethodEnd,
+
+        /// <summary>
+        /// Immediately before the line containing
+        /// <see cref="RenderBlockOp.AnchorToken"/>. Used by snippet-merge to land
+        /// the render section right before <c>frame.Dispose()</c> the way the
+        /// legacy regex pipeline did.
+        /// </summary>
+        BeforeToken
     }
 
     /// <summary>
@@ -187,6 +204,124 @@ namespace SESpriteLCDLayoutTool.Services.CodeInjection
             "sprite:" + (AnchorMethod ?? "(no-method)") + "/" + (GroupKey ?? "(no-group)") + "#" + Index;
     }
 
+    /// <summary>
+    /// Replaces the values inside an existing array-field initializer
+    /// (e.g. <c>int[] kfTick = { 0, 30, 60 };</c>) without touching the type,
+    /// name, indentation, or trailing trivia/comments of the declaration.
+    /// Identity = field name. The op is intended for keyframe array value
+    /// swaps where the legacy regex pipeline only edits the contents inside
+    /// the braces. Action is normally <see cref="InjectionAction.Update"/>;
+    /// <see cref="InjectionAction.Add"/> is rejected with a warning because
+    /// adding a fresh array belongs in a <see cref="ClassFieldOp"/>.
+    /// </summary>
+    public sealed class ArrayValueSwapOp : InjectionOp
+    {
+        /// <summary>Array variable name (identity). Required.</summary>
+        public string Name { get; set; }
+
+        /// <summary>
+        /// Replacement values to place between the braces, e.g. <c>"0, 45, 90"</c>.
+        /// Must be a comma-separated list of valid C# expressions; the injector
+        /// parses them via Roslyn rather than splicing text. Required.
+        /// </summary>
+        public string NewValuesText { get; set; }
+
+        public override string Identity => "array-values:" + (Name ?? "(unnamed)");
+    }
+
+    /// <summary>
+    /// Surgical literal replacement at a known absolute span in the source buffer.
+    /// Used by the round-trip property patcher (sprite color/text/font/position
+    /// edits coming from the canvas) to replace a single literal in place WITHOUT
+    /// reformatting or re-emitting surrounding syntax. This is the op type that
+    /// preserves the line-jump contract: callers feed in the exact span they
+    /// already know about (typically a sprite's literal extracted via
+    /// <c>SpriteNavigationIndex</c>) and the injector reports back the resulting
+    /// length delta in <see cref="InjectionResult.Edits"/> so callers can shift
+    /// any external offsets (sprite SourceStart/SourceEnd) accordingly.
+    ///
+    /// Identity = (Anchor, Span) — Anchor is a free-form caller label
+    /// ("sprite#3:Text", "sprite#3:Color"), Span is the [Start,End) range. Only
+    /// <see cref="InjectionAction.Update"/> is meaningful; Add/Remove are warned
+    /// (use <see cref="ClassFieldOp"/> / structural ops to add or remove syntax).
+    /// </summary>
+    public sealed class PropertyPatchOp : InjectionOp
+    {
+        /// <summary>Caller-supplied label for diff/log output. Required.</summary>
+        public string Anchor { get; set; }
+
+        /// <summary>Absolute character offset of the first character to replace. Required.</summary>
+        public int Start { get; set; }
+
+        /// <summary>Absolute character offset just past the last character to replace. Required.</summary>
+        public int End { get; set; }
+
+        /// <summary>
+        /// Expected current text inside [<see cref="Start"/>, <see cref="End"/>).
+        /// If non-null, the injector verifies the buffer matches before patching
+        /// and warns if it doesn't (stale offsets / external edit). Optional.
+        /// </summary>
+        public string ExpectedOldText { get; set; }
+
+        /// <summary>Replacement text. Required (may be empty to delete the span).</summary>
+        public string NewText { get; set; }
+
+        public override string Identity =>
+            "property:" + (Anchor ?? "(unnamed)") + "@" + Start + ".." + End;
+    }
+
+    /// <summary>
+    /// One concrete edit applied by the injector, in absolute pre-edit
+    /// coordinates of the source buffer. Reported in <see cref="InjectionResult.Edits"/>
+    /// so callers can shift external offsets (e.g. sprite SourceStart/SourceEnd)
+    /// without re-scanning the file.
+    ///
+    /// Edits are reported in the same order they were applied. The injector
+    /// applies edits in descending Start order, so each edit's coordinates are
+    /// valid against the pre-edit buffer; callers may apply them as-is to any
+    /// external offset map.
+    /// </summary>
+    public sealed class SourceEdit
+    {
+        /// <summary>Pre-edit start offset of the replaced span.</summary>
+        public int Start { get; set; }
+
+        /// <summary>Pre-edit end offset (exclusive) of the replaced span.</summary>
+        public int End { get; set; }
+
+        /// <summary>Length delta produced by the edit (newLen - oldLen).</summary>
+        public int Delta { get; set; }
+
+        /// <summary>Op identity that produced this edit, for cross-reference with <see cref="InjectionResult.Diff"/>.</summary>
+        public string OpIdentity { get; set; }
+    }
+
+    /// <summary>
+    /// Removes a static (non-animated) <c>frame.Add(new MySprite { … Data = "name" … });</c>
+    /// block from the anchor method body. Used by snippet-merge so an animated
+    /// version of a previously-static sprite cleanly supersedes the static one.
+    ///
+    /// The injector matches the first <c>frame.Add(new MySprite { … });</c>
+    /// statement whose body contains a <c>Data = "&lt;SpriteName&gt;"</c> assignment
+    /// AND does NOT carry any of the animation marker tokens (e.g. lambdas,
+    /// keyframe array references) so genuinely-animated blocks are skipped.
+    /// On match, the entire statement plus any leading blank line are removed.
+    ///
+    /// Identity = "static-sprite-remove:&lt;SpriteName&gt;" inside &lt;AnchorMethod&gt;.
+    /// Only <see cref="InjectionAction.Remove"/> is meaningful.
+    /// </summary>
+    public sealed class StaticSpriteRemoveOp : InjectionOp
+    {
+        /// <summary>Method to scan (e.g. "DrawFrame"). Required.</summary>
+        public string AnchorMethod { get; set; }
+
+        /// <summary>Sprite name to match in the <c>Data = "…"</c> assignment. Required.</summary>
+        public string SpriteName { get; set; }
+
+        public override string Identity =>
+            "static-sprite-remove:" + (SpriteName ?? "(unnamed)") + "@" + (AnchorMethod ?? "(unnamed)");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Plan + Result
     // ─────────────────────────────────────────────────────────────────────────
@@ -212,14 +347,20 @@ namespace SESpriteLCDLayoutTool.Services.CodeInjection
         public List<HelperMethodOp> Methods { get; } = new List<HelperMethodOp>();
         public List<RenderBlockOp> RenderBlocks { get; } = new List<RenderBlockOp>();
         public List<SpriteAddOp> SpriteAdds { get; } = new List<SpriteAddOp>();
+        public List<ArrayValueSwapOp> ArrayValueSwaps { get; } = new List<ArrayValueSwapOp>();
+        public List<PropertyPatchOp> PropertyPatches { get; } = new List<PropertyPatchOp>();
+        public List<StaticSpriteRemoveOp> StaticSpriteRemoves { get; } = new List<StaticSpriteRemoveOp>();
 
         /// <summary>Convenience: enumerate every op regardless of category.</summary>
         public IEnumerable<InjectionOp> AllOps()
         {
-            foreach (var f in Fields)       yield return f;
-            foreach (var m in Methods)      yield return m;
-            foreach (var b in RenderBlocks) yield return b;
-            foreach (var s in SpriteAdds)   yield return s;
+            foreach (var f in Fields)            yield return f;
+            foreach (var m in Methods)           yield return m;
+            foreach (var b in RenderBlocks)      yield return b;
+            foreach (var s in SpriteAdds)        yield return s;
+            foreach (var a in ArrayValueSwaps)   yield return a;
+            foreach (var p in PropertyPatches)   yield return p;
+            foreach (var r in StaticSpriteRemoves) yield return r;
         }
     }
 
@@ -264,6 +405,16 @@ namespace SESpriteLCDLayoutTool.Services.CodeInjection
 
         public List<InjectionWarning> Warnings { get; } = new List<InjectionWarning>();
         public List<InjectionDiffEntry> Diff { get; } = new List<InjectionDiffEntry>();
+
+        /// <summary>
+        /// Concrete text edits applied by the injector, reported in pre-edit
+        /// coordinates. Currently populated only for <see cref="PropertyPatchOp"/>
+        /// (the round-trip patcher's bread-and-butter); structural ops do not
+        /// emit individual edits because they don't carry stable absolute spans.
+        /// Callers use this list to shift external offset maps (e.g. sprite
+        /// SourceStart/SourceEnd) without re-scanning the rewritten source.
+        /// </summary>
+        public List<SourceEdit> Edits { get; } = new List<SourceEdit>();
 
         /// <summary>Hard-failure error message (parse failure, internal bug). Null on success.</summary>
         public string Error { get; set; }

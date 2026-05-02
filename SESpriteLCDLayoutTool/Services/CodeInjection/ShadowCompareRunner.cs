@@ -12,8 +12,9 @@ namespace SESpriteLCDLayoutTool.Services.CodeInjection
     /// engine and the new <see cref="ICodeInjector"/>, log a structured diff, and
     /// return the LEGACY output unchanged. Zero behaviour change in production.
     ///
-    /// The point is to gather real-world parity evidence on actual user layouts
-    /// before any caller is migrated behind a UseNewInjectorFor* flag.
+    /// Originally used to gather parity evidence before each caller migration.
+    /// Most callers are now injector-only; the remaining users keep this wired
+    /// up purely as a diagnostic surface for future planner/injector changes.
     /// </summary>
     public static class ShadowCompareRunner
     {

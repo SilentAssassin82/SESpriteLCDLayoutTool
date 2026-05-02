@@ -172,38 +172,146 @@ namespace SESpriteLCDLayoutTool.Services
         /// </summary>
         public static string MergeSimpleAnimIntoCode(string existingCode, string newSnippet)
         {
+            // Step 7: the new injector is the SOLE merge engine. Validity gating
+            // (null inputs, header-type mismatch) lives in the plan builder, which
+            // returns null when no merge is possible. An empty plan means
+            // "merge attempted but nothing changed", which legacy reported as null.
             if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(newSnippet))
                 return null;
 
-            // Only merge if the existing code has the same animation type header
+            CodeInjection.InjectionPlan plan;
+            try
+            {
+                plan = BuildShadowPlanForSimpleAnimMerge(existingCode, newSnippet);
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (plan == null || plan.PropertyPatches.Count == 0)
+                return null;
+
+            try
+            {
+                var injected = new CodeInjection.RoslynCodeInjector().Apply(existingCode, plan);
+                if (injected != null && injected.Success &&
+                    !string.IsNullOrEmpty(injected.RewrittenSource))
+                {
+                    return injected.RewrittenSource;
+                }
+            }
+            catch
+            {
+                // Injector must never break the host.
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Span-precise structured description of what the legacy simple-animation
+        /// merge does: rewrite one anim-variable line in place, then rewrite the
+        /// sprite <c>.Add(new MySprite { ... });</c> block in place. Both are emitted
+        /// as <see cref="CodeInjection.PropertyPatchOp"/> so the new injector
+        /// produces byte-identical output to legacy. Used by shadow-compare logging
+        /// and by the gated new-injector path. Never throws.
+        /// </summary>
+        private static CodeInjection.InjectionPlan BuildShadowPlanForSimpleAnimMerge(
+            string existingCode, string newSnippet)
+        {
+            if (string.IsNullOrEmpty(existingCode) || string.IsNullOrEmpty(newSnippet))
+                return null;
+
+            // Validity gate: only merge if both sides carry the same anim header type.
             var exHeader = RxSimpleHeader.Match(existingCode);
             var newHeader = RxSimpleHeader.Match(newSnippet);
             if (!exHeader.Success || !newHeader.Success) return null;
             if (!string.Equals(exHeader.Groups[1].Value, newHeader.Groups[1].Value,
                                StringComparison.OrdinalIgnoreCase))
-                return null; // different animation type — can't merge, caller should replace
+                return null;
 
-            string result = existingCode;
+            var plan = new CodeInjection.InjectionPlan
+            {
+                Description = "Simple animation in-place merge (span-precise)",
+            };
 
-            // Replace animation-variable line(s) — each generator emits exactly one such line
+            // ── 1) Animation-variable line rewrite ────────────────────────────
+            // Legacy matches the SAME pattern in both existing & new and
+            // string-replaces the match. Only one anim-var pattern matches any
+            // given snippet (e.g. only "float oscOffset =" for Oscillate).
             foreach (string pattern in _simpleAnimVarPatterns)
             {
-                var rxOld = new Regex(pattern + @"[^\r\n]+", RegexOptions.Compiled);
-                var rxNew = new Regex(pattern + @"[^\r\n]+", RegexOptions.Compiled);
+                var rxLine = new Regex(pattern + @"[^\r\n]+", RegexOptions.Compiled);
+                var oldMatch = rxLine.Match(existingCode);
+                var newMatch = rxLine.Match(newSnippet);
+                if (!oldMatch.Success || !newMatch.Success) continue;
 
-                var oldMatch = rxOld.Match(existingCode);
-                var newMatch = rxNew.Match(newSnippet);
-                if (oldMatch.Success && newMatch.Success)
+                if (!string.Equals(oldMatch.Value, newMatch.Value, StringComparison.Ordinal))
                 {
-                    result = result.Replace(oldMatch.Value, newMatch.Value);
-                    break; // each animation type has exactly one such variable
+                    string anchor = "simple-anim:varline";
+                    int eq = newMatch.Value.IndexOf('=');
+                    if (eq > 0)
+                    {
+                        string lhs = newMatch.Value.Substring(0, eq).Trim();
+                        int sp = lhs.LastIndexOf(' ');
+                        anchor = "simple-anim:" + (sp >= 0 ? lhs.Substring(sp + 1) : lhs);
+                    }
+
+                    plan.PropertyPatches.Add(new CodeInjection.PropertyPatchOp
+                    {
+                        Anchor = anchor,
+                        Start = oldMatch.Index,
+                        End = oldMatch.Index + oldMatch.Length,
+                        ExpectedOldText = oldMatch.Value,
+                        NewText = newMatch.Value,
+                        Action = CodeInjection.InjectionAction.Update,
+                    });
+                }
+                break;
+            }
+
+            // ── 2) Sprite Add block rewrite ───────────────────────────────────
+            // Mirrors ReplaceSpriteAddBlock(): walk back from ".Add(new MySprite"
+            // to the start of the line, forward to "});", then swap the spans.
+            const string addToken = ".Add(new MySprite";
+            const string closeToken = "});";
+
+            int srcAddIdx = newSnippet.IndexOf(addToken, StringComparison.Ordinal);
+            int tgtAddIdx = existingCode.IndexOf(addToken, StringComparison.Ordinal);
+            if (srcAddIdx >= 0 && tgtAddIdx >= 0)
+            {
+                int srcLineStart = srcAddIdx;
+                while (srcLineStart > 0 && newSnippet[srcLineStart - 1] != '\n') srcLineStart--;
+                int srcClose = newSnippet.IndexOf(closeToken, srcAddIdx, StringComparison.Ordinal);
+
+                int tgtLineStart = tgtAddIdx;
+                while (tgtLineStart > 0 && existingCode[tgtLineStart - 1] != '\n') tgtLineStart--;
+                int tgtClose = existingCode.IndexOf(closeToken, tgtAddIdx, StringComparison.Ordinal);
+
+                if (srcClose >= 0 && tgtClose >= 0)
+                {
+                    int tgtSpanEnd = tgtClose + closeToken.Length;
+                    int srcSpanEnd = srcClose + closeToken.Length;
+                    string oldBlock = existingCode.Substring(tgtLineStart, tgtSpanEnd - tgtLineStart);
+                    string newBlock = newSnippet.Substring(srcLineStart, srcSpanEnd - srcLineStart);
+
+                    if (!string.Equals(oldBlock, newBlock, StringComparison.Ordinal))
+                    {
+                        plan.PropertyPatches.Add(new CodeInjection.PropertyPatchOp
+                        {
+                            Anchor = "simple-anim:sprite-add-block",
+                            Start = tgtLineStart,
+                            End = tgtSpanEnd,
+                            ExpectedOldText = oldBlock,
+                            NewText = newBlock,
+                            Action = CodeInjection.InjectionAction.Update,
+                        });
+                    }
                 }
             }
 
-            // Replace the sprite Add(new MySprite { ... }); block
-            result = ReplaceSpriteAddBlock(result, newSnippet);
-
-            return result == existingCode ? null : result; // null = nothing changed
+            return plan;
         }
 
         // ── Param parsing from existing code ─────────────────────────────────────
@@ -317,36 +425,6 @@ namespace SESpriteLCDLayoutTool.Services
             }
 
             return sb.ToString().TrimEnd();
-        }
-
-        /// <summary>
-        /// Replaces the sprite <c>Add(new MySprite { … });</c> block in <paramref name="target"/>
-        /// with the one from <paramref name="source"/>, preserving the surrounding code.
-        /// </summary>
-        private static string ReplaceSpriteAddBlock(string target, string source)
-        {
-            const string addToken = ".Add(new MySprite";
-            const string closeToken = "});";
-
-            int srcAddIdx = source.IndexOf(addToken, StringComparison.Ordinal);
-            if (srcAddIdx < 0) return target;
-            // Walk back to start of the list-var identifier
-            int srcLineStart = srcAddIdx;
-            while (srcLineStart > 0 && source[srcLineStart - 1] != '\n') srcLineStart--;
-            int srcClose = source.IndexOf(closeToken, srcAddIdx, StringComparison.Ordinal);
-            if (srcClose < 0) return target;
-            string newBlock = source.Substring(srcLineStart, srcClose + closeToken.Length - srcLineStart);
-
-            int tgtAddIdx = target.IndexOf(addToken, StringComparison.Ordinal);
-            if (tgtAddIdx < 0) return target;
-            int tgtLineStart = tgtAddIdx;
-            while (tgtLineStart > 0 && target[tgtLineStart - 1] != '\n') tgtLineStart--;
-            int tgtClose = target.IndexOf(closeToken, tgtAddIdx, StringComparison.Ordinal);
-            if (tgtClose < 0) return target;
-
-            return target.Substring(0, tgtLineStart)
-                 + newBlock
-                 + target.Substring(tgtClose + closeToken.Length);
         }
 
         private static float? ParseFloat(string code, string pattern)
