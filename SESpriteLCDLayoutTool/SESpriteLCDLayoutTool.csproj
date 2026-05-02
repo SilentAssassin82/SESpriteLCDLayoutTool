@@ -184,6 +184,8 @@
     <Compile Include="Services\AnimationSnippetGenerator.cs" />
     <Compile Include="Services\CodeAutoComplete.cs" />
     <Compile Include="Services\CodeExecutor.cs" />
+    <Compile Include="Services\CodeInjection\CodeInjectionFeatureFlags.cs" />
+    <Compile Include="Services\CodeInjection\InjectionPlan.cs" />
     <Compile Include="Services\CodeUndoManager.cs" />
     <Compile Include="Services\GifExporter.cs" />
     <Compile Include="Services\MultiAnimationRegistry.cs" />
