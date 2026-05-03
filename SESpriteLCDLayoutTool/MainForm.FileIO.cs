@@ -963,6 +963,61 @@ namespace SESpriteLCDLayoutTool
             }
         }
 
+        // ── Render Parameter Inspector ────────────────────────────────────────────
+        private void ShowRenderParameterInspector()
+        {
+            string code = _codeBox?.Text ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                MessageBox.Show(this,
+                    "The code editor is empty — paste or open a render script first.",
+                    "Render Parameter Inspector",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Discover render method names from the existing detection pipeline so
+            // the inspector can scope literal scanning to a single method body.
+            var methodNames = new List<string>();
+            try
+            {
+                var calls = SESpriteLCDLayoutTool.Services.CodeExecutor
+                    .DetectAllCallExpressions(code, _layout?.CapturedRows);
+                foreach (var c in calls)
+                {
+                    if (string.IsNullOrWhiteSpace(c)) continue;
+                    int paren = c.IndexOf('(');
+                    string name = paren > 0 ? c.Substring(0, paren).Trim() : c.Trim();
+                    if (!string.IsNullOrEmpty(name) && !methodNames.Contains(name))
+                        methodNames.Add(name);
+                }
+            }
+            catch { /* best-effort discovery */ }
+
+            string defaultMethod = !string.IsNullOrWhiteSpace(_execCallBox?.Text)
+                ? StripCallParens(_execCallBox.Text)
+                : (methodNames.Count > 0 ? methodNames[0] : null);
+
+            using (var dlg = new SESpriteLCDLayoutTool.Forms.RenderParameterInspectorDialog(code, methodNames, defaultMethod))
+            {
+                dlg.ShowDialog(this);
+                if (dlg.DidApply && !string.IsNullOrEmpty(dlg.PatchedCode) && dlg.PatchedCode != code)
+                {
+                    PushUndo();
+                    SetCodeText(dlg.PatchedCode);
+                    _codeBoxDirty = true;
+                    SetStatus("Render parameters applied — click Execute to preview.");
+                }
+            }
+        }
+
+        private static string StripCallParens(string call)
+        {
+            if (string.IsNullOrEmpty(call)) return call;
+            int paren = call.IndexOf('(');
+            return paren > 0 ? call.Substring(0, paren).Trim() : call.Trim();
+        }
+
         // ── Sprite texture loading ────────────────────────────────────────────────
         private void LoadSpriteTexturesAsync(string contentPath)
         {

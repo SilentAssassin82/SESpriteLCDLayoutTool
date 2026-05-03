@@ -127,6 +127,9 @@
     <Compile Include="Data\SpriteCatalog.cs" />
     <Compile Include="Data\GlyphCatalog.cs" />
     <Compile Include="Data\UserSpriteCatalog.cs" />
+    <Compile Include="Forms\RenderParameterInspectorDialog.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="KeyframeEditorDialog.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -192,6 +195,7 @@
     <Compile Include="Services\CodeUndoManager.cs" />
     <Compile Include="Services\GifExporter.cs" />
     <Compile Include="Services\MultiAnimationRegistry.cs" />
+    <Compile Include="Services\RenderParameterScanner.cs" />
     <Compile Include="Services\RoslynAnimationInjector.cs" />
     <Compile Include="Services\RoslynMemberProvider.cs" />
     <Compile Include="Services\SEStubs.cs" />

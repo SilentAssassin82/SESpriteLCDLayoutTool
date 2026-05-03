@@ -193,6 +193,7 @@ namespace SESpriteLCDLayoutTool
             edit.DropDownItems.Add(new ToolStripSeparator());
             edit.DropDownItems.Add("Paste Layout Code…\tCtrl+V",  null, (s, e) => ShowPasteLayoutDialog());
             edit.DropDownItems.Add("Apply Runtime Snapshot…",      null, (s, e) => ShowApplySnapshotDialog());
+            edit.DropDownItems.Add("Render Parameter Inspector…",  null, (s, e) => ShowRenderParameterInspector());
             edit.DropDownItems.Add(new ToolStripSeparator());
             _mnuListenToggle = new ToolStripMenuItem("Start Live Listening", null, (s, e) => ToggleLiveListening());
             edit.DropDownItems.Add(_mnuListenToggle);
