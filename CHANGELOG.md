@@ -2,6 +2,17 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v4.0.0 - 2026-04-30
+
+### Fixed
+- **Timeline scrubber did not rewind the canvas** — dragging the tick slider updated the variables panel but the LCD canvas stayed frozen at the last played frame. `OnTimelineScrub` now applies the sprite snapshot from `SpriteHistory` for the selected tick, restoring each sprite's position, size, color, and rotation so the canvas visually matches the history state at every scrub position.
+- **Animation injection left stale identifiers after effect removal** — removing an animation effect (e.g. Fade, Pulse) stripped the generated compute block and field declarations but left the animated expression (e.g. `(byte)(fadeAlpha)`, `100f * pulseScale`) baked into the sprite's static initializer. Those orphaned identifiers caused CS0841 compile errors on the next Execute. `RoslynAnimationInjector` now rewrites every animatable property (`Position`, `Size`, `Color`, `RotationOrScale`) back to clean static literals each pass, even for sprites with no current effects.
+- **Duplicate-suffix collision when the same `SpriteEntry` appeared twice** — stale clones from certain refresh paths could resolve to the same Add block via `FindSpriteAddNodeById`, each consuming a suffix slot. The second copy would bake a higher-suffix identifier (e.g. `arot2`) into the property text while only the first's compute (`arot`) was emitted, producing CS0841. Injection now deduplicates entries by stable `Id` (or reference identity for empty-Id sprites) before assigning suffixes.
+- **Marker-block stripping was not fully idempotent** — if a prior bug produced two consecutive ANIM-FIELDS or ANIM-EASE regions with identical markers, only the first pair was removed per pass and the second was left in place. `StripMarkerBlock` now loops until no further pairs remain.
+- **`_tick` re-declared when already present in user code** — the injector emitted `int _tick = 0;` inside the ANIM-FIELDS region even when the host snippet already declared a `_tick` field with a modifier (`private`, `static`, etc.). `HasExistingField` now accepts any common numeric/bool type with any combination of access and storage modifiers.
+- **`_tick++` inserted after trailing trivia** — `InsertTickIncrement` used `FullSpan.End` (which includes the trailing comment/newline trivia of the first statement) rather than `Span.End`, so `_tick++` could land on the wrong line in some code layouts. Switched to `Span.End`.
+- **`Alignment` emitted for texture sprites** — `GenerateStaticAddBlock` always wrote `Alignment = TextAlignment.CENTER` regardless of sprite type. That property is only meaningful for text sprites; the line is now emitted only when `sp.Type == SpriteEntryType.Text`.
+
 ## v3.10.1 - 2026-04-29
 
 ### Fixed

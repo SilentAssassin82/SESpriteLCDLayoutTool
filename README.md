@@ -74,7 +74,7 @@ Design your screens with drag & drop, preview real in-game textures, animate lay
 - **Play / Pause / Stop / Step** controls with tick counter
 - **Snapshot-anchored playback** — apply runtime snapshot positions, then animate with offsets preserved
 - **Orchestrator detection** — auto-calls state-update methods (`Advance()`, `Tick()`, etc.) before rendering each frame
-- **Timeline scrubber** — scrub through 500-tick history buffer to inspect past animation states
+- **Timeline scrubber** — scrub through 500-tick history buffer to inspect past animation states; the LCD canvas rewinds to display sprite positions and colors at the selected tick (not just the variables panel)
 
 ### 🎥 Animated GIF Export
 - **File → Export Animated GIF…** — capture any animated layout to a looping `.gif` for demos and bug reports
