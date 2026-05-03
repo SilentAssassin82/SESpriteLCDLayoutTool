@@ -74,6 +74,7 @@ namespace SESpriteLCDLayoutTool.Controls
         /// </summary>
         public void ShowHover(string text, Point anchorScreen, Control owner)
         {
+            if (IsDisposed || Disposing) return;
             if (string.IsNullOrWhiteSpace(text))
             { Hide(); return; }
 
@@ -92,6 +93,7 @@ namespace SESpriteLCDLayoutTool.Controls
         /// </summary>
         public void ShowDiagnostic(string text, DiagnosticSeverity severity, Point anchorScreen, Control owner)
         {
+            if (IsDisposed || Disposing) return;
             if (string.IsNullOrWhiteSpace(text))
             { Hide(); return; }
 

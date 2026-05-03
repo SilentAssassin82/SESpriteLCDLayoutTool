@@ -971,12 +971,55 @@ namespace SESpriteLCDLayoutTool
                 }
             }
 
-            // No source tracking — full replacement
+            // No source tracking — full replacement.
+            // Preserve animation state (KeyframeAnimation, AnimationEffects, group/index,
+            // stable Id, UserLabel) across the rebuild by matching new runtime sprites to
+            // the prior layout entries. Without this, the next Roslyn injection pass sees
+            // only the newly-animated sprite and silently strips every previously-injected
+            // animation track (e.g. SemiCircle's kfRot/RotationOrScale) from the code panel.
+            var preservedAnimByKey = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var prev in _layout.Sprites)
+            {
+                if (prev == null) continue;
+                if (prev.KeyframeAnimation == null
+                    && (prev.AnimationEffects == null || prev.AnimationEffects.Count == 0)
+                    && string.IsNullOrEmpty(prev.AnimationGroupId)
+                    && prev.AnimationIndex == 0)
+                    continue;
+
+                string key = prev.Type == SpriteEntryType.Text
+                    ? "TEXT|" + (prev.Text ?? "")
+                    : "TEXTURE|" + (prev.SpriteName ?? "");
+                if (!preservedAnimByKey.TryGetValue(key, out var q))
+                    preservedAnimByKey[key] = q = new Queue<SpriteEntry>();
+                q.Enqueue(prev);
+            }
+
             _layout.Sprites.Clear();
             foreach (var sp in result.Sprites)
             {
                 // Mark sprites as coming from execution so they're not treated as "new"
                 sp.IsFromExecution = true;
+
+                if (preservedAnimByKey.Count > 0)
+                {
+                    string key = sp.Type == SpriteEntryType.Text
+                        ? "TEXT|" + (sp.Text ?? "")
+                        : "TEXTURE|" + (sp.SpriteName ?? "");
+                    if (preservedAnimByKey.TryGetValue(key, out var q) && q.Count > 0)
+                    {
+                        var prev = q.Dequeue();
+                        sp.KeyframeAnimation = prev.KeyframeAnimation;
+                        sp.AnimationEffects  = prev.AnimationEffects;
+                        sp.AnimationGroupId  = prev.AnimationGroupId;
+                        sp.AnimationIndex    = prev.AnimationIndex;
+                        if (!string.IsNullOrEmpty(prev.Id))
+                            sp.Id = prev.Id;
+                        if (!string.IsNullOrEmpty(prev.UserLabel))
+                            sp.UserLabel = prev.UserLabel;
+                    }
+                }
+
                 _layout.Sprites.Add(sp);
             }
 

@@ -71,8 +71,25 @@ namespace SESpriteLCDLayoutTool.Services
                 return result;
             }
 
-            // Materialize full sprite list for ordinal lookups
-            var allSpritesList = allSprites.ToList();
+            // Materialize full sprite list for ordinal lookups.
+            // Deduplicate by stable Id: if the same SpriteEntry identity appears
+            // twice in _layout.Sprites (e.g. a stale clone from a refresh path),
+            // both copies would resolve to the same Add block via FindSpriteAddNodeById,
+            // and each would consume a suffix slot. The second copy would then
+            // overwrite the first's property text with a higher-suffix expression
+            // (e.g. RotationOrScale = arot2) while only the first's compute (arot)
+            // gets emitted — producing CS0841 "use of undeclared local 'arot2'".
+            var allSpritesList = new List<SpriteEntry>();
+            {
+                var seenIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var sp in allSprites)
+                {
+                    if (sp == null) continue;
+                    if (!string.IsNullOrEmpty(sp.Id) && !seenIds.Add(sp.Id))
+                        continue;
+                    allSpritesList.Add(sp);
+                }
+            }
 
             // Collect sprites with effects
             var animated = new List<SpriteEntry>();
@@ -100,7 +117,23 @@ namespace SESpriteLCDLayoutTool.Services
 
                 // Step 1b: Insert missing sprite Add blocks so every animated
                 //          sprite has a code anchor for the injector to target.
-                code = EnsureAllSpritesHaveAddBlocks(code, animated, allSpritesList);
+                //          Also synthesize blocks for non-animated sprites that
+                //          live in the layout but aren't represented in the code
+                //          (e.g. sprites added via the canvas while _codeBoxDirty
+                //          suppressed auto-regeneration). Without this, applying
+                //          a keyframe rewrites the code without those static
+                //          sprites; Execute Code then reconciles the layout to
+                //          the code and the static sprites disappear. Reference
+                //          and snapshot-only sprites are excluded — they are not
+                //          authored content and must not be exported as literals.
+                var spritesToEnsure = new List<SpriteEntry>();
+                foreach (var sp in allSpritesList)
+                {
+                    if (sp.IsReferenceLayout) continue;
+                    if (sp.IsSnapshotData) continue;
+                    spritesToEnsure.Add(sp);
+                }
+                code = EnsureAllSpritesHaveAddBlocks(code, spritesToEnsure, allSpritesList);
                 tree = CSharpSyntaxTree.ParseText(code);
                 root = tree.GetRoot();
 
@@ -115,7 +148,7 @@ namespace SESpriteLCDLayoutTool.Services
                 var spriteOrdinalMap = new Dictionary<SpriteEntry, int>();
                 {
                     var nameCounters = new Dictionary<string, int>();
-                    foreach (var sp in allSprites)
+                    foreach (var sp in allSpritesList)
                     {
                         string key = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
                         if (string.IsNullOrEmpty(key)) continue;
@@ -134,7 +167,7 @@ namespace SESpriteLCDLayoutTool.Services
 
                     int ord = spriteOrdinalMap.TryGetValue(sp, out int o) ? o : 0;
 
-                    var addNode = FindSpriteAddNode(root, spriteName, ord);
+                    var addNode = FindSpriteAddNodeFor(root, code, sp, spriteName, ord);
                     if (addNode == null)
                     {
                         System.Diagnostics.Debug.WriteLine(
@@ -225,6 +258,39 @@ namespace SESpriteLCDLayoutTool.Services
                     working = InjectForSprite(working, loc);
                 }
 
+                // Step 4b: Reset stale animated property text on sprites that
+                // currently have no effects. A previous injection may have baked
+                // identifiers like "RotationOrScale = arot" or "(byte)(fadeAlpha)"
+                // into their static initializers. Stripping marker regions removes
+                // the supporting fields/compute, but the property text in the Add
+                // block survives — leaving orphaned identifiers that fail to
+                // compile (or visually mis-render with whatever animated value
+                // happens to be in scope from another sprite). Rewriting every
+                // animatable property back to its clean static literal each pass
+                // guarantees stale text from prior runs is overwritten.
+                var animatedSet = new HashSet<SpriteEntry>(animated);
+                var staticSprites = allSpritesList
+                    .Where(sp => !sp.IsReferenceLayout
+                              && !sp.IsSnapshotData
+                              && !animatedSet.Contains(sp))
+                    .ToList();
+                // Reset bottom-to-top so character offsets stay valid alongside
+                // the animated injections. Use Roslyn each pass to find the
+                // Add block by name + ordinal.
+                var staticOrdered = staticSprites
+                    .Select(sp =>
+                    {
+                        string nm = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
+                        int ord = spriteOrdinalMap.TryGetValue(sp, out int o) ? o : 0;
+                        return new { Sprite = sp, Name = nm, Ordinal = ord };
+                    })
+                    .Where(x => !string.IsNullOrEmpty(x.Name))
+                    .ToList();
+                foreach (var x in staticOrdered)
+                {
+                    working = ResetStaticSpriteProperties(working, x.Sprite, x.Name, x.Ordinal);
+                }
+
                 // Step 5: Insert Ease helper if needed
                 if (needsEase && !HasEaseFunction(working))
                 {
@@ -260,6 +326,57 @@ namespace SESpriteLCDLayoutTool.Services
         // ═════════════════════════════════════════════════════════════════════
         //  Roslyn sprite finder
         // ═════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Resolves a sprite's Add block, preferring the stable
+        /// <c>\u27E6id:GUID\u27E7</c> marker emitted by <c>CodeGenerator</c>.
+        /// Falls back to <see cref="FindSpriteAddNode"/> matching by Data name
+        /// and ordinal when the marker is absent (legacy/imported code).
+        /// </summary>
+        private static ExpressionStatementSyntax FindSpriteAddNodeFor(
+            SyntaxNode root, string code, SpriteEntry sp, string spriteName, int ordinal)
+        {
+            if (sp != null && !string.IsNullOrEmpty(sp.Id))
+            {
+                var byId = FindSpriteAddNodeById(root, code, sp.Id);
+                if (byId != null) return byId;
+            }
+            return FindSpriteAddNode(root, spriteName, ordinal);
+        }
+
+        /// <summary>
+        /// Finds the <c>ExpressionStatementSyntax</c> whose Add block carries a
+        /// trailing <c>// \u27E6id:GUID\u27E7</c> stable-identity marker matching
+        /// <paramref name="id"/>. Returns null if no such block exists.
+        /// </summary>
+        private static ExpressionStatementSyntax FindSpriteAddNodeById(
+            SyntaxNode root, string code, string id)
+        {
+            if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(code)) return null;
+            string marker = "\u27E6id:" + id + "\u27E7";
+            int pos = code.IndexOf(marker, StringComparison.Ordinal);
+            if (pos < 0) return null;
+
+            // Walk up from the marker position to the enclosing Add ExpressionStatement.
+            var token = root.FindToken(pos, findInsideTrivia: true);
+            var node = token.Parent;
+            while (node != null)
+            {
+                if (node is ExpressionStatementSyntax es &&
+                    es.Expression is InvocationExpressionSyntax inv &&
+                    inv.Expression is MemberAccessExpressionSyntax ma &&
+                    ma.Name.Identifier.Text == "Add")
+                {
+                    var creation = inv.DescendantNodes()
+                        .OfType<ObjectCreationExpressionSyntax>()
+                        .FirstOrDefault(c => c.Type.ToString().Contains("MySprite"));
+                    if (creation != null)
+                        return es;
+                }
+                node = node.Parent;
+            }
+            return null;
+        }
 
         /// <summary>
         /// Finds the <c>ExpressionStatementSyntax</c> for a sprite's
@@ -332,7 +449,7 @@ namespace SESpriteLCDLayoutTool.Services
             // Re-parse to get fresh positions (previous injections shifted offsets)
             var tree = CSharpSyntaxTree.ParseText(code);
             var root = tree.GetRoot();
-            var addNode = FindSpriteAddNode(root, loc.SpriteName, loc.Ordinal);
+            var addNode = FindSpriteAddNodeFor(root, code, loc.Sprite, loc.SpriteName, loc.Ordinal);
             if (addNode == null) return code;
 
             // ── Collect all effects' compute lines and property overrides ──
@@ -366,6 +483,22 @@ namespace SESpriteLCDLayoutTool.Services
                         $"new Color({{baseR}}, {{baseG}}, {{baseB}}, (byte)({alphaExpr}))";
                 }
             }
+
+            // ── Backfill static defaults for any animatable property NOT overridden ──
+            // Stale animated expressions (e.g. "(byte)(fadeAlpha)" from a previous Fade
+            // effect, or "100f * pulseScale" from a previous Pulse) can remain baked into
+            // the static initializer text after the user removes/replaces effects. Without
+            // a fresh write, those orphaned identifiers fail to compile. Rewriting every
+            // animatable property each pass — with the sprite's clean static value when
+            // no current effect contributes — guarantees stale text is overwritten.
+            if (!allOverrides.ContainsKey("Position"))
+                allOverrides["Position"] = "new Vector2({baseX}, {baseY})";
+            if (!allOverrides.ContainsKey("Size"))
+                allOverrides["Size"] = "new Vector2({baseW}, {baseH})";
+            if (!allOverrides.ContainsKey("Color"))
+                allOverrides["Color"] = "new Color({baseR}, {baseG}, {baseB}, {baseA})";
+            if (!allOverrides.ContainsKey("RotationOrScale"))
+                allOverrides["RotationOrScale"] = "{baseRot}";
 
             // Resolve placeholder tokens with sprite's actual values
             ResolveBasePlaceholders(allOverrides, loc.Sprite);
@@ -420,7 +553,7 @@ namespace SESpriteLCDLayoutTool.Services
                 // Re-parse to get fresh position
                 tree = CSharpSyntaxTree.ParseText(result);
                 root = tree.GetRoot();
-                addNode = FindSpriteAddNode(root, loc.SpriteName, loc.Ordinal);
+                addNode = FindSpriteAddNodeFor(root, result, loc.Sprite, loc.SpriteName, loc.Ordinal);
                 if (addNode == null) return result;
 
                 string indent = GetIndent(result, addNode.SpanStart);
@@ -444,7 +577,7 @@ namespace SESpriteLCDLayoutTool.Services
             {
                 tree = CSharpSyntaxTree.ParseText(result);
                 root = tree.GetRoot();
-                addNode = FindSpriteAddNode(root, loc.SpriteName, loc.Ordinal);
+                addNode = FindSpriteAddNodeFor(root, result, loc.Sprite, loc.SpriteName, loc.Ordinal);
                 if (addNode != null)
                 {
                     string indent = GetIndent(result, addNode.SpanStart);
@@ -476,6 +609,77 @@ namespace SESpriteLCDLayoutTool.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// For a sprite with NO current animation effects, rewrites the
+        /// animatable initializer values (Position/Size/Color/RotationOrScale)
+        /// back to their clean static literals. Removes any stale identifier
+        /// expressions left behind by a previous injection pass.
+        /// </summary>
+        private static string ResetStaticSpriteProperties(
+            string code, SpriteEntry sp, string spriteName, int ordinal)
+        {
+            var tree = CSharpSyntaxTree.ParseText(code);
+            var root = tree.GetRoot();
+            var addNode = FindSpriteAddNodeFor(root, code, sp, spriteName, ordinal);
+            if (addNode == null) return code;
+
+            var creation = addNode.DescendantNodes()
+                .OfType<ObjectCreationExpressionSyntax>()
+                .FirstOrDefault(c => c.Type.ToString().Contains("MySprite"));
+            if (creation?.Initializer == null) return code;
+
+            var staticOverrides = new Dictionary<string, string>
+            {
+                ["Position"]        = "new Vector2({baseX}, {baseY})",
+                ["Size"]            = "new Vector2({baseW}, {baseH})",
+                ["Color"]           = "new Color({baseR}, {baseG}, {baseB}, {baseA})",
+                ["RotationOrScale"] = "{baseRot}",
+            };
+            ResolveBasePlaceholders(staticOverrides, sp);
+
+            var valueReplacements = new List<Tuple<int, int, string>>();
+            foreach (var expr in creation.Initializer.Expressions)
+            {
+                if (expr is AssignmentExpressionSyntax assign &&
+                    assign.Left is IdentifierNameSyntax propId)
+                {
+                    string propName = propId.Identifier.Text;
+                    if (staticOverrides.TryGetValue(propName, out string newValue))
+                    {
+                        // Skip rewrite if existing value is already a clean literal
+                        // (no identifiers that could be stale animated expressions).
+                        string existing = assign.Right.ToString();
+                        if (!ContainsAnimatedIdentifier(existing)) continue;
+                        valueReplacements.Add(Tuple.Create(assign.Right.SpanStart, assign.Right.Span.End, newValue));
+                    }
+                }
+            }
+
+            string result = code;
+            foreach (var rep in valueReplacements.OrderByDescending(r => r.Item1))
+            {
+                result = result.Substring(0, rep.Item1)
+                       + rep.Item3
+                       + result.Substring(rep.Item2);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Heuristic: returns true if the property initializer text references
+        /// identifiers that look like animated state (anything that isn't a
+        /// pure literal, Vector2(...), or Color(...) call with numeric args).
+        /// Conservatively detects known animation prefixes used by emitters.
+        /// </summary>
+        private static bool ContainsAnimatedIdentifier(string expr)
+        {
+            if (string.IsNullOrEmpty(expr)) return false;
+            // Known animation identifiers emitted by effects.
+            // Match as whole words (with optional numeric suffix).
+            return Regex.IsMatch(expr,
+                @"\b(?:arot|ax|ay|aw|ah|ascl|ar|ag|ab|aa|fadeAlpha|pulseScale|cycleColor|oscX|oscY|kfTick|kfEase|kfX|kfY|kfW|kfH|kfR|kfG|kfB|kfA|kfRot|kfScale)\d*\b");
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -598,12 +802,50 @@ namespace SESpriteLCDLayoutTool.Services
                             insertPos = LineStartOf(code, firstMethod.SpanStart);
                             indent = GetIndent(code, firstMethod.SpanStart);
                         }
+                        else
+                        {
+                            // Bare method fragments (e.g. CodeGenerator.Generate() output —
+                            // a free-floating "private void DrawLayout(...) { ... }" with no
+                            // class wrapper) do not parse as MethodDeclarationSyntax at top
+                            // level. Fall back to a textual scan for the DrawFrame method
+                            // header so the Ease helper still ends up beside the renderer.
+                            int drawFrameIdx = code.IndexOf(".DrawFrame(", StringComparison.Ordinal);
+                            if (drawFrameIdx >= 0)
+                            {
+                                // Walk back to the enclosing method's signature line.
+                                int braceIdx = code.LastIndexOf('{', drawFrameIdx);
+                                int searchEnd = braceIdx > 0 ? braceIdx : drawFrameIdx;
+                                int sigLineStart = LineStartOf(code, searchEnd);
+                                // Walk further back over any access/return-type lines until
+                                // we hit a blank line or start of file.
+                                int probe = sigLineStart;
+                                while (probe > 0)
+                                {
+                                    int prevLineStart = LineStartOf(code, probe - 1);
+                                    string prev = code.Substring(prevLineStart, probe - prevLineStart).TrimEnd('\r', '\n');
+                                    if (string.IsNullOrWhiteSpace(prev)) break;
+                                    if (prev.TrimEnd().EndsWith("}")) break;
+                                    probe = prevLineStart;
+                                }
+                                insertPos = probe;
+                                indent = GetIndent(code, insertPos);
+                            }
+                            else
+                            {
+                                // Absolute last resort: top of file.
+                                insertPos = 0;
+                                indent = "";
+                            }
+                        }
                     }
                 }
             }
 
             if (insertPos < 0)
-                return code;
+            {
+                insertPos = 0;
+                indent = "";
+            }
 
             var sb = new StringBuilder();
             sb.AppendLine($"{indent}{EaseStart}");
@@ -780,6 +1022,7 @@ namespace SESpriteLCDLayoutTool.Services
                 val = val.Replace("{baseG}", sp.ColorG.ToString());
                 val = val.Replace("{baseB}", sp.ColorB.ToString());
                 val = val.Replace("{baseA}", sp.ColorA.ToString());
+                val = val.Replace("{baseRot}", $"{sp.Rotation:F4}f");
                 overrides[key] = val;
             }
         }
@@ -861,7 +1104,7 @@ namespace SESpriteLCDLayoutTool.Services
                 string name = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
                 if (string.IsNullOrEmpty(name)) continue;
                 int ord = ordinalMap.TryGetValue(sp, out int o) ? o : 0;
-                var exactNode = FindSpriteAddNode(root, name, ord);
+                var exactNode = FindSpriteAddNodeFor(root, code, sp, name, ord);
                 if (exactNode == null)
                 {
                     // If any Add block for this sprite name already exists, do not
@@ -949,7 +1192,10 @@ namespace SESpriteLCDLayoutTool.Services
             bool isText = sp.Type == SpriteEntryType.Text;
             string dataValue = isText ? sp.Text : sp.SpriteName;
 
-            sb.AppendLine($"{indent}frame.Add(new MySprite");
+            string idMarker = !string.IsNullOrEmpty(sp.Id)
+                ? $" // \u27E6id:{sp.Id}\u27E7"
+                : "";
+            sb.AppendLine($"{indent}frame.Add(new MySprite{idMarker}");
             sb.AppendLine($"{indent}{{");
             sb.AppendLine($"{indent}    Type            = SpriteType.{(isText ? "TEXT" : "TEXTURE")},");
             sb.AppendLine($"{indent}    Data            = \"{dataValue}\",");

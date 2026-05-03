@@ -54,8 +54,32 @@ namespace SESpriteLCDLayoutTool.Services
                     continue;
                 }
 
-                // Look for '{' as the next non-whitespace significant char
-                int braceStart = FindNextNonWhitespace(code, afterName);
+                // Look for '{' as the next non-whitespace significant char.
+                // Skip over any trailing line comment on the same line (where we
+                // may have emitted a ⟦id:GUID⟧ stable-identity marker).
+                int braceStart = -1;
+                string idMarker = null;
+                {
+                    int scan = afterName;
+                    while (scan < code.Length)
+                    {
+                        char c = code[scan];
+                        if (c == '{') { braceStart = scan; break; }
+                        if (char.IsWhiteSpace(c)) { scan++; continue; }
+                        if (c == '/' && scan + 1 < code.Length && code[scan + 1] == '/')
+                        {
+                            int lineEnd = code.IndexOf('\n', scan);
+                            if (lineEnd < 0) lineEnd = code.Length;
+                            string commentText = code.Substring(scan, lineEnd - scan);
+                            var idMatch = Regex.Match(commentText,
+                                "\u27E6id:([^\u27E7]+)\u27E7");
+                            if (idMatch.Success) idMarker = idMatch.Groups[1].Value.Trim();
+                            scan = lineEnd;
+                            continue;
+                        }
+                        break;
+                    }
+                }
                 if (braceStart >= 0 && code[braceStart] == '{')
                 {
                     int braceEnd = FindMatchingBrace(code, braceStart);
@@ -67,6 +91,8 @@ namespace SESpriteLCDLayoutTool.Services
                             {
                                 sprite.SourceStart = idx;
                                 sprite.SourceEnd = braceEnd + 1;
+                                if (!string.IsNullOrEmpty(idMarker))
+                                    sprite.Id = idMarker;
                                 results.Add(sprite);
                                 consumed.Add(new[] { idx, braceEnd });
                             }

@@ -114,7 +114,7 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     var sp = visibleSprites[i];
                     sb.AppendLine($"        // [{i + 1}] {sp.DisplayName}");
-                    sb.AppendLine("        frame.Add(new MySprite");
+                    sb.AppendLine($"        frame.Add(new MySprite // \u27E6id:{sp.Id}\u27E7");
                     sb.AppendLine("        {");
 
                     if (sp.Type == SpriteEntryType.Text)

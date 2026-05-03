@@ -2484,10 +2484,20 @@ namespace SESpriteLCDLayoutTool
 
         private void UpdateCodeDiagnosticTooltip(Point mousePoint)
         {
-            if (_codeBox == null || _codeDiagTooltip == null || _codeBox.TextLength == 0)
+            if (_codeBox == null || _codeBox.TextLength == 0)
             {
                 HideCodeDiagnosticTooltip();
                 return;
+            }
+
+            // The tooltip can be disposed when the code editor is detached/re-parented
+            // (e.g. popped out into a separate window). Recreate on demand instead of
+            // throwing ObjectDisposedException on every mouse move.
+            if (_codeDiagTooltip == null || _codeDiagTooltip.IsDisposed)
+            {
+                _codeDiagTooltip = new Controls.HoverTooltipWindow();
+                _lastCodeDiagTooltipChar = -1;
+                _lastCodeDiagTooltipText = null;
             }
 
             int charIndex = _codeBox.GetCharIndexFromPosition(mousePoint);
@@ -2531,7 +2541,12 @@ namespace SESpriteLCDLayoutTool
 
         private void HideCodeDiagnosticTooltip()
         {
-            _codeDiagTooltip?.Hide();
+            try
+            {
+                if (_codeDiagTooltip != null && !_codeDiagTooltip.IsDisposed)
+                    _codeDiagTooltip.Hide();
+            }
+            catch (ObjectDisposedException) { /* tooltip was disposed concurrently */ }
             _lastCodeDiagTooltipText = null;
             _lastCodeDiagTooltipChar = -1;
         }

@@ -1274,6 +1274,14 @@ namespace SESpriteLCDLayoutTool
             };
             AddOrReplaceEffect(sprite, kfEffect);
 
+            // A sprite that owns a KeyframeEffect is an independent leader.
+            // Strip any stale GroupFollowerEffect attached during a previous
+            // pass when this sprite was treated as a follower — otherwise it
+            // would emit RotationOrScale = arot{otherLeaderSuffix} and clash
+            // with its own compute (CS0841).
+            if (sprite.AnimationEffects != null)
+                sprite.AnimationEffects.RemoveAll(fx => fx is GroupFollowerEffect);
+
             string leaderGroupId = sprite.AnimationGroupId;
             if (!string.IsNullOrEmpty(leaderGroupId) && _layout != null)
             {
@@ -1284,8 +1292,17 @@ namespace SESpriteLCDLayoutTool
                 float leaderBaseW = kf0?.Width ?? sprite.Width;
                 float leaderBaseH = kf0?.Height ?? sprite.Height;
 
+                // Sprites with their own KeyframeAnimation are independent
+                // animators in the multi-sprite timeline — they must not be
+                // attached as followers of another leader. Doing so injects a
+                // stale GroupFollowerEffect that overrides RotationOrScale
+                // (and other props) with the OTHER leader's suffix, producing
+                // CS0841 "use of undeclared local 'arotN'" when the suffixes
+                // disagree with the sprite's own emitted compute.
                 var followers = _layout.Sprites
-                    .Where(s => s.AnimationGroupId == leaderGroupId && s != sprite)
+                    .Where(s => s.AnimationGroupId == leaderGroupId
+                                && s != sprite
+                                && s.KeyframeAnimation == null)
                     .ToList();
 
                 foreach (var f in followers)
@@ -1316,9 +1333,44 @@ namespace SESpriteLCDLayoutTool
             _codeBoxDirty = true;
             ShowPatchDiff(existing, newCode);
             if (_layout != null)
+            {
                 _layout.OriginalSourceCode = _codeBox.Text;
+
+                // Re-bind layout sprites to the newly-emitted Add blocks.
+                // The Roslyn animation injector may synthesize Add blocks for
+                // sprites whose SourceStart was -1 (via EnsureAllSpritesHaveAddBlocks).
+                // Without this refresh, the next RefreshCode() pass would see those
+                // entries as still-untracked "new sprites" and call RoslynCodeMerger
+                // .InsertSprites, which appends a second compact-format Add block —
+                // duplicating every sprite in the scene after each animation edit.
+                RefreshSourceTracking();
+            }
             WriteBackToWatchedFile(_codeBox.Text);
             SetStatus(status);
+        }
+
+        /// <summary>
+        /// Returns true when <paramref name="code"/> is a complete program the
+        /// Roslyn animation injector can rewrite without losing static sprites.
+        /// Recognizes PB programs (Main/class Program) AND Helper/DrawLayout
+        /// style code emitted by <c>CodeGenerator.Generate()</c> — any class
+        /// whose body invokes <c>DrawFrame()</c>. Without the Helper case the
+        /// caller falls through to the legacy keyframe generator, which emits
+        /// a complete program containing only the animated sprite and silently
+        /// drops every other Add block in the scene.
+        /// </summary>
+        private static bool IsCompleteProgramForInjection(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return false;
+            if (code.IndexOf("public void Main(", StringComparison.Ordinal) >= 0) return true;
+            if (code.IndexOf("class Program", StringComparison.Ordinal) >= 0) return true;
+            // Helper/DrawLayout style: any method that calls .DrawFrame().
+            // CodeGenerator.Generate() emits a bare "private void DrawLayout(IMyTextSurface surface) { using (var frame = surface.DrawFrame()) { ... } }"
+            // method WITHOUT a class wrapper, so don't require a 'class' token.
+            // The Roslyn injector handles that shape (it looks up MethodDeclarationSyntax containing DrawFrame()).
+            if (code.IndexOf(".DrawFrame(", StringComparison.Ordinal) >= 0)
+                return true;
+            return false;
         }
 
         private void MergeAnimationsIntoPanel(IEnumerable<SpriteEntry> sprites)
@@ -1337,8 +1389,7 @@ namespace SESpriteLCDLayoutTool
                 PrepareSpriteForKeyframeInjection(sprite);
 
             string existing = _codeBox.Text;
-            bool existingIsComplete = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
-                                   || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0;
+            bool existingIsComplete = IsCompleteProgramForInjection(existing);
             bool hasLegacyKeyframeBlock = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
 
             if (existingIsComplete && !hasLegacyKeyframeBlock)
@@ -1370,9 +1421,9 @@ namespace SESpriteLCDLayoutTool
 
             // A method-body snippet from CodeGenerator.Generate() is NOT a complete program.
             // Roslyn would place fields at file scope and miss Main() for tick insertion.
-            // Only use Roslyn injection when the existing code is a complete PB program.
-            bool existingIsComplete = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
-                                   || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0;
+            // Only use Roslyn injection when the existing code is a complete PB program OR
+            // a Helper/DrawLayout-style class with a DrawFrame() call (CodeGenerator output).
+            bool existingIsComplete = IsCompleteProgramForInjection(existing);
             bool hasLegacyKeyframeBlock = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
 
             // Pass all sprites so ordinal matching works for duplicates
@@ -1831,8 +1882,16 @@ namespace SESpriteLCDLayoutTool
             // For group followers (sprite != editTarget): pass the originally selected
             // sprite so the dialog title and preview show that sprite's appearance,
             // but supply the leader's existing params so the shared animation is edited.
+            //
+            // Always reuse any in-memory KeyframeAnimation when present, even when the
+            // caller didn't explicitly request edit mode. Otherwise the dialog rebuilds
+            // a fresh 2-keyframe sequence from the sprite's current state, which has
+            // identical Rotation/Scale on both keyframes — KeyframeEffect.HasProperty
+            // returns false and the rotation track silently disappears from generated
+            // code.
+            var existingParams = editTarget.KeyframeAnimation;
             var dlg = new KeyframeEditorDialog(sprite, target,
-                editExisting ? editTarget.KeyframeAnimation : null, _textureCache);
+                existingParams, _textureCache);
 
             // The constructor set sprite.KeyframeAnimation = _params.  If the
             // selected sprite is a follower (not the leader) that side-effect would
@@ -2196,10 +2255,17 @@ namespace SESpriteLCDLayoutTool
                 // Pass all sprites so ordinal matching works for duplicates
                 var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
 
-                // Roslyn needs a complete PB program. If the panel is empty or only
-                // holds a generated method-body snippet, build the complete program first.
+                // Roslyn needs code that hosts a frame.Add(...) site. PB programs
+                // (Main / class Program) qualify; helper-style scripts emitted by
+                // CodeGenerator.Generate() — which use a free-floating
+                // "private void DrawLayout(IMyTextSurface surface) { … surface.DrawFrame() … }"
+                // method with no Main() — also qualify and MUST NOT be wholesale
+                // replaced by a freshly synthesized PB program (that would throw
+                // away the user's multi-sprite layout, inject "using System;",
+                // a Program() ctor, etc.). Detect the helper form via DrawFrame().
                 bool simpleExistingIsComplete = existing.IndexOf("public void Main(", StringComparison.Ordinal) >= 0
-                                            || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0;
+                                            || existing.IndexOf("class Program", StringComparison.Ordinal) >= 0
+                                            || existing.IndexOf(".DrawFrame(", StringComparison.Ordinal) >= 0;
                 bool simpleHasLegacyKeyframeBlock = existing.IndexOf(AnimationSnippetGenerator.FooterMarker, StringComparison.Ordinal) >= 0;
                 string codeToInject = existing;
                 if (string.IsNullOrWhiteSpace(existing) || !simpleExistingIsComplete)
