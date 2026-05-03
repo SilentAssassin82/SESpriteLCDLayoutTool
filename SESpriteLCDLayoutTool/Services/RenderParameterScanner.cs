@@ -92,7 +92,13 @@ namespace SESpriteLCDLayoutTool.Services
         // ── Roslyn implementation ────────────────────────────────────────────────
         private static List<RenderParameterKnob> ScanWithRoslyn(string source, string methodName)
         {
-            var tree = CSharpSyntaxTree.ParseText(source);
+            // Parse with the same preprocessor symbols the runtime uses, otherwise
+            // anything inside #if TORCH / #if DEBUG blocks is dropped from the syntax
+            // tree (so switch-case render bodies become invisible to the scanner).
+            var parseOpts = new CSharpParseOptions(
+                LanguageVersion.Latest,
+                preprocessorSymbols: new[] { "TORCH", "DEBUG", "PULSAR" });
+            var tree = CSharpSyntaxTree.ParseText(source, parseOpts);
             var root = tree.GetRoot();
             var knobs = new List<RenderParameterKnob>();
 
