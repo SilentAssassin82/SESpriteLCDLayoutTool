@@ -1870,8 +1870,19 @@ namespace SESpriteLCDLayoutTool
             // Close any previously open snippet dialog
             if (_snippetDialog != null && !_snippetDialog.IsDisposed)
             {
-                _snippetDialog.Close();
-                _snippetDialog.Dispose();
+                try
+                {
+                    _snippetDialog.Close();
+                    _snippetDialog.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    // Closing a stale dialog can throw if its FormClosed handler
+                    // touches disposed state. Swallow — the dialog is going away
+                    // anyway and we'll reopen a fresh one. Log for diagnostics.
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[ShowKeyframeAnimationDialog] Closing stale dialog: {ex}");
+                }
                 _snippetDialog = null;
             }
 
@@ -1890,8 +1901,24 @@ namespace SESpriteLCDLayoutTool
             // returns false and the rotation track silently disappears from generated
             // code.
             var existingParams = editTarget.KeyframeAnimation;
-            var dlg = new KeyframeEditorDialog(sprite, target,
-                existingParams, _textureCache);
+            KeyframeEditorDialog dlg;
+            try
+            {
+                dlg = new KeyframeEditorDialog(sprite, target,
+                    existingParams, _textureCache);
+            }
+            catch (Exception ex)
+            {
+                // Constructing a fresh dialog can fail if the previously-open
+                // instance left some shared resource in a half-disposed state.
+                // Surface a friendly status instead of letting WinForms show a
+                // generic crash dialog — re-clicking Create Keyframe will work.
+                System.Diagnostics.Debug.WriteLine(
+                    $"[ShowKeyframeAnimationDialog] Dialog construction failed: {ex}");
+                _snippetDialog = null;
+                SetStatus("Couldn't open keyframe editor — please try again");
+                return;
+            }
 
             // The constructor set sprite.KeyframeAnimation = _params.  If the
             // selected sprite is a follower (not the leader) that side-effect would
@@ -1915,7 +1942,18 @@ namespace SESpriteLCDLayoutTool
             {
                 if (_snippetDialog == dlg) _snippetDialog = null;
             };
-            dlg.Show(this);
+            try
+            {
+                dlg.Show(this);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[ShowKeyframeAnimationDialog] Show() failed: {ex}");
+                try { dlg.Dispose(); } catch { }
+                _snippetDialog = null;
+                SetStatus("Couldn't open keyframe editor — please try again");
+            }
         }
 
 

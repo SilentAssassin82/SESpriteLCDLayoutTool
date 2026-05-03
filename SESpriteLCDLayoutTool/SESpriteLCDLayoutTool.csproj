@@ -219,6 +219,7 @@
     <Compile Include="Services\TemplateGallery.cs" />
     <Compile Include="Services\UndoManager.cs" />
     <Compile Include="Services\WatchExpressionEvaluator.cs" />
+    <Compile Include="SESpriteLCDLayoutTool\Services\TemplateMerger.cs" />
     <Compile Include="TemplateGalleryDialog.cs">
       <SubType>Form</SubType>
     </Compile>

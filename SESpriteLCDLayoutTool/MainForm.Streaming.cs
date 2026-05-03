@@ -1443,18 +1443,52 @@ namespace SESpriteLCDLayoutTool
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 if (string.IsNullOrEmpty(dlg.GeneratedCode)) return;
 
-                // Insert the generated code at the cursor in the code editor
+                // Insert the generated code into the editor.
+                // For Safe and Standalone templates, attempt a smart Roslyn-based
+                // merge into the host frame scope: reuse host locals when values
+                // match, rename template locals when values differ, and place the
+                // snippet just before frame.Dispose() / the scope's closing brace.
+                // Conflicting templates fall back to a raw cursor paste so users
+                // see exactly what they accepted into a possibly-fragile script.
                 if (_codeBox != null)
                 {
-                    _codeBox.Focus();
-                    _suppressCodeBoxEvents = true;
-                    try
+                    string snippet = dlg.GeneratedCode;
+                    bool merged = false;
+                    string mergeNote = null;
+
+                    if (dlg.GeneratedCompatibility != Models.TemplateCompatibility.Conflicting)
                     {
-                        _codeBox.SelectedText = dlg.GeneratedCode;
+                        var mr = Services.TemplateMerger.Merge(_codeBox.Text ?? "", snippet);
+                        if (mr.Success && mr.UsedHostScope && !string.IsNullOrEmpty(mr.MergedCode))
+                        {
+                            _codeBox.Focus();
+                            _suppressCodeBoxEvents = true;
+                            try
+                            {
+                                _codeBox.Text = mr.MergedCode;
+                            }
+                            finally
+                            {
+                                _suppressCodeBoxEvents = false;
+                            }
+                            merged = true;
+                            if (mr.Notes.Count > 0)
+                                mergeNote = " (" + string.Join("; ", mr.Notes) + ")";
+                        }
                     }
-                    finally
+
+                    if (!merged)
                     {
-                        _suppressCodeBoxEvents = false;
+                        _codeBox.Focus();
+                        _suppressCodeBoxEvents = true;
+                        try
+                        {
+                            _codeBox.SelectedText = snippet;
+                        }
+                        finally
+                        {
+                            _suppressCodeBoxEvents = false;
+                        }
                     }
 
                     _codeBoxDirty = true;
@@ -1462,16 +1496,19 @@ namespace SESpriteLCDLayoutTool
                     _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);
                     if (_btnApplyCode != null) _btnApplyCode.Visible = true;
 
+                    string where = merged ? " into frame scope" : "";
                     switch (dlg.GeneratedCompatibility)
                     {
                         case Models.TemplateCompatibility.Standalone:
-                            SetStatus("Template inserted (Standalone) — keep the snippet as-is. Do not apply keyframe effects to its sprites; use the Keyframe Animator for stackable animations instead.");
+                            SetStatus($"Template merged{where} (Standalone){mergeNote ?? ""} — uses its own tick math. For stackable effects use the Keyframe Animator.");
                             break;
                         case Models.TemplateCompatibility.Conflicting:
                             SetStatus("⚠ Template inserted (Manual Insert) — this template may collide with the animation injector. Avoid mixing it with keyframe effects on the same sprite.");
                             break;
                         default:
-                            SetStatus("Template inserted — click 'Apply Code' or '▶ Execute Code' to see it on canvas.");
+                            SetStatus(merged
+                                ? $"Template merged{where}{mergeNote ?? ""} — click 'Apply Code' or '▶ Execute Code' to see it on canvas."
+                                : "Template inserted — click 'Apply Code' or '▶ Execute Code' to see it on canvas.");
                             break;
                     }
                 }

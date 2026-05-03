@@ -439,6 +439,12 @@ namespace SESpriteLCDLayoutTool
             var snapshot = history.GetSnapshot(scrubTick);
             if (snapshot == null) return;
 
+            // Rewind the canvas to the historical sprite snapshot for this tick
+            // so the rendered frame matches the variables we're showing. Without
+            // this, dragging the scrubber back only updates the Variables list
+            // while the canvas stays frozen on the most recent live frame.
+            ApplySpriteSnapshotToCanvas(player, scrubTick);
+
             // Populate _lstVariables from the historical snapshot
             _lstVariables.BeginUpdate();
             var orderedFields = new List<KeyValuePair<string, object>>();
@@ -486,6 +492,50 @@ namespace SESpriteLCDLayoutTool
         private void ResetScrubbing()
         {
             _isScrubbing = false;
+        }
+
+        /// <summary>
+        /// Replaces the canvas's current sprite list with the recorded sprite
+        /// snapshot for the given tick so the rendered frame matches the
+        /// scrubber position. Falls back gracefully when no sprite history is
+        /// available (e.g. fast-capture mode or pre-history scripts).
+        /// </summary>
+        private void ApplySpriteSnapshotToCanvas(AnimationPlayer player, int scrubTick)
+        {
+            if (player == null || _layout == null || _canvas == null) return;
+
+            var spriteHistory = player.SpriteHistory;
+            if (spriteHistory == null || spriteHistory.Count == 0) return;
+
+            var snap = spriteHistory.GetSnapshot(scrubTick);
+            if (snap == null) return;
+
+            _layout.Sprites.Clear();
+            foreach (var s in snap)
+            {
+                _layout.Sprites.Add(new SpriteEntry
+                {
+                    Type       = s.Type,
+                    SpriteName = s.SpriteName,
+                    Text       = s.Text,
+                    X          = s.X,
+                    Y          = s.Y,
+                    Width      = s.Width,
+                    Height     = s.Height,
+                    ColorR     = s.ColorR,
+                    ColorG     = s.ColorG,
+                    ColorB     = s.ColorB,
+                    ColorA     = s.ColorA,
+                    Rotation   = s.Rotation,
+                    Scale      = s.Scale,
+                    Alignment  = s.Alignment,
+                    FontId     = s.FontId,
+                });
+            }
+
+            if (_canvas.SelectedSprite != null)
+                _canvas.SelectedSprite = null;
+            _canvas.Invalidate();
         }
 
         // ── Snapshot Comparison Bookmarks ────────────────────────────────────────
