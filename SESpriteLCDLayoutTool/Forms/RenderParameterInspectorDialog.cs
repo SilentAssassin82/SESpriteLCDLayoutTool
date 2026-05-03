@@ -23,12 +23,22 @@ namespace SESpriteLCDLayoutTool.Forms
         private ComboBox _cmbMethod;
         private FlowLayoutPanel _pnlKnobs;
         private Label _lblStatus;
+        private CheckBox _chkLivePreview;
+        private Timer _liveTimer;
 
         /// <summary>Patched source to write back to the code box after Apply.</summary>
         public string PatchedCode { get; private set; }
 
         /// <summary>True once Apply has produced patched code.</summary>
         public bool DidApply { get; private set; }
+
+        /// <summary>
+        /// Optional live-preview hook. When the user enables "Live preview" and
+        /// changes a knob, this callback is invoked (debounced ~250 ms) with the
+        /// fully patched source. The host typically writes it to the code box and
+        /// triggers an execute pass to refresh the canvas.
+        /// </summary>
+        public Action<string> LivePreviewCallback { get; set; }
 
         public RenderParameterInspectorDialog(string code, IList<string> renderMethodNames, string defaultMethod)
         {
@@ -45,6 +55,14 @@ namespace SESpriteLCDLayoutTool.Forms
 
             BuildUi(renderMethodNames, defaultMethod);
             ScanAndPopulate();
+
+            _liveTimer = new Timer { Interval = 250 };
+            _liveTimer.Tick += (s, e) =>
+            {
+                _liveTimer.Stop();
+                FireLivePreview();
+            };
+            FormClosed += (s, e) => { _liveTimer?.Stop(); _liveTimer?.Dispose(); };
         }
 
         private void BuildUi(IList<string> methodNames, string defaultMethod)
@@ -75,6 +93,15 @@ namespace SESpriteLCDLayoutTool.Forms
             _cmbMethod.SelectedIndexChanged += (s, e) => ScanAndPopulate();
             top.Controls.Add(lbl);
             top.Controls.Add(_cmbMethod);
+
+            _chkLivePreview = new CheckBox
+            {
+                Text = "Live preview",
+                AutoSize = true,
+                Location = new Point(394, 9),
+                ForeColor = Color.FromArgb(180, 220, 255),
+            };
+            top.Controls.Add(_chkLivePreview);
 
             _pnlKnobs = new FlowLayoutPanel
             {
@@ -183,6 +210,7 @@ namespace SESpriteLCDLayoutTool.Forms
                     ForeColor = Color.FromArgb(220, 220, 220),
                 };
                 try { num.Value = (decimal)k.CurrentValue; } catch { }
+                num.ValueChanged += (s, e) => ScheduleLivePreview();
                 var origLbl = new Label
                 {
                     Text = "(was " + k.OriginalLiteral + ")",
@@ -208,6 +236,24 @@ namespace SESpriteLCDLayoutTool.Forms
                 try { kv.Value.Value = (decimal)kv.Key.OriginalValue; } catch { }
             }
             _lblStatus.Text = "Reset to original values.";
+        }
+
+        private void ScheduleLivePreview()
+        {
+            if (_chkLivePreview == null || !_chkLivePreview.Checked) return;
+            if (LivePreviewCallback == null) return;
+            _liveTimer.Stop();
+            _liveTimer.Start();
+        }
+
+        private void FireLivePreview()
+        {
+            if (LivePreviewCallback == null) return;
+            foreach (var kv in _numerics)
+                kv.Key.CurrentValue = (double)kv.Value.Value;
+            string patched = RenderParameterScanner.ApplyEdits(_originalCode, _knobs);
+            try { LivePreviewCallback(patched); _lblStatus.Text = "Live preview updated."; }
+            catch (Exception ex) { _lblStatus.Text = "Live preview error: " + ex.Message; }
         }
 
         private void ApplyKnobs()

@@ -1000,6 +1000,14 @@ namespace SESpriteLCDLayoutTool
 
             using (var dlg = new SESpriteLCDLayoutTool.Forms.RenderParameterInspectorDialog(code, methodNames, defaultMethod))
             {
+                dlg.LivePreviewCallback = patched =>
+                {
+                    if (string.IsNullOrEmpty(patched) || patched == _codeBox.Text) return;
+                    SetCodeText(patched);
+                    _codeBoxDirty = true;
+                    // Re-execute through the existing pipeline so the canvas reflects the new values.
+                    try { OnExecCodeClick(this, EventArgs.Empty); } catch { /* swallow live errors */ }
+                };
                 dlg.ShowDialog(this);
                 if (dlg.DidApply && !string.IsNullOrEmpty(dlg.PatchedCode) && dlg.PatchedCode != code)
                 {
