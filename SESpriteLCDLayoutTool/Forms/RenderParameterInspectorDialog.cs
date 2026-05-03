@@ -19,6 +19,10 @@ namespace SESpriteLCDLayoutTool.Forms
         private readonly List<RenderParameterKnob> _knobs;
         private readonly Dictionary<RenderParameterKnob, NumericUpDown> _numerics
             = new Dictionary<RenderParameterKnob, NumericUpDown>();
+        // Color knobs are edited via a swatch + ColorDialog rather than per-channel
+        // numeric inputs; we keep a Color reference so live preview/apply can read it.
+        private readonly Dictionary<RenderParameterKnob, Func<Color>> _colorReaders
+            = new Dictionary<RenderParameterKnob, Func<Color>>();
 
         private ComboBox _cmbMethod;
         private FlowLayoutPanel _pnlKnobs;
@@ -168,6 +172,7 @@ namespace SESpriteLCDLayoutTool.Forms
             _pnlKnobs.SuspendLayout();
             _pnlKnobs.Controls.Clear();
             _numerics.Clear();
+            _colorReaders.Clear();
             _knobs.Clear();
 
             string method = _cmbMethod.SelectedIndex > 0 ? _cmbMethod.SelectedItem as string : null;
@@ -215,7 +220,18 @@ namespace SESpriteLCDLayoutTool.Forms
         {
             int rowWidth = _pnlKnobs.ClientSize.Width - 24;
             if (rowWidth < 540) rowWidth = 540;
-            var row = new Panel { Width = rowWidth, Height = 30, Margin = new Padding(0, 2, 0, 2) };
+            if (k.Color != null)
+            {
+                AddColorRow(k, rowWidth);
+                return;
+            }
+            var row = new Panel
+            {
+                Width = rowWidth,
+                Height = 30,
+                Margin = new Padding(0, 2, 0, 2),
+                BackColor = Color.FromArgb(35, 35, 38),
+            };
             var nameLbl = new Label
             {
                 Text = k.Name,
@@ -242,15 +258,13 @@ namespace SESpriteLCDLayoutTool.Forms
             double sliderMin, sliderMax;
             ComputeSliderRange(k, out sliderMin, out sliderMax);
             const int kSliderTicks = 1000;
-            var slider = new TrackBar
+            var slider = new DarkSlider
             {
                 Minimum = 0,
                 Maximum = kSliderTicks,
-                TickStyle = TickStyle.None,
-                Location = new Point(326, 0),
+                Location = new Point(326, 4),
                 Width = rowWidth - 326 - 130,
-                Height = 30,
-                BackColor = row.BackColor,
+                Height = 22,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             };
             try { slider.Value = ValueToTick(k.CurrentValue, sliderMin, sliderMax, kSliderTicks); } catch { }
@@ -293,6 +307,104 @@ namespace SESpriteLCDLayoutTool.Forms
             _numerics[k] = num;
         }
 
+        private void AddColorRow(RenderParameterKnob k, int rowWidth)
+        {
+            var row = new Panel
+            {
+                Width = rowWidth,
+                Height = 30,
+                Margin = new Padding(0, 2, 0, 2),
+                BackColor = Color.FromArgb(35, 35, 38),
+            };
+            var nameLbl = new Label
+            {
+                Text = k.Name,
+                AutoSize = false,
+                Width = 220,
+                Location = new Point(4, 6),
+                ForeColor = ForeColor,
+            };
+
+            // Current edited color (mutable closure state).
+            var current = Color.FromArgb(
+                k.Color.A != null ? k.Color.A.CurrentValue : 255,
+                k.Color.R.CurrentValue,
+                k.Color.G.CurrentValue,
+                k.Color.B.CurrentValue);
+
+            var swatch = new Panel
+            {
+                Location = new Point(228, 4),
+                Width = 60,
+                Height = 22,
+                BackColor = current,
+                BorderStyle = BorderStyle.FixedSingle,
+                Cursor = Cursors.Hand,
+            };
+            var rgbLbl = new Label
+            {
+                Text = FormatRgba(current, k.Color.A != null),
+                AutoSize = false,
+                Width = rowWidth - 296 - 130,
+                Location = new Point(296, 8),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+                ForeColor = Color.FromArgb(200, 200, 200),
+            };
+            var origLbl = new Label
+            {
+                Text = "(was " + FormatRgba(
+                    Color.FromArgb(
+                        k.Color.A != null ? k.Color.A.OriginalValue : 255,
+                        k.Color.R.OriginalValue,
+                        k.Color.G.OriginalValue,
+                        k.Color.B.OriginalValue),
+                    k.Color.A != null) + ")",
+                AutoSize = false,
+                Width = 120,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Location = new Point(rowWidth - 124, 8),
+                ForeColor = Color.FromArgb(140, 140, 140),
+            };
+
+            EventHandler openPicker = (s, e) =>
+            {
+                using (var dlg = new ColorDialog
+                {
+                    Color = current,
+                    FullOpen = true,
+                    AnyColor = true,
+                })
+                {
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    current = dlg.Color;
+                    swatch.BackColor = current;
+                    rgbLbl.Text = FormatRgba(current, k.Color.A != null);
+                    k.Color.R.CurrentValue = current.R;
+                    k.Color.G.CurrentValue = current.G;
+                    k.Color.B.CurrentValue = current.B;
+                    if (k.Color.A != null) k.Color.A.CurrentValue = current.A;
+                    ScheduleLivePreview();
+                }
+            };
+            swatch.Click += openPicker;
+            rgbLbl.Click += openPicker;
+
+            row.Controls.Add(nameLbl);
+            row.Controls.Add(swatch);
+            row.Controls.Add(rgbLbl);
+            row.Controls.Add(origLbl);
+            _pnlKnobs.Controls.Add(row);
+            _colorReaders[k] = () => current;
+        }
+
+        private static string FormatRgba(Color c, bool includeAlpha)
+        {
+            return includeAlpha
+                ? string.Format("RGBA {0}, {1}, {2}, {3}", c.R, c.G, c.B, c.A)
+                : string.Format("RGB {0}, {1}, {2}", c.R, c.G, c.B);
+        }
+
         private static void ComputeSliderRange(RenderParameterKnob k, out double min, out double max)
         {
             double v = k.OriginalValue;
@@ -333,10 +445,9 @@ namespace SESpriteLCDLayoutTool.Forms
 
         private void ResetKnobs()
         {
-            foreach (var kv in _numerics)
-            {
-                try { kv.Value.Value = (decimal)kv.Key.OriginalValue; } catch { }
-            }
+            // Re-scan from the original code to rebuild every row at original values
+            // (handles numeric knobs and color swatches uniformly).
+            ScanAndPopulate();
             _lblStatus.Text = "Reset to original values.";
         }
 

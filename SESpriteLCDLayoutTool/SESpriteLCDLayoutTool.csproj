@@ -127,6 +127,9 @@
     <Compile Include="Data\SpriteCatalog.cs" />
     <Compile Include="Data\GlyphCatalog.cs" />
     <Compile Include="Data\UserSpriteCatalog.cs" />
+    <Compile Include="Forms\DarkSlider.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Forms\RenderParameterInspectorDialog.cs">
       <SubType>Form</SubType>
     </Compile>

@@ -36,6 +36,14 @@ namespace SESpriteLCDLayoutTool.Services
         public int LiteralLength { get; set; }
         public string OriginalLiteral { get; set; }
 
+        /// <summary>
+        /// When non-null, this knob represents a clustered set of numeric literals
+        /// that together form a structured value (e.g. the R/G/B/A arguments of a
+        /// <c>new Color(...)</c> constructor). The inspector renders these with a
+        /// color swatch / picker instead of one numeric per channel.
+        /// </summary>
+        public RenderParameterColor Color { get; set; }
+
         public string FormatLiteral(double value)
         {
             if (IsFloat)
@@ -46,6 +54,29 @@ namespace SESpriteLCDLayoutTool.Services
             }
             return value.ToString("0", CultureInfo.InvariantCulture);
         }
+    }
+
+    /// <summary>
+    /// Component spans for a clustered color knob. Each component records the
+    /// original literal location/text so edits patch the correct argument and the
+    /// surrounding source is preserved verbatim.
+    /// </summary>
+    public sealed class RenderParameterColor
+    {
+        public sealed class Component
+        {
+            public int LiteralStart { get; set; }
+            public int LiteralLength { get; set; }
+            public string OriginalLiteral { get; set; }
+            public int OriginalValue { get; set; }
+            public int CurrentValue { get; set; }
+        }
+
+        public Component R { get; set; }
+        public Component G { get; set; }
+        public Component B { get; set; }
+        /// <summary>Optional 4th component for RGBA constructors. Null for RGB.</summary>
+        public Component A { get; set; }
     }
 
     /// <summary>
@@ -177,10 +208,71 @@ namespace SESpriteLCDLayoutTool.Services
 
                 if (bodyNode != null)
                 {
+                    // First pass: cluster `new Color(r, g, b[, a])` calls into single
+                    // color knobs. Track the literal spans they consume so the per-
+                    // literal pass below can skip them.
+                    var consumedSpans = new HashSet<int>();
+                    int colorIdx = 1;
+                    foreach (var oc in bodyNode.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+                    {
+                        string typeName = oc.Type.ToString().Trim();
+                        bool isColor = typeName == "Color" || typeName.EndsWith(".Color");
+                        if (!isColor) continue;
+                        if (oc.ArgumentList == null) continue;
+                        var args = oc.ArgumentList.Arguments;
+                        if (args.Count != 3 && args.Count != 4) continue;
+
+                        var comps = new RenderParameterColor.Component[args.Count];
+                        bool ok = true;
+                        for (int i = 0; i < args.Count; i++)
+                        {
+                            int s, l; string t; double v; bool f;
+                            if (!TryReadNumericLiteral(args[i].Expression, out s, out l, out t, out v, out f) || f)
+                            { ok = false; break; }
+                            int iv = (int)Math.Round(v);
+                            if (iv < 0 || iv > 255) { ok = false; break; }
+                            comps[i] = new RenderParameterColor.Component
+                            {
+                                LiteralStart = s,
+                                LiteralLength = l,
+                                OriginalLiteral = t,
+                                OriginalValue = iv,
+                                CurrentValue = iv,
+                            };
+                        }
+                        if (!ok) continue;
+
+                        var color = new RenderParameterColor
+                        {
+                            R = comps[0],
+                            G = comps[1],
+                            B = comps[2],
+                            A = comps.Length == 4 ? comps[3] : null,
+                        };
+                        foreach (var c in comps) consumedSpans.Add(c.LiteralStart);
+
+                        knobs.Add(new RenderParameterKnob
+                        {
+                            Name = string.Format("#{0} new {1}({2})", colorIdx++, typeName,
+                                color.A != null ? "RGBA" : "RGB"),
+                            Category = methodName,
+                            GroupKey = GetGroupKeyFromSyntax(oc, methodName),
+                            // Aggregate value/literal kept for symmetry; not used for color knobs.
+                            OriginalValue = 0,
+                            CurrentValue = 0,
+                            IsFloat = false,
+                            LiteralStart = comps[0].LiteralStart,
+                            LiteralLength = 0,
+                            OriginalLiteral = "",
+                            Color = color,
+                        });
+                    }
+
                     int idx = 1;
                     foreach (var lit in bodyNode.DescendantNodes().OfType<LiteralExpressionSyntax>())
                     {
                         if (!lit.IsKind(SyntaxKind.NumericLiteralExpression)) continue;
+                        if (consumedSpans.Contains(lit.Token.Span.Start)) continue;
 
                         // Skip if inside a string/attribute/case-label context that we don't want.
                         if (lit.Ancestors().Any(a =>
@@ -562,20 +654,45 @@ namespace SESpriteLCDLayoutTool.Services
         {
             if (string.IsNullOrEmpty(source) || knobs == null || knobs.Count == 0) return source;
 
-            // Sort by descending start offset
-            var ordered = new List<RenderParameterKnob>(knobs);
-            ordered.Sort((a, b) => b.LiteralStart.CompareTo(a.LiteralStart));
-
-            var sb = new System.Text.StringBuilder(source);
-            foreach (var k in ordered)
+            // Flatten knobs into atomic literal edits (numeric knobs map to one
+            // edit; color knobs map to one per component). Apply in descending
+            // start order so earlier offsets remain valid.
+            var edits = new List<Tuple<int, int, string>>(); // start, length, replacement
+            foreach (var k in knobs)
             {
-                if (k.LiteralStart < 0 || k.LiteralStart + k.LiteralLength > sb.Length) continue;
+                if (k.Color != null)
+                {
+                    AddColorComponentEdit(edits, k.Color.R);
+                    AddColorComponentEdit(edits, k.Color.G);
+                    AddColorComponentEdit(edits, k.Color.B);
+                    if (k.Color.A != null) AddColorComponentEdit(edits, k.Color.A);
+                    continue;
+                }
+                if (k.LiteralLength <= 0) continue;
                 if (k.CurrentValue == k.OriginalValue) continue;
-                string newLit = k.FormatLiteral(k.CurrentValue);
-                sb.Remove(k.LiteralStart, k.LiteralLength);
-                sb.Insert(k.LiteralStart, newLit);
+                edits.Add(Tuple.Create(k.LiteralStart, k.LiteralLength, k.FormatLiteral(k.CurrentValue)));
+            }
+
+            edits.Sort((a, b) => b.Item1.CompareTo(a.Item1));
+            var sb = new System.Text.StringBuilder(source);
+            foreach (var e in edits)
+            {
+                int start = e.Item1, length = e.Item2;
+                if (start < 0 || start + length > sb.Length) continue;
+                sb.Remove(start, length);
+                sb.Insert(start, e.Item3);
             }
             return sb.ToString();
+        }
+
+        private static void AddColorComponentEdit(
+            List<Tuple<int, int, string>> edits,
+            RenderParameterColor.Component c)
+        {
+            if (c == null || c.LiteralLength <= 0) return;
+            if (c.CurrentValue == c.OriginalValue) return;
+            string newLit = c.CurrentValue.ToString(CultureInfo.InvariantCulture);
+            edits.Add(Tuple.Create(c.LiteralStart, c.LiteralLength, newLit));
         }
     }
 }
