@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Text;
 using System.Windows.Forms;
 using SESpriteLCDLayoutTool.Services;
 
@@ -162,10 +165,41 @@ namespace SESpriteLCDLayoutTool.Forms
             bottom.Controls.Add(btnApply);
             bottom.Controls.Add(btnClose);
 
+            var btnSave = new Button
+            {
+                Text = "Save Preset…",
+                Width = 110, Height = 28,
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+                Location = new Point(8, 30),
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = ForeColor,
+                FlatStyle = FlatStyle.Flat,
+            };
+            btnSave.Click += (s, e) => SavePreset();
+
+            var btnLoad = new Button
+            {
+                Text = "Load Preset…",
+                Width = 110, Height = 28,
+                Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+                Location = new Point(122, 30),
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = ForeColor,
+                FlatStyle = FlatStyle.Flat,
+            };
+            btnLoad.Click += (s, e) => LoadPreset();
+
+            bottom.Controls.Add(btnSave);
+            bottom.Controls.Add(btnLoad);
+
             Controls.Add(_pnlKnobs);
             Controls.Add(bottom);
             Controls.Add(top);
         }
+
+        // Tracks collapsed-state per group label across re-populates so toggling
+        // the method dropdown / Reset doesn't lose the user's collapse choices.
+        private readonly HashSet<string> _collapsedGroups = new HashSet<string>(StringComparer.Ordinal);
 
         private void ScanAndPopulate()
         {
@@ -197,23 +231,50 @@ namespace SESpriteLCDLayoutTool.Forms
 
             foreach (string g in groupOrder)
             {
-                var hdr = new Label
-                {
-                    Text = "── " + g + " (" + byGroup[g].Count + ") ──",
-                    AutoSize = true,
-                    ForeColor = Color.FromArgb(120, 200, 255),
-                    Margin = new Padding(0, 8, 0, 4),
-                };
-                _pnlKnobs.Controls.Add(hdr);
-
-                foreach (var k in byGroup[g])
-                {
-                    AddKnobRow(k);
-                }
+                AddGroupHeader(g, byGroup[g]);
             }
 
             _lblStatus.Text = string.Format("{0} knob(s) detected across {1} group(s).", _knobs.Count, groupOrder.Count);
             _pnlKnobs.ResumeLayout();
+        }
+
+        private void AddGroupHeader(string groupKey, List<RenderParameterKnob> rows)
+        {
+            bool collapsed = _collapsedGroups.Contains(groupKey);
+            var hdr = new Label
+            {
+                AutoSize = false,
+                Width = _pnlKnobs.ClientSize.Width - 24,
+                Height = 22,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(120, 200, 255),
+                Margin = new Padding(0, 8, 0, 4),
+                Cursor = Cursors.Hand,
+                Tag = groupKey,
+            };
+            hdr.Text = (collapsed ? "▶ " : "▼ ") + groupKey + " (" + rows.Count + ")";
+            _pnlKnobs.Controls.Add(hdr);
+
+            // Add the rows up front and toggle visibility on collapse — keeps row
+            // construction in one path and lets re-collapse be O(1).
+            var addedRows = new List<Control>();
+            foreach (var k in rows)
+            {
+                int before = _pnlKnobs.Controls.Count;
+                AddKnobRow(k);
+                for (int i = before; i < _pnlKnobs.Controls.Count; i++)
+                    addedRows.Add(_pnlKnobs.Controls[i]);
+            }
+            foreach (var c in addedRows) c.Visible = !collapsed;
+
+            hdr.Click += (s, e) =>
+            {
+                bool nowCollapsed = !_collapsedGroups.Contains(groupKey);
+                if (nowCollapsed) _collapsedGroups.Add(groupKey);
+                else _collapsedGroups.Remove(groupKey);
+                hdr.Text = (nowCollapsed ? "▶ " : "▼ ") + groupKey + " (" + rows.Count + ")";
+                foreach (var c in addedRows) c.Visible = !nowCollapsed;
+            };
         }
 
         private void AddKnobRow(RenderParameterKnob k)
@@ -479,6 +540,186 @@ namespace SESpriteLCDLayoutTool.Forms
             _lblStatus.Text = "Patched code ready — close to apply to editor.";
             DialogResult = DialogResult.OK;
             Close();
+        }
+
+        // Preset format: a tiny line-based text file. One entry per line.
+        // Numeric:  N|<key>=<invariant double>
+        // Color:    C|<key>=<R>,<G>,<B>[,A]
+        // Keys are stable per-knob using LiteralStart so presets target the same
+        // source positions; values that no longer match are silently skipped.
+
+        private static string MakeNumericKey(RenderParameterKnob k)
+        {
+            return string.Format(CultureInfo.InvariantCulture, "{0}@{1}", k.Name ?? "?", k.LiteralStart);
+        }
+
+        private static string MakeColorKey(RenderParameterKnob k)
+        {
+            int start = k.Color != null ? k.Color.R.LiteralStart : k.LiteralStart;
+            return string.Format(CultureInfo.InvariantCulture, "{0}@{1}", k.Name ?? "color", start);
+        }
+
+        private void SavePreset()
+        {
+            // Pull latest numeric values from the UI before snapshotting.
+            foreach (var kv in _numerics)
+                kv.Key.CurrentValue = (double)kv.Value.Value;
+            foreach (var kv in _colorReaders)
+            {
+                var c = kv.Value();
+                kv.Key.Color.R.CurrentValue = c.R;
+                kv.Key.Color.G.CurrentValue = c.G;
+                kv.Key.Color.B.CurrentValue = c.B;
+                if (kv.Key.Color.A != null) kv.Key.Color.A.CurrentValue = c.A;
+            }
+
+            using (var dlg = new SaveFileDialog
+            {
+                Title = "Save Inspector Preset",
+                Filter = "Inspector preset (*.lcdpreset)|*.lcdpreset|All files (*.*)|*.*",
+                DefaultExt = "lcdpreset",
+            })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendLine("# SESpriteLCDLayoutTool Render Parameter Preset v1");
+                    foreach (var k in _knobs)
+                    {
+                        if (k.Color != null)
+                        {
+                            string key = MakeColorKey(k);
+                            string val = k.Color.A != null
+                                ? string.Format(CultureInfo.InvariantCulture, "{0},{1},{2},{3}",
+                                    k.Color.R.CurrentValue, k.Color.G.CurrentValue, k.Color.B.CurrentValue, k.Color.A.CurrentValue)
+                                : string.Format(CultureInfo.InvariantCulture, "{0},{1},{2}",
+                                    k.Color.R.CurrentValue, k.Color.G.CurrentValue, k.Color.B.CurrentValue);
+                            sb.Append("C|").Append(key).Append('=').AppendLine(val);
+                        }
+                        else
+                        {
+                            string key = MakeNumericKey(k);
+                            string val = k.CurrentValue.ToString("R", CultureInfo.InvariantCulture);
+                            sb.Append("N|").Append(key).Append('=').AppendLine(val);
+                        }
+                    }
+                    File.WriteAllText(dlg.FileName, sb.ToString());
+                    _lblStatus.Text = "Preset saved: " + Path.GetFileName(dlg.FileName);
+                }
+                catch (Exception ex)
+                {
+                    _lblStatus.Text = "Save failed: " + ex.Message;
+                }
+            }
+        }
+
+        private void LoadPreset()
+        {
+            using (var dlg = new OpenFileDialog
+            {
+                Title = "Load Inspector Preset",
+                Filter = "Inspector preset (*.lcdpreset)|*.lcdpreset|All files (*.*)|*.*",
+            })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    var numericByKey = new Dictionary<string, double>(StringComparer.Ordinal);
+                    var colorByKey = new Dictionary<string, int[]>(StringComparer.Ordinal);
+                    foreach (string raw in File.ReadAllLines(dlg.FileName))
+                    {
+                        string line = raw == null ? "" : raw.Trim();
+                        if (line.Length == 0 || line[0] == '#') continue;
+                        int eq = line.IndexOf('=');
+                        if (eq <= 2) continue;
+                        string prefix = line.Substring(0, 2);
+                        string key = line.Substring(2, eq - 2);
+                        string val = line.Substring(eq + 1);
+                        if (prefix == "N|")
+                        {
+                            double d;
+                            if (double.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out d))
+                                numericByKey[key] = d;
+                        }
+                        else if (prefix == "C|")
+                        {
+                            string[] parts = val.Split(',');
+                            if (parts.Length < 3) continue;
+                            int r, g, b, a = 255;
+                            if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out r)) continue;
+                            if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out g)) continue;
+                            if (!int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out b)) continue;
+                            if (parts.Length >= 4) int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out a);
+                            colorByKey[key] = new[] { r, g, b, a };
+                        }
+                    }
+
+                    int applied = 0;
+                    foreach (var k in _knobs)
+                    {
+                        if (k.Color != null)
+                        {
+                            int[] c;
+                            if (colorByKey.TryGetValue(MakeColorKey(k), out c))
+                            {
+                                k.Color.R.CurrentValue = Clamp255(c[0]);
+                                k.Color.G.CurrentValue = Clamp255(c[1]);
+                                k.Color.B.CurrentValue = Clamp255(c[2]);
+                                if (k.Color.A != null) k.Color.A.CurrentValue = Clamp255(c[3]);
+                                applied++;
+                            }
+                        }
+                        else
+                        {
+                            double d;
+                            if (numericByKey.TryGetValue(MakeNumericKey(k), out d))
+                            {
+                                k.CurrentValue = d;
+                                applied++;
+                            }
+                        }
+                    }
+
+                    // Rebuild the UI so numeric fields and color swatches reflect the loaded values.
+                    ScanAndPopulateFromCurrent();
+                    _lblStatus.Text = string.Format("Loaded preset: {0} knob(s) applied.", applied);
+                    ScheduleLivePreview();
+                }
+                catch (Exception ex)
+                {
+                    _lblStatus.Text = "Load failed: " + ex.Message;
+                }
+            }
+        }
+
+        private static int Clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+        // Re-renders rows using the existing _knobs (preserving CurrentValue) instead
+        // of re-scanning the source, so loaded preset values survive the refresh.
+        private void ScanAndPopulateFromCurrent()
+        {
+            _pnlKnobs.SuspendLayout();
+            _pnlKnobs.Controls.Clear();
+            _numerics.Clear();
+            _colorReaders.Clear();
+
+            var groupOrder = new List<string>();
+            var byGroup = new Dictionary<string, List<RenderParameterKnob>>();
+            foreach (var k in _knobs)
+            {
+                string g = string.IsNullOrEmpty(k.GroupKey) ? (k.Category ?? "(other)") : k.GroupKey;
+                if (!byGroup.ContainsKey(g))
+                {
+                    byGroup[g] = new List<RenderParameterKnob>();
+                    groupOrder.Add(g);
+                }
+                byGroup[g].Add(k);
+            }
+            if (groupOrder.Remove("Constants")) groupOrder.Insert(0, "Constants");
+            foreach (string g in groupOrder) AddGroupHeader(g, byGroup[g]);
+
+            _pnlKnobs.ResumeLayout();
         }
     }
 }

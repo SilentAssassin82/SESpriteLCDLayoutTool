@@ -1838,15 +1838,17 @@ namespace SESpriteLCDLayoutTool
         {
             if (_codeBox == null || string.IsNullOrWhiteSpace(callExpression)) return;
 
-            // First, ensure we're displaying source code that contains the method definition
-            string searchCode = _codeBox.Text.Replace("\r", "");
+            // Search the live editor text directly so character offsets line up with
+            // the editor's selection model (Scintilla uses byte/char offsets into the
+            // current document — stripping '\r' would desync them on Windows files).
+            string searchCode = _codeBox.Text;
             int offset = CodeExecutor.FindMethodDefinitionOffset(searchCode, callExpression);
 
             // If not found and we have OriginalSourceCode, switch to show it
             if (offset < 0 && _layout?.OriginalSourceCode != null)
             {
                 SetCodeText(_layout.OriginalSourceCode);
-                searchCode = _codeBox.Text.Replace("\r", "");
+                searchCode = _codeBox.Text;
                 offset = CodeExecutor.FindMethodDefinitionOffset(searchCode, callExpression);
             }
 
@@ -1862,11 +1864,12 @@ namespace SESpriteLCDLayoutTool
 
             // Find the end of the method signature (opening brace or line end)
             int sigEnd = searchCode.IndexOf('{', offset);
-            if (sigEnd < 0) sigEnd = searchCode.IndexOf('\n', offset);
+            int nl = searchCode.IndexOf('\n', offset);
+            if (sigEnd < 0 || (nl >= 0 && nl < sigEnd)) sigEnd = nl;
             if (sigEnd < 0) sigEnd = searchCode.Length;
 
             // Calculate selection length
-            int selectionLength = sigEnd - lineStart;
+            int selectionLength = Math.Max(0, sigEnd - lineStart);
 
             _suppressCodeBoxEvents = true;
             try

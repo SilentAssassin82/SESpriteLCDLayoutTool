@@ -2,6 +2,26 @@
 
 All notable changes to SE Sprite LCD Layout Tool will be documented in this file.
 
+## v4.1.0 - 2026-05-01
+
+### Added
+- **Render Parameter Inspector** (`Edit → Render Parameter Inspector…`) — a WYSIWYG knob panel for tweaking the numeric "magic numbers" in any render method or class-level constants block without hand-editing source. Designed for iterating on layouts (padding, row heights, bar widths, gauge thresholds, etc.) with immediate visual feedback on the LCD canvas.
+  - **Roslyn-first scanner** (`Services/RenderParameterScanner.cs`) — parses the user's source via `Microsoft.CodeAnalysis.CSharp` rather than regex so labels, group keys and edit positions stay accurate even with nested generics, lambdas, attributes and method-call argument lists. Falls back to the regex scanner on parse failure.
+  - **Switch-case "virtual method" support** — for queue-processor renderers that fan out via `switch (row.RowKind) { case Header: … }` (the `Render<CaseName>` synthesized method pattern used throughout `LcdManager.cs`), the scanner walks the matching `case` section and exposes its inline literals just like a real method body, so each row kind can be tuned independently.
+  - **Preprocessor-aware parsing** — `CSharpParseOptions` is configured with `TORCH`, `DEBUG`, `PULSAR` so `#if`-guarded code paths (Torch-only render branches, debug-only literals) are visible to the scanner instead of being silently dropped.
+  - **Syntax-aware labels** — a literal inside `MySprite.CreateText(..., size: 1.4f, ...)` is labelled by its argument name/position rather than a misleading enclosing context like `row.TextColor`. Variable assignments, constructor argument positions, and named arguments all flow through to the row label.
+  - **Grouping by enclosing scope** — knobs are clustered by target variable / enclosing call (e.g. `new Color(...)`, `MySprite.CreateText(...)`, `var bar = …`) and rendered under a header. The `Constants` group is pinned to the top of the panel.
+  - **Collapsible group headers** — each header is a clickable label with a `▼/▶` chevron; toggling hides/shows the group's rows in place. Collapsed state persists across method-dropdown changes and Reset within a single dialog session.
+  - **Per-knob slider + numeric** — every numeric knob exposes a synced `NumericUpDown` and a `DarkSlider` (custom owner-drawn dark-themed track + thumb in `Forms/DarkSlider.cs`) with auto-computed range based on the original value (symmetric ±span, clamped non-negative for known-positive originals, ±2.0 for small floats). Two-way bound without feedback loops.
+  - **Color swatch grouping** — sequences of integer literals inside `new Color(R, G, B)` / `new Color(R, G, B, A)` constructors collapse into a single color row with a clickable swatch + RGB(A) text label that opens the standard `ColorDialog`. Component literals are skipped by the generic numeric pass so they don't show up twice.
+  - **Live preview** — when the *Live preview* checkbox is enabled, knob changes are debounced (~250 ms) and the patched source is fed back into the existing execute pipeline so the LCD canvas refreshes in place, no Apply round-trip needed.
+  - **Save / Load Preset** — knob configurations can be saved to a tiny line-based `.lcdpreset` text file (no JSON dependency on net48) keyed by `<name>@<literalStart>` for stable round-trip. Loading applies values to matching knobs and re-renders the rows preserving `CurrentValue`, then auto-fires live preview if enabled.
+  - **Reset / Apply** — Reset re-scans from the original source (rebuilding both numeric and color rows uniformly); Apply writes the patched source back to the editor for the next Execute.
+
+### Fixed
+- **Right-click "Jump to Definition" failed for most detected methods** — `CodeExecutor.FindMethodDefinitionOffset` only matched return types `void` or `List<MySprite>`, so methods returning `Vector2`, `MySprite`, `IMyTextSurface`, generic types, custom types, or any method declared with modifiers like `virtual` / `override` / `async` silently produced "Could not find definition…". The regex now accepts any return type (including generics and arrays) plus the full set of common modifiers, and rejects matches that look like call sites (`return X(...)`, `.Foo(...)`, expressions starting with `=` or `.`). The switch-case fallback (`Render<CaseName>` → `case ...:`) is preserved.
+- **Jump-to-definition selection landed on the wrong line on Windows-EOL files** — `MainForm.JumpToMethodDefinition` was searching `_codeBox.Text.Replace("\r", "")` and then calling `_codeBox.Select(start, length)`, but Scintilla's selection model uses offsets into the actual document. Stripping `\r` shifted every offset by the number of preceding line endings, so the highlighted region drifted further off as you went down the file. Now searches and selects against the live document directly.
+
 ## v4.0.0 - 2026-04-30
 
 ### Fixed

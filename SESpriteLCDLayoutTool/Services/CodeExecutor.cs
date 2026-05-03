@@ -802,15 +802,38 @@ namespace SESpriteLCDLayoutTool.Services
             string methodName = ExtractMethodName(callExpression);
             if (string.IsNullOrEmpty(methodName)) return -1;
 
-            // Strategy 1: Search for a real method definition
-            // "void MethodName(" or "internal static void MethodName(" or "List<MySprite> MethodName(" etc.
-            // Allow optional access modifiers (public, private, internal, protected, static, etc.)
+            // Strategy 1: Search for a real method definition with ANY return type.
+            // Examples we want to match:
+            //   void RenderHeader(...)
+            //   private static List<MySprite> BuildSprites(...)
+            //   public Vector2 ComputeOrigin(...)
+            //   internal MySprite CreateRow(...)
+            //   IMyTextSurface GetSurface(...)
+            // Generic return types (List<T>, Dictionary<K,V>) are matched non-greedily.
+            // We deliberately exclude common control-flow keywords that can appear
+            // before an identifier+paren (if/while/for/switch/return/etc.).
             var rxDef = new Regex(
-                @"(?:public\s+|private\s+|internal\s+|protected\s+|static\s+)*(?:void|List\s*<\s*MySprite\s*>)\s+" + Regex.Escape(methodName) + @"\s*\(",
+                @"(?<!\w)(?:public\s+|private\s+|internal\s+|protected\s+|static\s+|virtual\s+|override\s+|sealed\s+|new\s+|async\s+|partial\s+|extern\s+|unsafe\s+|readonly\s+)*" +
+                @"(?:[\w\.]+(?:\s*<[^<>;{}()]*>)?(?:\s*\[\s*\])?)\s+" +
+                Regex.Escape(methodName) + @"\s*(?:<[^<>;{}()]*>)?\s*\(",
                 RegexOptions.Compiled);
 
-            Match match = rxDef.Match(userCode);
-            if (match.Success) return match.Index;
+            // Walk every match and reject any that look like a call site rather than
+            // a definition (e.g. immediately preceded by '=' or '.' or 'return').
+            foreach (Match m in rxDef.Matches(userCode))
+            {
+                string before = userCode.Substring(0, m.Index);
+                int lineStart = before.LastIndexOf('\n');
+                if (lineStart < 0) lineStart = 0;
+                string lead = before.Substring(lineStart).TrimStart();
+                // Reject obvious call sites / expressions.
+                if (lead.StartsWith("return ") || lead.StartsWith("return\t")) continue;
+                if (lead.StartsWith("//") || lead.StartsWith("*")) continue;
+                // A definition's first token shouldn't start with '.' or '='.
+                char firstNonWs = lead.Length > 0 ? lead[0] : ' ';
+                if (firstNonWs == '.' || firstNonWs == '=' || firstNonWs == '(') continue;
+                return m.Index;
+            }
 
             // Strategy 2: Virtual method from switch case
             // If the method name starts with "Render" and wasn't found as a real method,
