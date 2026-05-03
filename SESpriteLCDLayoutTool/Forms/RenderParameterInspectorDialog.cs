@@ -173,60 +173,79 @@ namespace SESpriteLCDLayoutTool.Forms
             var found = RenderParameterScanner.Scan(_originalCode, method);
             _knobs.AddRange(found);
 
-            string lastCategory = null;
+            // Order: Constants first, then knobs grouped by GroupKey in order of first appearance.
+            var groupOrder = new List<string>();
+            var byGroup = new Dictionary<string, List<RenderParameterKnob>>();
             foreach (var k in _knobs)
             {
-                if (k.Category != lastCategory)
+                string g = string.IsNullOrEmpty(k.GroupKey) ? (k.Category ?? "(other)") : k.GroupKey;
+                if (!byGroup.ContainsKey(g))
                 {
-                    var hdr = new Label
-                    {
-                        Text = "── " + (k.Category ?? "") + " ──",
-                        AutoSize = true,
-                        ForeColor = Color.FromArgb(120, 200, 255),
-                        Margin = new Padding(0, 8, 0, 4),
-                    };
-                    _pnlKnobs.Controls.Add(hdr);
-                    lastCategory = k.Category;
+                    byGroup[g] = new List<RenderParameterKnob>();
+                    groupOrder.Add(g);
                 }
+                byGroup[g].Add(k);
+            }
+            // Pin "Constants" to the top if present
+            if (groupOrder.Remove("Constants")) groupOrder.Insert(0, "Constants");
 
-                var row = new Panel { Width = _pnlKnobs.ClientSize.Width - 24, Height = 26, Margin = new Padding(0, 2, 0, 2) };
-                var nameLbl = new Label
+            foreach (string g in groupOrder)
+            {
+                var hdr = new Label
                 {
-                    Text = k.Name,
-                    AutoSize = false,
-                    Width = 240,
-                    Location = new Point(4, 4),
-                    ForeColor = ForeColor,
-                };
-                var num = new NumericUpDown
-                {
-                    DecimalPlaces = k.IsFloat ? 4 : 0,
-                    Increment = k.IsFloat ? 0.5m : 1m,
-                    Minimum = -10000m,
-                    Maximum = 10000m,
-                    Location = new Point(252, 2),
-                    Width = 100,
-                    BackColor = Color.FromArgb(45, 45, 48),
-                    ForeColor = Color.FromArgb(220, 220, 220),
-                };
-                try { num.Value = (decimal)k.CurrentValue; } catch { }
-                num.ValueChanged += (s, e) => ScheduleLivePreview();
-                var origLbl = new Label
-                {
-                    Text = "(was " + k.OriginalLiteral + ")",
+                    Text = "── " + g + " (" + byGroup[g].Count + ") ──",
                     AutoSize = true,
-                    Location = new Point(360, 6),
-                    ForeColor = Color.FromArgb(140, 140, 140),
+                    ForeColor = Color.FromArgb(120, 200, 255),
+                    Margin = new Padding(0, 8, 0, 4),
                 };
-                row.Controls.Add(nameLbl);
-                row.Controls.Add(num);
-                row.Controls.Add(origLbl);
-                _pnlKnobs.Controls.Add(row);
-                _numerics[k] = num;
+                _pnlKnobs.Controls.Add(hdr);
+
+                foreach (var k in byGroup[g])
+                {
+                    AddKnobRow(k);
+                }
             }
 
-            _lblStatus.Text = string.Format("{0} knob(s) detected.", _knobs.Count);
+            _lblStatus.Text = string.Format("{0} knob(s) detected across {1} group(s).", _knobs.Count, groupOrder.Count);
             _pnlKnobs.ResumeLayout();
+        }
+
+        private void AddKnobRow(RenderParameterKnob k)
+        {
+            var row = new Panel { Width = _pnlKnobs.ClientSize.Width - 24, Height = 26, Margin = new Padding(0, 2, 0, 2) };
+            var nameLbl = new Label
+            {
+                Text = k.Name,
+                AutoSize = false,
+                Width = 240,
+                Location = new Point(4, 4),
+                ForeColor = ForeColor,
+            };
+            var num = new NumericUpDown
+            {
+                DecimalPlaces = k.IsFloat ? 4 : 0,
+                Increment = k.IsFloat ? 0.5m : 1m,
+                Minimum = -10000m,
+                Maximum = 10000m,
+                Location = new Point(252, 2),
+                Width = 100,
+                BackColor = Color.FromArgb(45, 45, 48),
+                ForeColor = Color.FromArgb(220, 220, 220),
+            };
+            try { num.Value = (decimal)k.CurrentValue; } catch { }
+            num.ValueChanged += (s, e) => ScheduleLivePreview();
+            var origLbl = new Label
+            {
+                Text = "(was " + k.OriginalLiteral + ")",
+                AutoSize = true,
+                Location = new Point(360, 6),
+                ForeColor = Color.FromArgb(140, 140, 140),
+            };
+            row.Controls.Add(nameLbl);
+            row.Controls.Add(num);
+            row.Controls.Add(origLbl);
+            _pnlKnobs.Controls.Add(row);
+            _numerics[k] = num;
         }
 
         private void ResetKnobs()

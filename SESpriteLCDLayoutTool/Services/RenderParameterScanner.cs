@@ -17,6 +17,12 @@ namespace SESpriteLCDLayoutTool.Services
     {
         public string Name { get; set; }
         public string Category { get; set; }
+        /// <summary>
+        /// Sub-grouping label (e.g. the local variable the literal feeds, or the
+        /// enclosing call name like "MySprite.CreateText"). Used by the inspector
+        /// to cluster related literals together. Falls back to Category.
+        /// </summary>
+        public string GroupKey { get; set; }
         public double OriginalValue { get; set; }
         public double CurrentValue { get; set; }
         public bool IsFloat { get; set; }
@@ -85,6 +91,7 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     Name = m.Groups["name"].Value,
                     Category = "Constants",
+                    GroupKey = "Constants",
                     OriginalValue = val,
                     CurrentValue = val,
                     IsFloat = isFloat,
@@ -129,6 +136,7 @@ namespace SESpriteLCDLayoutTool.Services
                         {
                             Name = label,
                             Category = methodName,
+                            GroupKey = GetGroupKey(source, m.Index, methodName),
                             OriginalValue = val,
                             CurrentValue = val,
                             IsFloat = isFloat,
@@ -189,6 +197,66 @@ namespace SESpriteLCDLayoutTool.Services
                 return s;
             }
             return null;
+        }
+
+        /// <summary>
+        /// Resolves a sub-group label for a literal inside a method body:
+        ///   1. If the literal's line contains an assignment "name = ...",
+        ///      group by the LHS identifier.
+        ///   2. Otherwise scan back to the nearest enclosing call expression
+        ///      and group by that call name (e.g. "MySprite.CreateText").
+        ///   3. Fallback to the method name.
+        /// </summary>
+        private static string GetGroupKey(string source, int litIndex, string fallback)
+        {
+            int lineStart = source.LastIndexOf('\n', Math.Max(0, litIndex - 1)) + 1;
+            int lineEnd = source.IndexOf('\n', litIndex);
+            if (lineEnd < 0) lineEnd = source.Length;
+            string line = source.Substring(lineStart, lineEnd - lineStart);
+
+            var rxAssign = new Regex(@"^\s*(?:(?:float|double|int|var)\s+)?(?<lhs>[A-Za-z_][A-Za-z0-9_]*)\s*[+\-*/]?=\s*[^=]");
+            var am = rxAssign.Match(line);
+            if (am.Success)
+            {
+                string lhs = am.Groups["lhs"].Value;
+                if (!string.IsNullOrEmpty(lhs)) return lhs;
+            }
+
+            int depth = 0;
+            int limit = Math.Max(0, litIndex - 800);
+            for (int i = litIndex - 1; i >= limit; i--)
+            {
+                char c = source[i];
+                if (c == ')') depth++;
+                else if (c == '(')
+                {
+                    if (depth == 0)
+                    {
+                        int end = i;
+                        int j = i - 1;
+                        while (j >= 0 && (char.IsLetterOrDigit(source[j]) || source[j] == '_' || source[j] == '.'))
+                            j--;
+                        int start = j + 1;
+                        if (end > start)
+                        {
+                            string call = source.Substring(start, end - start);
+                            if (!string.IsNullOrEmpty(call) && !char.IsDigit(call[0]))
+                            {
+                                if (call.Length > 32) call = call.Substring(call.Length - 32);
+                                return call;
+                            }
+                        }
+                        break;
+                    }
+                    depth--;
+                }
+                else if (c == '{' || c == '}' || c == ';')
+                {
+                    break;
+                }
+            }
+
+            return fallback ?? "(literals)";
         }
 
         /// <summary>
