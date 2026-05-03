@@ -134,13 +134,45 @@ namespace SESpriteLCDLayoutTool.Services
             // Method-body literals
             if (!string.IsNullOrWhiteSpace(methodName))
             {
-                MethodDeclarationSyntax method = root.DescendantNodes()
+                // 1) Try a real method declaration with this name.
+                SyntaxNode bodyNode = root.DescendantNodes()
                     .OfType<MethodDeclarationSyntax>()
-                    .FirstOrDefault(m => m.Identifier.ValueText == methodName);
-                if (method != null && method.Body != null)
+                    .FirstOrDefault(m => m.Identifier.ValueText == methodName)
+                    ?.Body;
+
+                // 2) Fall back to switch-case-synthesized "render" methods. The
+                //    detection pipeline turns "case Foo:" into a virtual
+                //    "RenderFoo" entry. If methodName starts with "Render", look
+                //    for a matching case label and use that case's statements.
+                if (bodyNode == null && methodName.StartsWith("Render", StringComparison.Ordinal) && methodName.Length > 6)
+                {
+                    string caseSuffix = methodName.Substring(6); // "Stat", "Header", ...
+                    foreach (var sw in root.DescendantNodes().OfType<SwitchStatementSyntax>())
+                    {
+                        foreach (var section in sw.Sections)
+                        {
+                            bool matched = section.Labels.OfType<CaseSwitchLabelSyntax>().Any(lbl =>
+                            {
+                                var v = lbl.Value;
+                                // case Stat: / case RowKind.Stat: / case Ns.RowKind.Stat:
+                                if (v is IdentifierNameSyntax id && id.Identifier.ValueText == caseSuffix) return true;
+                                if (v is MemberAccessExpressionSyntax ma && ma.Name.Identifier.ValueText == caseSuffix) return true;
+                                return false;
+                            });
+                            if (matched)
+                            {
+                                bodyNode = section;
+                                break;
+                            }
+                        }
+                        if (bodyNode != null) break;
+                    }
+                }
+
+                if (bodyNode != null)
                 {
                     int idx = 1;
-                    foreach (var lit in method.Body.DescendantNodes().OfType<LiteralExpressionSyntax>())
+                    foreach (var lit in bodyNode.DescendantNodes().OfType<LiteralExpressionSyntax>())
                     {
                         if (!lit.IsKind(SyntaxKind.NumericLiteralExpression)) continue;
 
