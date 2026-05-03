@@ -29,6 +29,13 @@ namespace SESpriteLCDLayoutTool
         /// <summary>The generated code to insert (set when user clicks Insert).</summary>
         public string GeneratedCode { get; private set; }
 
+        /// <summary>
+        /// Compatibility tier of the template the user inserted, so callers
+        /// can decide whether the smart-merge / Update Code path is allowed.
+        /// </summary>
+        public TemplateCompatibility GeneratedCompatibility { get; private set; }
+            = TemplateCompatibility.Safe;
+
         /// <summary>Current surface dimensions from the layout.</summary>
         private float _surfaceWidth = 512f;
         private float _surfaceHeight = 512f;
@@ -163,7 +170,7 @@ namespace SESpriteLCDLayoutTool
             _lblDescription = new Label
             {
                 Dock = DockStyle.Top,
-                Height = 48,
+                Height = 72,
                 ForeColor = Color.FromArgb(180, 200, 255),
                 Font = new Font("Segoe UI", 9f),
                 Padding = new Padding(4, 4, 4, 4),
@@ -307,6 +314,7 @@ namespace SESpriteLCDLayoutTool
                 if (_selectedTemplate != null)
                 {
                     GeneratedCode = _txtPreview.Text;
+                    GeneratedCompatibility = _selectedTemplate.Compatibility;
                     DialogResult = DialogResult.OK;
                     Close();
                 }
@@ -495,9 +503,70 @@ namespace SESpriteLCDLayoutTool
 
             // Update description
             string animatedNote = template.IsAnimated ? " ⚡ Animated (requires tick updates)" : "";
-            _lblDescription.Text = $"{template.Name}{animatedNote}\n{template.Description}";
+            string compatLine = BuildCompatibilityLine(template);
+            _lblDescription.Text =
+                $"{template.Name}{animatedNote}\n{template.Description}" +
+                (string.IsNullOrEmpty(compatLine) ? "" : "\n" + compatLine);
 
             RefreshPreview();
+        }
+
+        // ──────────────────────────────────────────────────────────────────
+        //  Compatibility badge / note helpers
+        // ──────────────────────────────────────────────────────────────────
+
+        private static Label CreateCompatibilityBadge(TemplateCompatibility c)
+        {
+            string text;
+            Color bg;
+            switch (c)
+            {
+                case TemplateCompatibility.Safe:
+                    text = "✓ Injector-Safe";
+                    bg = Color.FromArgb(40, 110, 60);
+                    break;
+                case TemplateCompatibility.Standalone:
+                    text = "⚡ Standalone";
+                    bg = Color.FromArgb(140, 100, 30);
+                    break;
+                case TemplateCompatibility.Conflicting:
+                    text = "⚠ Manual Insert";
+                    bg = Color.FromArgb(150, 50, 50);
+                    break;
+                default:
+                    return null;
+            }
+
+            return new Label
+            {
+                Text = text,
+                AutoSize = true,
+                BackColor = bg,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 7f, FontStyle.Bold),
+                Padding = new Padding(4, 1, 4, 1),
+            };
+        }
+
+        private static string BuildCompatibilityLine(TemplateDefinition template)
+        {
+            switch (template.Compatibility)
+            {
+                case TemplateCompatibility.Safe:
+                    return null;
+                case TemplateCompatibility.Standalone:
+                    return "⚡ Standalone — " +
+                        (string.IsNullOrEmpty(template.CompatibilityNote)
+                            ? "Self-contained animation. Update Code / smart-merge is disabled for this template."
+                            : template.CompatibilityNote);
+                case TemplateCompatibility.Conflicting:
+                    return "⚠ Manual insert only — " +
+                        (string.IsNullOrEmpty(template.CompatibilityNote)
+                            ? "May conflict with the animation injector if mixed with keyframe effects on the same sprite."
+                            : template.CompatibilityNote);
+                default:
+                    return null;
+            }
         }
 
         private void RefreshPreview()

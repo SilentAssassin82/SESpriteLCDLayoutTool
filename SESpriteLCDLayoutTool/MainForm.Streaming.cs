@@ -1462,7 +1462,18 @@ namespace SESpriteLCDLayoutTool
                     _lblCodeTitle.ForeColor = Color.FromArgb(255, 200, 80);
                     if (_btnApplyCode != null) _btnApplyCode.Visible = true;
 
-                    SetStatus("Template inserted — click 'Apply Code' or '▶ Execute Code' to see it on canvas.");
+                    switch (dlg.GeneratedCompatibility)
+                    {
+                        case Models.TemplateCompatibility.Standalone:
+                            SetStatus("Template inserted (Standalone) — keep the snippet as-is. Do not apply keyframe effects to its sprites; use the Keyframe Animator for stackable animations instead.");
+                            break;
+                        case Models.TemplateCompatibility.Conflicting:
+                            SetStatus("⚠ Template inserted (Manual Insert) — this template may collide with the animation injector. Avoid mixing it with keyframe effects on the same sprite.");
+                            break;
+                        default:
+                            SetStatus("Template inserted — click 'Apply Code' or '▶ Execute Code' to see it on canvas.");
+                            break;
+                    }
                 }
             }
         }

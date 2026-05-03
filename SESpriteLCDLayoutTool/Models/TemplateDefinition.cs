@@ -5,6 +5,40 @@ using SESpriteLCDLayoutTool.Services;
 namespace SESpriteLCDLayoutTool.Models
 {
     /// <summary>
+    /// Describes how well a template cooperates with the app's Roslyn-based
+    /// animation/code injection pipeline. Used by the gallery UI to decide
+    /// whether the smart-insert/Update-Code path can be enabled, or whether
+    /// the user should be warned and limited to a manual paste.
+    /// </summary>
+    public enum TemplateCompatibility
+    {
+        /// <summary>
+        /// Pure static <c>frame.Add(new MySprite { ... })</c> blocks.
+        /// Safe to combine with any other animation; the injector can target
+        /// these sprites by name/ordinal/Id and apply per-frame overrides.
+        /// </summary>
+        Safe,
+
+        /// <summary>
+        /// Self-contained animation math (uses its own <c>tick</c>, sin/cos,
+        /// or color cycling). Compiles and runs on its own, but does NOT
+        /// participate in the keyframe/effect injector. The Update-Code /
+        /// smart-merge path should be disabled for these templates so the
+        /// user keeps the snippet exactly as inserted.
+        /// </summary>
+        Standalone,
+
+        /// <summary>
+        /// Touches infrastructure the injector also owns (e.g. emits
+        /// <c>_tick++</c>, blink-style <c>if (visible) { ... }</c> guards,
+        /// or its own Ease helper). Mixing with injected animations on the
+        /// same sprite will produce duplicate identifiers or marker
+        /// collisions. Insert manually only; the gallery surfaces a warning.
+        /// </summary>
+        Conflicting,
+    }
+
+    /// <summary>
     /// Defines a template that can be inserted into the code editor.
     /// Templates are pre-built sprite patterns with animations or common UI elements.
     /// </summary>
@@ -60,5 +94,20 @@ namespace SESpriteLCDLayoutTool.Models
         /// </summary>
         public float DefaultX { get; set; } = 0.5f;
         public float DefaultY { get; set; } = 0.5f;
+
+        /// <summary>
+        /// How this template cooperates with the Roslyn animation injector.
+        /// Defaults to <see cref="TemplateCompatibility.Safe"/> — pure static
+        /// Add blocks that can be combined with injected animations freely.
+        /// </summary>
+        public TemplateCompatibility Compatibility { get; set; } = TemplateCompatibility.Safe;
+
+        /// <summary>
+        /// Optional human-readable note shown in the gallery alongside the
+        /// compatibility badge. Use this to explain WHY a template is
+        /// Standalone or Conflicting and what the user should do instead
+        /// (e.g. "Use the Keyframe Animator's Rotate effect for stacking").
+        /// </summary>
+        public string CompatibilityNote { get; set; }
     }
 }
