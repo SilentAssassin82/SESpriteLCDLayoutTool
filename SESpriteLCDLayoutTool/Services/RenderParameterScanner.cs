@@ -200,7 +200,7 @@ namespace SESpriteLCDLayoutTool.Services
                         // Skip 0/1 toggles
                         if (litText == "0" || litText == "1" || litText == "0f" || litText == "1f") continue;
 
-                        string ctx = GetContextLabel(source, litStart);
+                        string ctx = GetSyntaxContextLabel(lit);
                         string label = string.IsNullOrEmpty(ctx)
                             ? string.Format("#{0}: {1}", idx, litText)
                             : string.Format("#{0} {1} = {2}", idx, ctx, litText);
@@ -293,6 +293,73 @@ namespace SESpriteLCDLayoutTool.Services
                 if (node is StatementSyntax) break;
             }
             return fallback ?? "(literals)";
+        }
+
+        /// <summary>
+        /// Builds a precise human-readable label for a numeric literal using the
+        /// syntax tree (rather than a "preceding identifier" heuristic, which often
+        /// picks up the wrong nearby name). Examples:
+        ///   • MySprite.CreateText arg #4         (invocation arguments)
+        ///   • new Color G                        (named-component fallback for Color/Vector ctors)
+        ///   • row.TextColor                      (assignment LHS)
+        ///   • rh                                 (local declarator)
+        /// </summary>
+        private static string GetSyntaxContextLabel(SyntaxNode lit)
+        {
+            // Argument inside a call or constructor: surface the arg name when there is one,
+            // otherwise the call name + positional index.
+            var arg = lit.Ancestors().OfType<ArgumentSyntax>().FirstOrDefault();
+            if (arg != null)
+            {
+                if (arg.NameColon != null)
+                    return arg.NameColon.Name.Identifier.ValueText;
+
+                var argList = arg.Parent as ArgumentListSyntax;
+                if (argList != null)
+                {
+                    int pos = argList.Arguments.IndexOf(arg);
+                    var inv = argList.Parent as InvocationExpressionSyntax;
+                    if (inv != null)
+                    {
+                        string call = inv.Expression.ToString().Trim();
+                        return string.Format("{0} arg #{1}", call, pos + 1);
+                    }
+                    var oc = argList.Parent as ObjectCreationExpressionSyntax;
+                    if (oc != null)
+                    {
+                        string typeName = oc.Type.ToString().Trim();
+                        // Friendly component names for common 3/4-argument constructors.
+                        string[] rgba = { "R", "G", "B", "A" };
+                        string[] xyzw = { "X", "Y", "Z", "W" };
+                        bool isColor = typeName == "Color" || typeName.EndsWith(".Color");
+                        bool isVec = typeName.StartsWith("Vector");
+                        if (isColor && pos >= 0 && pos < rgba.Length && argList.Arguments.Count <= 4)
+                            return "new " + typeName + " " + rgba[pos];
+                        if (isVec && pos >= 0 && pos < xyzw.Length && argList.Arguments.Count <= 4)
+                            return "new " + typeName + " " + xyzw[pos];
+                        return string.Format("new {0} arg #{1}", typeName, pos + 1);
+                    }
+                }
+            }
+
+            // Object initializer: { Foo = 0.5f }
+            var nameEq = lit.Ancestors().OfType<AssignmentExpressionSyntax>()
+                .FirstOrDefault(a => a.Parent is InitializerExpressionSyntax);
+            if (nameEq != null) return nameEq.Left.ToString().Trim();
+
+            // Plain assignment: row.TextColor = 0.68f
+            var assign = lit.Parent as AssignmentExpressionSyntax;
+            if (assign != null) return assign.Left.ToString().Trim();
+
+            // Local declarator: float rh = 0.9f
+            var decl = lit.Ancestors().OfType<VariableDeclaratorSyntax>().FirstOrDefault();
+            if (decl != null) return decl.Identifier.ValueText;
+
+            // Binary expression: surface the LHS so labels like "y + rowH * 0.12f" still read well.
+            var bin = lit.Parent as BinaryExpressionSyntax;
+            if (bin != null) return bin.Left.ToString().Trim();
+
+            return null;
         }
 
         // ── Regex fallback (legacy) ─────────────────────────────────────────────
