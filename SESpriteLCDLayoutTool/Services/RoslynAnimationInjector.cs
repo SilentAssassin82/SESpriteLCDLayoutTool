@@ -82,11 +82,21 @@ namespace SESpriteLCDLayoutTool.Services
             var allSpritesList = new List<SpriteEntry>();
             {
                 var seenIds = new HashSet<string>(StringComparer.Ordinal);
+                var seenRefs = new HashSet<SpriteEntry>();
                 foreach (var sp in allSprites)
                 {
                     if (sp == null) continue;
-                    if (!string.IsNullOrEmpty(sp.Id) && !seenIds.Add(sp.Id))
-                        continue;
+                    // Dedup by stable Id when present; otherwise fall back to reference
+                    // identity so two SpriteEntry instances with empty Ids can't both
+                    // claim the same Add block via name+ordinal.
+                    if (!string.IsNullOrEmpty(sp.Id))
+                    {
+                        if (!seenIds.Add(sp.Id)) continue;
+                    }
+                    else
+                    {
+                        if (!seenRefs.Add(sp)) continue;
+                    }
                     allSpritesList.Add(sp);
                 }
             }
@@ -676,10 +686,18 @@ namespace SESpriteLCDLayoutTool.Services
         private static bool ContainsAnimatedIdentifier(string expr)
         {
             if (string.IsNullOrEmpty(expr)) return false;
-            // Known animation identifiers emitted by effects.
-            // Match as whole words (with optional numeric suffix).
-            return Regex.IsMatch(expr,
-                @"\b(?:arot|ax|ay|aw|ah|ascl|ar|ag|ab|aa|fadeAlpha|pulseScale|cycleColor|oscX|oscY|kfTick|kfEase|kfX|kfY|kfW|kfH|kfR|kfG|kfB|kfA|kfRot|kfScale)\d*\b");
+
+            // Strip out things that are definitely not animated state:
+            //   - numeric literals (incl. f/F/d/D/m/M suffix and decimals)
+            //   - known constructor type names (Vector2, Color)
+            //   - the "new" keyword and "byte" cast
+            //   - punctuation/whitespace
+            // Whatever identifier characters remain must be referencing some
+            // variable — i.e. animated state left behind by a prior pass.
+            string stripped = Regex.Replace(expr, @"\b\d+(?:\.\d+)?[fFdDmM]?\b", "");
+            stripped = Regex.Replace(stripped, @"\b(?:new|byte|Vector2|Color|f|F)\b", "");
+            stripped = Regex.Replace(stripped, @"[\s\(\)\,\.\-\+\*/]", "");
+            return Regex.IsMatch(stripped, @"[A-Za-z_]");
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -911,12 +929,14 @@ namespace SESpriteLCDLayoutTool.Services
             if (renderMethod?.Body == null || renderMethod.Body.Statements.Count == 0)
                 return code;
 
-            // Insert after the first statement (usually var frame = ...)
+            // Insert after the first statement (usually var frame = ...).
+            // Use Span.End (not FullSpan.End) so trailing trivia like a comment
+            // on the next line doesn't push _tick++ past it.
             var firstStmt = renderMethod.Body.Statements.First();
-            int insertPos = firstStmt.FullSpan.End;
+            int insertPos = firstStmt.Span.End;
             string indent = GetIndent(code, firstStmt.SpanStart);
 
-            return code.Insert(insertPos, $"{indent}_tick++;\n");
+            return code.Insert(insertPos, $"\n{indent}_tick++;");
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -951,21 +971,27 @@ namespace SESpriteLCDLayoutTool.Services
 
         private static string StripMarkerBlock(string code, string startMarker, string endMarker)
         {
-            int start = code.IndexOf(startMarker, StringComparison.Ordinal);
-            if (start < 0) return code;
+            // Loop until no more pairs remain — defends against compounding
+            // duplicates if a prior bug ever produced two regions with the same
+            // start/end markers.
+            while (true)
+            {
+                int start = code.IndexOf(startMarker, StringComparison.Ordinal);
+                if (start < 0) return code;
 
-            int end = code.IndexOf(endMarker, start, StringComparison.Ordinal);
-            if (end < 0) return code;
+                int end = code.IndexOf(endMarker, start, StringComparison.Ordinal);
+                if (end < 0) return code;
 
-            // Extend to cover full lines
-            int lineStart = start;
-            while (lineStart > 0 && code[lineStart - 1] != '\n') lineStart--;
+                // Extend to cover full lines
+                int lineStart = start;
+                while (lineStart > 0 && code[lineStart - 1] != '\n') lineStart--;
 
-            int lineEnd = end + endMarker.Length;
-            if (lineEnd < code.Length && code[lineEnd] == '\r') lineEnd++;
-            if (lineEnd < code.Length && code[lineEnd] == '\n') lineEnd++;
+                int lineEnd = end + endMarker.Length;
+                if (lineEnd < code.Length && code[lineEnd] == '\r') lineEnd++;
+                if (lineEnd < code.Length && code[lineEnd] == '\n') lineEnd++;
 
-            return code.Substring(0, lineStart) + code.Substring(lineEnd);
+                code = code.Substring(0, lineStart) + code.Substring(lineEnd);
+            }
         }
 
         /// <summary>
@@ -1040,10 +1066,16 @@ namespace SESpriteLCDLayoutTool.Services
 
         private static bool HasExistingField(string code, string fieldName)
         {
-            // Check if a field like "int _tick" already exists outside our markers
+            // Check if a field like "int _tick" already exists outside our markers.
+            // Accept any common numeric/bool type and any combination of access /
+            // static / readonly modifiers in front so we don't double-declare
+            // _tick when the host snippet already provides it.
             string stripped = StripMarkerBlock(code, FieldsStart, FieldsEnd);
-            return Regex.IsMatch(stripped,
-                @"\b(int|float|bool)\s+" + Regex.Escape(fieldName) + @"\b");
+            string pattern =
+                @"(?:(?:public|private|internal|protected|static|readonly)\s+)*" +
+                @"(?:u?int|u?long|u?short|float|double|bool|byte)\s+" +
+                Regex.Escape(fieldName) + @"\b";
+            return Regex.IsMatch(stripped, pattern);
         }
 
         private static bool HasEaseFunction(string code)
@@ -1156,7 +1188,7 @@ namespace SESpriteLCDLayoutTool.Services
         /// find it and apply property overrides.
         /// </summary>
         private static string EnsureAllSpritesHaveAddBlocks(
-            string code, List<SpriteEntry> animated, List<SpriteEntry> allSprites)
+            string code, List<SpriteEntry> spritesToEnsure, List<SpriteEntry> allSprites)
         {
             var tree = CSharpSyntaxTree.ParseText(code);
             var root = tree.GetRoot();
@@ -1173,9 +1205,9 @@ namespace SESpriteLCDLayoutTool.Services
                 nameCounters[key] = cnt + 1;
             }
 
-            // Find animated sprites whose ordinal Add block is missing
+            // Find sprites whose ordinal Add block is missing
             var missing = new List<SpriteEntry>();
-            foreach (var sp in animated)
+            foreach (var sp in spritesToEnsure)
             {
                 string name = sp.Type == SpriteEntryType.Text ? sp.Text : sp.SpriteName;
                 if (string.IsNullOrEmpty(name)) continue;
@@ -1278,7 +1310,8 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine($"{indent}    Position        = new Vector2({sp.X:F1}f, {sp.Y:F1}f),");
             sb.AppendLine($"{indent}    Size            = new Vector2({sp.Width:F1}f, {sp.Height:F1}f),");
             sb.AppendLine($"{indent}    Color           = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
-            sb.AppendLine($"{indent}    Alignment       = TextAlignment.CENTER,");
+            if (isText)
+                sb.AppendLine($"{indent}    Alignment       = TextAlignment.CENTER,");
             sb.AppendLine($"{indent}    RotationOrScale = {sp.Rotation:F4}f,");
             sb.AppendLine($"{indent}}});");
 
