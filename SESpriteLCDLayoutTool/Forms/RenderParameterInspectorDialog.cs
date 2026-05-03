@@ -47,8 +47,8 @@ namespace SESpriteLCDLayoutTool.Forms
 
             Text = "Render Parameter Inspector";
             StartPosition = FormStartPosition.CenterParent;
-            Size = new Size(520, 640);
-            MinimumSize = new Size(420, 480);
+            Size = new Size(760, 640);
+            MinimumSize = new Size(560, 480);
             BackColor = Color.FromArgb(30, 30, 30);
             ForeColor = Color.FromArgb(220, 220, 220);
             Font = new Font("Segoe UI", 9f);
@@ -98,7 +98,8 @@ namespace SESpriteLCDLayoutTool.Forms
             {
                 Text = "Live preview",
                 AutoSize = true,
-                Location = new Point(394, 9),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Location = new Point(top.Width - 110, 9),
                 ForeColor = Color.FromArgb(180, 220, 255),
             };
             top.Controls.Add(_chkLivePreview);
@@ -212,40 +213,122 @@ namespace SESpriteLCDLayoutTool.Forms
 
         private void AddKnobRow(RenderParameterKnob k)
         {
-            var row = new Panel { Width = _pnlKnobs.ClientSize.Width - 24, Height = 26, Margin = new Padding(0, 2, 0, 2) };
+            int rowWidth = _pnlKnobs.ClientSize.Width - 24;
+            if (rowWidth < 540) rowWidth = 540;
+            var row = new Panel { Width = rowWidth, Height = 30, Margin = new Padding(0, 2, 0, 2) };
             var nameLbl = new Label
             {
                 Text = k.Name,
                 AutoSize = false,
-                Width = 240,
-                Location = new Point(4, 4),
+                Width = 220,
+                Location = new Point(4, 6),
                 ForeColor = ForeColor,
             };
             var num = new NumericUpDown
             {
                 DecimalPlaces = k.IsFloat ? 4 : 0,
                 Increment = k.IsFloat ? 0.5m : 1m,
-                Minimum = -10000m,
-                Maximum = 10000m,
-                Location = new Point(252, 2),
-                Width = 100,
+                Minimum = -100000m,
+                Maximum = 100000m,
+                Location = new Point(228, 4),
+                Width = 90,
                 BackColor = Color.FromArgb(45, 45, 48),
                 ForeColor = Color.FromArgb(220, 220, 220),
             };
             try { num.Value = (decimal)k.CurrentValue; } catch { }
-            num.ValueChanged += (s, e) => ScheduleLivePreview();
+
+            // Auto-range slider. Floats <= 2 use 0..2 (typical for fractions/scales).
+            // Integers and larger floats use a span around the original value.
+            double sliderMin, sliderMax;
+            ComputeSliderRange(k, out sliderMin, out sliderMax);
+            const int kSliderTicks = 1000;
+            var slider = new TrackBar
+            {
+                Minimum = 0,
+                Maximum = kSliderTicks,
+                TickStyle = TickStyle.None,
+                Location = new Point(326, 0),
+                Width = rowWidth - 326 - 130,
+                Height = 30,
+                BackColor = row.BackColor,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            };
+            try { slider.Value = ValueToTick(k.CurrentValue, sliderMin, sliderMax, kSliderTicks); } catch { }
+
+            // Sync slider <-> numeric without feedback loops.
+            bool syncing = false;
+            num.ValueChanged += (s, e) =>
+            {
+                if (syncing) return;
+                syncing = true;
+                try { slider.Value = ValueToTick((double)num.Value, sliderMin, sliderMax, kSliderTicks); } catch { }
+                syncing = false;
+                ScheduleLivePreview();
+            };
+            slider.ValueChanged += (s, e) =>
+            {
+                if (syncing) return;
+                syncing = true;
+                double v = TickToValue(slider.Value, sliderMin, sliderMax, kSliderTicks);
+                try { num.Value = (decimal)Math.Max((double)num.Minimum, Math.Min((double)num.Maximum, v)); } catch { }
+                syncing = false;
+                ScheduleLivePreview();
+            };
+
             var origLbl = new Label
             {
                 Text = "(was " + k.OriginalLiteral + ")",
-                AutoSize = true,
-                Location = new Point(360, 6),
+                AutoSize = false,
+                Width = 120,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                Location = new Point(rowWidth - 124, 8),
                 ForeColor = Color.FromArgb(140, 140, 140),
             };
             row.Controls.Add(nameLbl);
             row.Controls.Add(num);
+            row.Controls.Add(slider);
             row.Controls.Add(origLbl);
             _pnlKnobs.Controls.Add(row);
             _numerics[k] = num;
+        }
+
+        private static void ComputeSliderRange(RenderParameterKnob k, out double min, out double max)
+        {
+            double v = k.OriginalValue;
+            double abs = Math.Abs(v);
+            if (k.IsFloat && abs <= 2.0)
+            {
+                min = v < 0 ? -2.0 : 0.0;
+                max = v < 0 ? 0.0 : 2.0;
+                return;
+            }
+            // Symmetric span around the original value, at least ±10.
+            double span = Math.Max(abs * 2.0, 10.0);
+            min = v - span;
+            max = v + span;
+            if (!k.IsFloat)
+            {
+                min = Math.Floor(min);
+                max = Math.Ceiling(max);
+            }
+            // Clamp non-negative for known-positive originals.
+            if (v >= 0 && min < 0) min = 0;
+        }
+
+        private static int ValueToTick(double value, double min, double max, int ticks)
+        {
+            if (max <= min) return 0;
+            double t = (value - min) / (max - min);
+            if (t < 0) t = 0; else if (t > 1) t = 1;
+            return (int)Math.Round(t * ticks);
+        }
+
+        private static double TickToValue(int tick, double min, double max, int ticks)
+        {
+            if (ticks <= 0) return min;
+            double t = (double)tick / ticks;
+            return min + t * (max - min);
         }
 
         private void ResetKnobs()
