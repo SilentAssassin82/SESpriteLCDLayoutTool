@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.RegularExpressions;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace SESpriteLCDLayoutTool.Services
 {
@@ -70,6 +74,191 @@ namespace SESpriteLCDLayoutTool.Services
         /// If <paramref name="methodName"/> is null/empty, only constants are returned.
         /// </summary>
         public static List<RenderParameterKnob> Scan(string source, string methodName)
+        {
+            var knobs = new List<RenderParameterKnob>();
+            if (string.IsNullOrEmpty(source)) return knobs;
+
+            // Try Roslyn-based scan first; on any failure, fall back to regex.
+            try
+            {
+                var roslyn = ScanWithRoslyn(source, methodName);
+                if (roslyn != null) return roslyn;
+            }
+            catch { /* fall through to regex */ }
+
+            return ScanWithRegex(source, methodName);
+        }
+
+        // ── Roslyn implementation ────────────────────────────────────────────────
+        private static List<RenderParameterKnob> ScanWithRoslyn(string source, string methodName)
+        {
+            var tree = CSharpSyntaxTree.ParseText(source);
+            var root = tree.GetRoot();
+            var knobs = new List<RenderParameterKnob>();
+
+            // Class-level numeric fields/constants
+            foreach (var field in root.DescendantNodes().OfType<FieldDeclarationSyntax>())
+            {
+                string typeName = field.Declaration.Type.ToString();
+                if (typeName != "float" && typeName != "double" && typeName != "int" &&
+                    typeName != "Single" && typeName != "Double" && typeName != "Int32")
+                    continue;
+
+                bool isFloat = typeName != "int" && typeName != "Int32";
+                foreach (var v in field.Declaration.Variables)
+                {
+                    if (v.Initializer == null) continue;
+                    int litStart;
+                    int litLen;
+                    string litText;
+                    double litVal;
+                    bool litIsFloat;
+                    if (!TryReadNumericLiteral(v.Initializer.Value, out litStart, out litLen, out litText, out litVal, out litIsFloat))
+                        continue;
+
+                    knobs.Add(new RenderParameterKnob
+                    {
+                        Name = v.Identifier.ValueText,
+                        Category = "Constants",
+                        GroupKey = "Constants",
+                        OriginalValue = litVal,
+                        CurrentValue = litVal,
+                        IsFloat = isFloat || litIsFloat,
+                        LiteralStart = litStart,
+                        LiteralLength = litLen,
+                        OriginalLiteral = litText,
+                    });
+                }
+            }
+
+            // Method-body literals
+            if (!string.IsNullOrWhiteSpace(methodName))
+            {
+                MethodDeclarationSyntax method = root.DescendantNodes()
+                    .OfType<MethodDeclarationSyntax>()
+                    .FirstOrDefault(m => m.Identifier.ValueText == methodName);
+                if (method != null && method.Body != null)
+                {
+                    int idx = 1;
+                    foreach (var lit in method.Body.DescendantNodes().OfType<LiteralExpressionSyntax>())
+                    {
+                        if (!lit.IsKind(SyntaxKind.NumericLiteralExpression)) continue;
+
+                        // Skip if inside a string/attribute/case-label context that we don't want.
+                        if (lit.Ancestors().Any(a =>
+                                a is AttributeSyntax ||
+                                a is CaseSwitchLabelSyntax ||
+                                a is BracketedArgumentListSyntax))
+                            continue;
+
+                        int litStart;
+                        int litLen;
+                        string litText;
+                        double litVal;
+                        bool litIsFloat;
+                        if (!TryReadNumericLiteral(lit, out litStart, out litLen, out litText, out litVal, out litIsFloat))
+                            continue;
+
+                        // Skip 0/1 toggles
+                        if (litText == "0" || litText == "1" || litText == "0f" || litText == "1f") continue;
+
+                        string ctx = GetContextLabel(source, litStart);
+                        string label = string.IsNullOrEmpty(ctx)
+                            ? string.Format("#{0}: {1}", idx, litText)
+                            : string.Format("#{0} {1} = {2}", idx, ctx, litText);
+
+                        knobs.Add(new RenderParameterKnob
+                        {
+                            Name = label,
+                            Category = methodName,
+                            GroupKey = GetGroupKeyFromSyntax(lit, methodName),
+                            OriginalValue = litVal,
+                            CurrentValue = litVal,
+                            IsFloat = litIsFloat,
+                            LiteralStart = litStart,
+                            LiteralLength = litLen,
+                            OriginalLiteral = litText,
+                        });
+                        idx++;
+                    }
+                }
+            }
+
+            return knobs;
+        }
+
+        private static bool TryReadNumericLiteral(SyntaxNode node, out int start, out int length, out string text, out double value, out bool isFloat)
+        {
+            start = length = 0;
+            text = null;
+            value = 0;
+            isFloat = false;
+
+            LiteralExpressionSyntax lit = node as LiteralExpressionSyntax;
+            bool negative = false;
+            if (lit == null)
+            {
+                var prefix = node as PrefixUnaryExpressionSyntax;
+                if (prefix != null && prefix.IsKind(SyntaxKind.UnaryMinusExpression))
+                {
+                    lit = prefix.Operand as LiteralExpressionSyntax;
+                    negative = true;
+                }
+            }
+            if (lit == null || !lit.IsKind(SyntaxKind.NumericLiteralExpression)) return false;
+
+            string raw = lit.Token.Text;
+            // Strip suffix
+            string suffix = "";
+            string numericPart = raw;
+            if (raw.Length > 0)
+            {
+                char last = raw[raw.Length - 1];
+                if (last == 'f' || last == 'F' || last == 'd' || last == 'D' || last == 'm' || last == 'M')
+                {
+                    suffix = last.ToString();
+                    numericPart = raw.Substring(0, raw.Length - 1);
+                }
+            }
+            double parsed;
+            if (!double.TryParse(numericPart, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed))
+                return false;
+
+            value = negative ? -parsed : parsed;
+            isFloat = suffix == "f" || suffix == "F" || suffix == "d" || suffix == "D" || numericPart.Contains(".");
+            text = raw;
+            // Use the literal-token span (we don't include the unary minus in the patched span;
+            // sign changes are handled by FormatLiteral emitting "-N" when needed).
+            var span = lit.Token.Span;
+            start = span.Start;
+            length = span.Length;
+            return true;
+        }
+
+        private static string GetGroupKeyFromSyntax(SyntaxNode lit, string fallback)
+        {
+            // Walk up looking for an assignment, local declarator, or invocation/object-creation.
+            for (var node = lit.Parent; node != null; node = node.Parent)
+            {
+                var assign = node as AssignmentExpressionSyntax;
+                if (assign != null) return assign.Left.ToString().Trim();
+
+                var decl = node as VariableDeclaratorSyntax;
+                if (decl != null) return decl.Identifier.ValueText;
+
+                var inv = node as InvocationExpressionSyntax;
+                if (inv != null) return inv.Expression.ToString().Trim();
+
+                var oc = node as ObjectCreationExpressionSyntax;
+                if (oc != null) return "new " + oc.Type.ToString().Trim();
+
+                if (node is StatementSyntax) break;
+            }
+            return fallback ?? "(literals)";
+        }
+
+        // ── Regex fallback (legacy) ─────────────────────────────────────────────
+        private static List<RenderParameterKnob> ScanWithRegex(string source, string methodName)
         {
             var knobs = new List<RenderParameterKnob>();
             if (string.IsNullOrEmpty(source)) return knobs;
