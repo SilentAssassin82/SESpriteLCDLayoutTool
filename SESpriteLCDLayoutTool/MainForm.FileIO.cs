@@ -1005,6 +1005,16 @@ namespace SESpriteLCDLayoutTool
                     if (string.IsNullOrEmpty(patched) || patched == _codeBox.Text) return;
                     SetCodeText(patched);
                     _codeBoxDirty = true;
+
+                    // If the user was watching an animated script (e.g. matrix rain)
+                    // that needs many ticks to "spool up" before there's anything
+                    // visible to edit against, a single-shot Execute would snap the
+                    // canvas back to frame 0 on every slider tweak. Detect that case
+                    // and re-prepare the AnimationPlayer with the patched code, then
+                    // fast-forward to the same tick the user was paused on, so the
+                    // visual stays at an equivalent spooled-up frame.
+                    if (TryLivePreviewWithAnimPlayer(patched)) return;
+
                     // Re-execute through the existing pipeline so the canvas reflects the new values.
                     try { OnExecCodeClick(this, EventArgs.Empty); } catch { /* swallow live errors */ }
                 };
@@ -1024,6 +1034,55 @@ namespace SESpriteLCDLayoutTool
             if (string.IsNullOrEmpty(call)) return call;
             int paren = call.IndexOf('(');
             return paren > 0 ? call.Substring(0, paren).Trim() : call.Trim();
+        }
+
+        /// <summary>
+        /// When the Render Parameter Inspector live-previews a script that's
+        /// being driven by the animation player (paused or playing), re-prepare
+        /// the player with the patched code and fast-forward to the same tick
+        /// so the user keeps editing against an equivalent "spooled up" frame
+        /// instead of being snapped back to frame 0 by a single-shot Execute.
+        /// Returns true when the animation path handled the preview.
+        /// </summary>
+        private bool TryLivePreviewWithAnimPlayer(string patchedCode)
+        {
+            if (_animPlayer == null) return false;
+            // Only meaningful once the player has produced at least one frame.
+            int targetTick = _animPlayer.CurrentTick;
+            if (targetTick <= 0) return false;
+            if (!(_animPlayer.IsPlaying || _animPlayer.IsPaused)) return false;
+
+            bool wasPlaying = _animPlayer.IsPlaying && !_animPlayer.IsPaused;
+
+            try
+            {
+                string error = _animPlayer.Prepare(patchedCode, null, _layout?.CapturedRows);
+                if (error != null) return false;
+
+                // Fast-forward without recording per-tick history; the script's
+                // own state (fields, _tick, RNG) drives the visual back to a
+                // comparable frame.
+                _animPlayer.FastCaptureMode = true;
+                try
+                {
+                    for (int i = 0; i < targetTick - 1; i++)
+                        _animPlayer.StepForward();
+                }
+                finally
+                {
+                    _animPlayer.FastCaptureMode = false;
+                }
+
+                // Final step renders normally (fires FrameRendered → canvas update).
+                _animPlayer.StepForward();
+
+                if (wasPlaying) _animPlayer.Play();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         // ── Sprite texture loading ────────────────────────────────────────────────

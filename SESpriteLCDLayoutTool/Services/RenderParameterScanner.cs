@@ -129,7 +129,36 @@ namespace SESpriteLCDLayoutTool.Services
             var parseOpts = new CSharpParseOptions(
                 LanguageVersion.Latest,
                 preprocessorSymbols: new[] { "TORCH", "DEBUG", "PULSAR" });
-            var tree = CSharpSyntaxTree.ParseText(source, parseOpts);
+
+            // Programmable-Block scripts have no class wrapper — fields and methods
+            // sit at the top level and parse as GlobalStatementSyntax, which our
+            // FieldDeclaration/MethodDeclaration walks never see. If the source has
+            // no top-level type declaration, wrap it in a synthetic class so Roslyn
+            // hands us the same shape as Mod / Plugin code. We track the wrapper
+            // prefix length so literal offsets remain relative to the ORIGINAL
+            // source (ApplyEdits patches the unwrapped text).
+            string parsedSource = source;
+            int offsetShift = 0;
+            var preTree = CSharpSyntaxTree.ParseText(source, parseOpts);
+            var preRoot = preTree.GetRoot() as CompilationUnitSyntax;
+            // PB scripts mix top-level fields/methods (which Roslyn parses as
+            // GlobalStatementSyntax) with optional helper structs. The previous
+            // check skipped wrapping when ANY type declaration was present, so a
+            // PB script with `struct ColState { ... }` left the constants and
+            // Main() invisible to the scanner. Wrap whenever the compilation
+            // unit contains global statements — that's the real signal that the
+            // source is top-level/PB-shaped.
+            bool hasGlobalStatements = preRoot != null
+                && preRoot.Members.OfType<GlobalStatementSyntax>().Any();
+            if (hasGlobalStatements)
+            {
+                const string prefix = "class __PbWrap__ {\n";
+                const string suffix = "\n}\n";
+                parsedSource = prefix + source + suffix;
+                offsetShift = prefix.Length;
+            }
+
+            var tree = CSharpSyntaxTree.ParseText(parsedSource, parseOpts);
             var root = tree.GetRoot();
             var knobs = new List<RenderParameterKnob>();
 
@@ -314,7 +343,40 @@ namespace SESpriteLCDLayoutTool.Services
                 }
             }
 
+            // Shift literal offsets back into ORIGINAL source coordinates if we
+            // wrapped PB code in a synthetic class. Drop any knobs whose span
+            // would land outside the original source (e.g. inside the synthetic
+            // braces) — defensive; in practice the wrapper has no literals.
+            if (offsetShift != 0)
+            {
+                int origLen = source.Length;
+                var shifted = new List<RenderParameterKnob>(knobs.Count);
+                foreach (var k in knobs)
+                {
+                    if (k.Color != null)
+                    {
+                        ShiftComponent(k.Color.R, offsetShift, origLen);
+                        ShiftComponent(k.Color.G, offsetShift, origLen);
+                        ShiftComponent(k.Color.B, offsetShift, origLen);
+                        if (k.Color.A != null) ShiftComponent(k.Color.A, offsetShift, origLen);
+                    }
+                    int newStart = k.LiteralStart - offsetShift;
+                    if (newStart < 0 || newStart + k.LiteralLength > origLen) continue;
+                    k.LiteralStart = newStart;
+                    shifted.Add(k);
+                }
+                return shifted;
+            }
+
             return knobs;
+        }
+
+        private static void ShiftComponent(RenderParameterColor.Component c, int shift, int origLen)
+        {
+            if (c == null) return;
+            int s = c.LiteralStart - shift;
+            if (s < 0) s = 0;
+            c.LiteralStart = s;
         }
 
         private static bool TryReadNumericLiteral(SyntaxNode node, out int start, out int length, out string text, out double value, out bool isFloat)
