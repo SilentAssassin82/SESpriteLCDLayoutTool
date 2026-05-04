@@ -1,27 +1,35 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.InteropServices;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Gif;
+using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Processing;
+using SixLabors.ImageSharp.Processing.Processors.Quantization;
 
 namespace SESpriteLCDLayoutTool.Services
 {
     /// <summary>
-    /// Writes an animated GIF89a file from a sequence of <see cref="Bitmap"/> frames.
+    /// Writes an animated GIF from a sequence of <see cref="Bitmap"/> frames using
+    /// SixLabors.ImageSharp.
     ///
-    /// Implementation strategy: we let GDI+ encode each frame as a single-frame GIF
-    /// (so it does the palette quantisation and LZW compression for us), then we
-    /// stitch the frames together into one animated GIF89a stream. Each frame is
-    /// written with its own Local Color Table + Graphic Control Extension so the
-    /// quantised colours stay accurate across frames. A NETSCAPE 2.0 application
-    /// extension is added so the animation loops indefinitely.
+    /// Each frame is quantised with the Wu algorithm (per-frame 256-colour palette)
+    /// and dithered with Floyd–Steinberg error diffusion. This gives dramatically
+    /// better quality than GDI+'s built-in GIF encoder, which uses a fixed 8-bit
+    /// halftone palette + ordered dither and produces the "salt and pepper" grain
+    /// the previous implementation suffered from.
+    ///
+    /// API surface is unchanged: construct with stream/width/height, set FrameDelayCs
+    /// and LoopCount, call AddFrame(Bitmap) for each frame, then Dispose() to flush.
     /// </summary>
     public sealed class GifExporter : IDisposable
     {
-        private readonly BinaryWriter _bw;
+        private readonly Stream _output;
         private readonly int _width;
         private readonly int _height;
-        private bool _headerWritten;
+        private Image<Rgba32> _gif;
         private bool _disposed;
 
         /// <summary>
@@ -38,7 +46,7 @@ namespace SESpriteLCDLayoutTool.Services
             if (output == null) throw new ArgumentNullException(nameof(output));
             if (width  < 1) width  = 1;
             if (height < 1) height = 1;
-            _bw     = new BinaryWriter(output);
+            _output = output;
             _width  = width;
             _height = height;
         }
@@ -49,13 +57,7 @@ namespace SESpriteLCDLayoutTool.Services
             if (_disposed) throw new ObjectDisposedException(nameof(GifExporter));
             if (frame == null) throw new ArgumentNullException(nameof(frame));
 
-            if (!_headerWritten)
-            {
-                WriteFileHeader();
-                _headerWritten = true;
-            }
-
-            // Resize to canvas size if needed.
+            // Resize / convert to 32bpp ARGB at the canvas size if needed.
             Bitmap rgb;
             bool ownsRgb = false;
             if (frame.Width != _width || frame.Height != _height
@@ -65,7 +67,7 @@ namespace SESpriteLCDLayoutTool.Services
                 ownsRgb = true;
                 using (var g = Graphics.FromImage(rgb))
                 {
-                    g.Clear(Color.Black);
+                    g.Clear(System.Drawing.Color.Black);
                     g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                     g.PixelOffsetMode   = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
                     g.DrawImage(frame, 0, 0, _width, _height);
@@ -76,191 +78,99 @@ namespace SESpriteLCDLayoutTool.Services
                 rgb = frame;
             }
 
-            // Encode the frame as a single-frame GIF via GDI+ so it handles
-            // palette quantisation and LZW compression for us, then we splice
-            // it into the animated stream below.
-            byte[] singleFrame;
-            using (var ms = new MemoryStream())
-            {
-                rgb.Save(ms, ImageFormat.Gif);
-                singleFrame = ms.ToArray();
-            }
+            Image<Rgba32> isFrame = BitmapToImageSharp(rgb);
             if (ownsRgb) rgb.Dispose();
 
-            ParseSingleFrameGif(singleFrame, out byte[] palette, out int paletteEntries,
-                                out byte[] lzwBlock, out int frameW, out int frameH);
+            int delayCs = Math.Max(2, FrameDelayCs);
 
-            if (palette == null || lzwBlock == null)
-                throw new InvalidDataException("GDI+ produced an unexpected GIF stream.");
-
-            WriteGraphicControlExtension(FrameDelayCs);
-            WriteImageDescriptor(frameW, frameH, paletteEntries);
-            _bw.Write(palette);
-            _bw.Write(lzwBlock);
-        }
-
-        private void WriteFileHeader()
-        {
-            // Magic
-            _bw.Write(new[] { (byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'9', (byte)'a' });
-
-            // Logical Screen Descriptor — no global colour table; each frame brings its own LCT.
-            _bw.Write((ushort)_width);
-            _bw.Write((ushort)_height);
-            _bw.Write((byte)0x00); // packed: no GCT, colour resolution / sort / size irrelevant
-            _bw.Write((byte)0x00); // background colour index
-            _bw.Write((byte)0x00); // pixel aspect ratio
-
-            // NETSCAPE 2.0 application extension — looping
-            _bw.Write((byte)0x21);             // extension introducer
-            _bw.Write((byte)0xFF);             // application extension label
-            _bw.Write((byte)0x0B);             // block size
-            _bw.Write(new[] {
-                (byte)'N',(byte)'E',(byte)'T',(byte)'S',(byte)'C',
-                (byte)'A',(byte)'P',(byte)'E',(byte)'2',(byte)'.',(byte)'0' });
-            _bw.Write((byte)0x03);             // sub-block size
-            _bw.Write((byte)0x01);             // loop sub-block id
-            _bw.Write((ushort)LoopCount);      // 0 = infinite
-            _bw.Write((byte)0x00);             // block terminator
-        }
-
-        private void WriteGraphicControlExtension(int delayCs)
-        {
-            _bw.Write((byte)0x21);             // extension introducer
-            _bw.Write((byte)0xF9);             // graphic control label
-            _bw.Write((byte)0x04);             // block size
-            _bw.Write((byte)0x00);             // packed: no transparency, no user input, disposal=none
-            _bw.Write((ushort)Math.Max(0, delayCs));
-            _bw.Write((byte)0x00);             // transparent colour index
-            _bw.Write((byte)0x00);             // block terminator
-        }
-
-        private void WriteImageDescriptor(int w, int h, int paletteEntries)
-        {
-            // packed: bit7=LCT flag, bit6=interlace, bit5=sort, bits 0..2 = size of LCT (n where 2^(n+1) entries)
-            int n = 0;
-            int entries = 2;
-            while (entries < paletteEntries) { entries <<= 1; n++; }
-            byte packed = (byte)(0x80 | (n & 0x07));
-
-            _bw.Write((byte)0x2C);             // image separator
-            _bw.Write((ushort)0);               // left
-            _bw.Write((ushort)0);               // top
-            _bw.Write((ushort)w);
-            _bw.Write((ushort)h);
-            _bw.Write(packed);
-        }
-
-        /// <summary>
-        /// Parses a single-frame GIF produced by GDI+ and extracts:
-        ///   - the active colour table (global if present, else local),
-        ///   - the LZW image data block (min-code-size byte + sub-blocks + 0x00 terminator),
-        ///   - frame width/height.
-        /// </summary>
-        private static void ParseSingleFrameGif(byte[] data,
-                                                out byte[] palette, out int paletteEntries,
-                                                out byte[] lzwBlock,
-                                                out int width, out int height)
-        {
-            palette = null;
-            paletteEntries = 0;
-            lzwBlock = null;
-            width = 0;
-            height = 0;
-
-            int p = 0;
-            if (data.Length < 13) return;
-
-            // Header "GIF87a" / "GIF89a"
-            p += 6;
-
-            // Logical Screen Descriptor
-            int lsdW    = data[p] | (data[p + 1] << 8); p += 2;
-            int lsdH    = data[p] | (data[p + 1] << 8); p += 2;
-            byte packed = data[p++];
-            p += 2; // bg index + aspect
-            bool hasGct = (packed & 0x80) != 0;
-            int gctEntries = 1 << ((packed & 0x07) + 1);
-            if (hasGct)
+            if (_gif == null)
             {
-                palette = new byte[gctEntries * 3];
-                Array.Copy(data, p, palette, 0, palette.Length);
-                p += palette.Length;
-                paletteEntries = gctEntries;
+                // First frame becomes the root; tag animation- and frame-level metadata.
+                _gif = isFrame;
+                var gifMeta = _gif.Metadata.GetGifMetadata();
+                gifMeta.RepeatCount = (ushort)Math.Max(0, LoopCount);
+                gifMeta.ColorTableMode = GifColorTableMode.Local; // per-frame palette
+
+                var rootMeta = _gif.Frames.RootFrame.Metadata.GetGifMetadata();
+                rootMeta.FrameDelay = delayCs;
+                rootMeta.DisposalMethod = GifDisposalMethod.RestoreToBackground;
             }
-
-            width = lsdW;
-            height = lsdH;
-
-            while (p < data.Length)
+            else
             {
-                byte block = data[p++];
-
-                if (block == 0x21) // extension — skip entirely
-                {
-                    p++; // label
-                    while (p < data.Length)
-                    {
-                        byte sz = data[p++];
-                        if (sz == 0) break;
-                        p += sz;
-                    }
-                }
-                else if (block == 0x2C) // image descriptor
-                {
-                    int left = data[p] | (data[p + 1] << 8); p += 2;
-                    int top  = data[p] | (data[p + 1] << 8); p += 2;
-                    int iw   = data[p] | (data[p + 1] << 8); p += 2;
-                    int ih   = data[p] | (data[p + 1] << 8); p += 2;
-                    byte ipacked = data[p++];
-                    bool hasLct = (ipacked & 0x80) != 0;
-                    int lctEntries = 1 << ((ipacked & 0x07) + 1);
-                    if (hasLct)
-                    {
-                        palette = new byte[lctEntries * 3];
-                        Array.Copy(data, p, palette, 0, palette.Length);
-                        p += palette.Length;
-                        paletteEntries = lctEntries;
-                    }
-
-                    width = iw > 0 ? iw : width;
-                    height = ih > 0 ? ih : height;
-
-                    int lzwStart = p;
-                    p++; // min code size byte
-                    while (p < data.Length)
-                    {
-                        byte sz = data[p++];
-                        if (sz == 0) break;
-                        p += sz;
-                    }
-                    int lzwEnd = p;
-                    lzwBlock = new byte[lzwEnd - lzwStart];
-                    Array.Copy(data, lzwStart, lzwBlock, 0, lzwBlock.Length);
-                    _ = left; _ = top;
-                    return;
-                }
-                else if (block == 0x3B) // trailer
-                {
-                    return;
-                }
-                else
-                {
-                    // Unknown — bail out
-                    return;
-                }
+                // AddFrame clones the frame; tag the cloned frame's metadata so the delay sticks.
+                var added = _gif.Frames.AddFrame(isFrame.Frames.RootFrame);
+                var addedMeta = added.Metadata.GetGifMetadata();
+                addedMeta.FrameDelay = delayCs;
+                addedMeta.DisposalMethod = GifDisposalMethod.RestoreToBackground;
+                isFrame.Dispose();
             }
         }
 
-        /// <summary>Writes the GIF trailer and closes the stream writer.</summary>
+        /// <summary>Copies a 32bpp ARGB GDI+ bitmap into a freshly allocated ImageSharp Rgba32 image.</summary>
+        private static Image<Rgba32> BitmapToImageSharp(Bitmap bmp)
+        {
+            int w = bmp.Width;
+            int h = bmp.Height;
+
+            BitmapData data = bmp.LockBits(
+                new System.Drawing.Rectangle(0, 0, w, h),
+                ImageLockMode.ReadOnly,
+                PixelFormat.Format32bppArgb);
+
+            try
+            {
+                int stride = data.Stride;
+                int bytes = stride * h;
+                byte[] buf = new byte[bytes];
+                Marshal.Copy(data.Scan0, buf, 0, bytes);
+
+                var img = new Image<Rgba32>(w, h);
+                // GDI+ Format32bppArgb is BGRA in memory; ImageSharp Rgba32 is RGBA.
+                for (int y = 0; y < h; y++)
+                {
+                    int row = y * stride;
+                    var span = img.Frames.RootFrame.PixelBuffer.DangerousGetRowSpan(y);
+                    for (int x = 0; x < w; x++)
+                    {
+                        int i = row + x * 4;
+                        byte b = buf[i];
+                        byte g = buf[i + 1];
+                        byte r = buf[i + 2];
+                        byte a = buf[i + 3];
+                        span[x] = new Rgba32(r, g, b, a);
+                    }
+                }
+                return img;
+            }
+            finally
+            {
+                bmp.UnlockBits(data);
+            }
+        }
+
+        /// <summary>Encodes the assembled animation and writes it to the output stream.</summary>
         public void Dispose()
         {
             if (_disposed) return;
             _disposed = true;
-            if (_headerWritten)
-                _bw.Write((byte)0x3B); // trailer
-            _bw.Flush();
-            _bw.Dispose();
+
+            if (_gif != null)
+            {
+                var encoder = new GifEncoder
+                {
+                    Quantizer = new WuQuantizer(new QuantizerOptions
+                    {
+                        Dither = KnownDitherings.FloydSteinberg,
+                        MaxColors = 256
+                    }),
+                    ColorTableMode = GifColorTableMode.Local
+                };
+                _gif.SaveAsGif(_output, encoder);
+                _gif.Dispose();
+                _gif = null;
+            }
+
+            _output.Flush();
         }
     }
 }
