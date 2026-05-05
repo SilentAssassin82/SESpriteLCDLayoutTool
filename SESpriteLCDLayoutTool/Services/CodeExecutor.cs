@@ -1230,7 +1230,7 @@ namespace SESpriteLCDLayoutTool.Services
             }
 
             if (runEx != null)
-                return Fail("Runtime error: " + runEx.Message);
+                return Fail(FormatRuntimeError(runEx));
             if (rawData == null)
                 return Fail("No sprite data returned.");
 
@@ -1490,6 +1490,12 @@ namespace SESpriteLCDLayoutTool.Services
             string ctorBody = ExtractConstructorBody(stripped, ctorName);
             stripped = StripConstructors(stripped, ctorName);
 
+            // The constructor body is inlined into RunAllData (not a real ctor),
+            // so any `readonly` fields at the outer Program-class scope would
+            // produce CS0191 when assigned. Strip `readonly` only at depth 0;
+            // nested types keep their own constructors and their readonly fields.
+            stripped = StripReadonlyAtOuterScope(stripped);
+
             // Instrument render methods for accurate sprite tracking
             stripped = InstrumentRenderMethods(stripped, userCode, isProgrammableBlock: true);
             stripped = InjectMethodTimings(stripped);
@@ -1510,13 +1516,20 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("            var gts = new StubGridTerminalSystem();");
             sb.AppendLine("            var pb = new StubProgrammableBlock();");
             sb.AppendLine("            gts.RegisterBlock(pb);");
-            sb.AppendLine("            // Register a default LCD panel so GetBlockWithName finds a surface");
-            sb.AppendLine("            var lcd = new StubTerminalBlock(1);");
+            sb.AppendLine("            // Register a default LCD panel so GetBlockWithName finds a surface.");
+            sb.AppendLine("            // Use StubTextSurface so `as IMyTextPanel` casts (e.g. radar scripts) succeed.");
+            sb.AppendLine("            var lcd = new StubTextSurface(512f, 512f);");
             sb.AppendLine("            lcd.EntityId = 2;");
+            sb.AppendLine("            lcd.CustomName = \"LCD Panel\";");
             sb.AppendLine("            gts.RegisterBlock(lcd);");
+            sb.AppendLine("            // Register a cockpit so radar/HUD scripts that look one up by name resolve");
+            sb.AppendLine("            var cockpit = new StubCockpit();");
+            sb.AppendLine("            cockpit.EntityId = 3;");
+            sb.AppendLine("            gts.RegisterBlock(cockpit);");
             sb.AppendLine("            Me = pb;");
             sb.AppendLine("            Runtime = new StubRuntime();");
             sb.AppendLine("            GridTerminalSystem = gts;");
+            sb.AppendLine("            IGC = new StubIGC();");
             sb.AppendLine("            Storage = string.Empty;");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -1599,12 +1612,17 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("            var gts = new StubGridTerminalSystem();");
             sb.AppendLine("            var pb = new StubProgrammableBlock();");
             sb.AppendLine("            gts.RegisterBlock(pb);");
-            sb.AppendLine("            var lcd = new StubTerminalBlock(1);");
+            sb.AppendLine("            var lcd = new StubTextSurface(512f, 512f);");
             sb.AppendLine("            lcd.EntityId = 2;");
+            sb.AppendLine("            lcd.CustomName = \"LCD Panel\";");
             sb.AppendLine("            gts.RegisterBlock(lcd);");
+            sb.AppendLine("            var cockpit = new StubCockpit();");
+            sb.AppendLine("            cockpit.EntityId = 3;");
+            sb.AppendLine("            gts.RegisterBlock(cockpit);");
             sb.AppendLine("            Me = pb;");
             sb.AppendLine("            Runtime = new StubRuntime();");
             sb.AppendLine("            GridTerminalSystem = gts;");
+            sb.AppendLine("            IGC = new StubIGC();");
             sb.AppendLine("            Storage = string.Empty;");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -2087,9 +2105,14 @@ namespace SESpriteLCDLayoutTool.Services
         {
             // Reference the standard .NET Framework assemblies from the runtime directory
             string runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
+            // System.Collections.Immutable ships as a NuGet package; reference the
+            // copy already loaded into this process so SE community scripts that
+            // use ImmutableList/ImmutableArray/etc. compile without extra setup.
+            string immutablePath = typeof(System.Collections.Immutable.ImmutableList).Assembly.Location;
             string refs = string.Join(" ",
                 "/reference:\"" + Path.Combine(runtimeDir, "System.dll") + "\"",
-                "/reference:\"" + Path.Combine(runtimeDir, "System.Core.dll") + "\"");
+                "/reference:\"" + Path.Combine(runtimeDir, "System.Core.dll") + "\"",
+                "/reference:\"" + immutablePath + "\"");
 
             string tempSrc = Path.ChangeExtension(Path.GetTempFileName(), ".cs");
             string tempDll = Path.ChangeExtension(Path.GetTempFileName(), ".dll");
@@ -2276,7 +2299,7 @@ namespace SESpriteLCDLayoutTool.Services
             }
 
             if (runEx != null)
-                return Fail("Runtime error: " + runEx.Message);
+                return Fail(FormatRuntimeError(runEx));
             if (rawData == null)
                 return Fail("No sprite data returned.");
 
@@ -3105,6 +3128,103 @@ namespace SESpriteLCDLayoutTool.Services
             return -1;
         }
 
+        /// <summary>
+        /// Removes the `readonly` modifier from field declarations at the outermost
+        /// (Program) class scope. The PB compile pipeline inlines the constructor
+        /// body into RunAllData (not an actual constructor), so assignments to
+        /// readonly fields would otherwise raise CS0191. Nested types are skipped
+        /// so their own constructors continue to work normally.
+        /// </summary>
+        private static string StripReadonlyAtOuterScope(string body)
+        {
+            if (string.IsNullOrEmpty(body)) return body;
+            var sb = new StringBuilder(body.Length);
+            int depth = 0;
+            int i = 0;
+            int n = body.Length;
+            bool atLineStart = true;
+            while (i < n)
+            {
+                char c = body[i];
+
+                // Track string/char/comment regions so braces inside them don't change depth
+                if (c == '/' && i + 1 < n && body[i + 1] == '/')
+                {
+                    int eol = body.IndexOf('\n', i);
+                    if (eol < 0) eol = n;
+                    sb.Append(body, i, eol - i);
+                    i = eol;
+                    continue;
+                }
+                if (c == '/' && i + 1 < n && body[i + 1] == '*')
+                {
+                    int end = body.IndexOf("*/", i + 2);
+                    if (end < 0) end = n; else end += 2;
+                    sb.Append(body, i, end - i);
+                    i = end;
+                    continue;
+                }
+                if (c == '"' || c == '\'')
+                {
+                    char q = c;
+                    int j = i + 1;
+                    while (j < n)
+                    {
+                        if (body[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                        if (body[j] == q) { j++; break; }
+                        j++;
+                    }
+                    sb.Append(body, i, j - i);
+                    i = j;
+                    continue;
+                }
+
+                if (c == '{') { depth++; sb.Append(c); i++; atLineStart = false; continue; }
+                if (c == '}') { depth--; sb.Append(c); i++; atLineStart = false; continue; }
+
+                if (atLineStart && depth == 0 && (c == 'r' || c == 'p' || c == 'i'))
+                {
+                    // Match: optional access modifier + optional 'static' + 'readonly'
+                    int j = i;
+                    int mStart = j;
+                    // Skip optional access/static prefixes (any number, in any order)
+                    while (j < n)
+                    {
+                        int wsStart = j;
+                        // Try to read an identifier word
+                        int wEnd = j;
+                        while (wEnd < n && (char.IsLetter(body[wEnd]) || body[wEnd] == '_')) wEnd++;
+                        if (wEnd == j) break;
+                        string word = body.Substring(j, wEnd - j);
+                        if (word == "public" || word == "private" || word == "protected" || word == "internal" || word == "static")
+                        {
+                            j = wEnd;
+                            while (j < n && (body[j] == ' ' || body[j] == '\t')) j++;
+                            continue;
+                        }
+                        if (word == "readonly")
+                        {
+                            // Emit everything before 'readonly', skip the keyword + following space
+                            sb.Append(body, i, j - i);
+                            int after = wEnd;
+                            while (after < n && (body[after] == ' ' || body[after] == '\t')) after++;
+                            i = after;
+                            atLineStart = false;
+                            goto outerContinue;
+                        }
+                        break;
+                    }
+                }
+
+                if (c == '\n') atLineStart = true;
+                else if (c != ' ' && c != '\t' && c != '\r') atLineStart = false;
+                sb.Append(c);
+                i++;
+                outerContinue:;
+            }
+            return sb.ToString();
+        }
+
         private static string StripConstructors(string body, string className)
         {
             if (string.IsNullOrEmpty(className)) return body;
@@ -3483,6 +3603,33 @@ namespace SESpriteLCDLayoutTool.Services
         }
 
         /// <summary>
+        /// Formats a runtime exception as "Runtime error: ExceptionType: message [at SELcdExec.LcdRunner.Method]".
+        /// Picks the first user-relevant stack frame so NREs in user code can be located.
+        /// </summary>
+        private static string FormatRuntimeError(Exception ex)
+        {
+            var frames = new List<string>();
+            string trace = ex.StackTrace ?? string.Empty;
+            using (var sr = new System.IO.StringReader(trace))
+            {
+                string line;
+                while ((line = sr.ReadLine()) != null)
+                {
+                    string t = line.Trim();
+                    if (t.StartsWith("at SELcdExec.", StringComparison.Ordinal)
+                        || t.StartsWith("at Radar.", StringComparison.Ordinal)
+                        || t.Contains(".LcdRunner."))
+                    {
+                        frames.Add(t);
+                        if (frames.Count >= 3) break;
+                    }
+                }
+            }
+            string suffix = frames.Count == 0 ? string.Empty : (" [" + string.Join(" <- ", frames) + "]");
+            return "Runtime error: " + ex.GetType().Name + ": " + ex.Message + suffix;
+        }
+
+        /// <summary>
         /// Extracts the method name from a call expression like "RenderPanel(sprites, 512f, 10f, 1f)"
         /// or "sprites = BuildSprites(...)".
         /// </summary>
@@ -3528,6 +3675,64 @@ namespace SESpriteLCDLayoutTool.Services
         // ── Headless compile-only API ─────────────────────────────────────────
 
         /// <summary>
+        /// One structured compiler diagnostic. Friendlier for LLM tool-use than
+        /// raw csc text — the model can attend to <see cref="Code"/>/<see cref="Line"/>
+        /// directly without parsing.
+        /// </summary>
+        public sealed class CompileDiagnostic
+        {
+            public int Line { get; set; }
+            public int Column { get; set; }
+            public string Severity { get; set; }   // "error" | "warning"
+            public string Code { get; set; }       // e.g. "CS0246"
+            public string Message { get; set; }
+
+            internal string ToJson()
+            {
+                return "{"
+                    + "\"line\":" + Line
+                    + ",\"column\":" + Column
+                    + ",\"severity\":\"" + Escape(Severity ?? "") + "\""
+                    + ",\"code\":\"" + Escape(Code ?? "") + "\""
+                    + ",\"message\":\"" + Escape(Message ?? "") + "\"}";
+            }
+
+            internal static string Escape(string s)
+            {
+                return (s ?? "")
+                    .Replace("\\", "\\\\")
+                    .Replace("\"", "\\\"")
+                    .Replace("\r\n", "\\n")
+                    .Replace("\n", "\\n")
+                    .Replace("\r", "\\n")
+                    .Replace("\t", "\\t");
+            }
+        }
+
+        // (line,col): severity CSxxxx: message
+        private static readonly Regex _rxDiag = new Regex(
+            @"\((?<line>\d+),(?<col>\d+)\):\s*(?<sev>error|warning)\s+(?<code>CS\d+):\s*(?<msg>.*)$",
+            RegexOptions.Compiled | RegexOptions.Multiline);
+
+        internal static List<CompileDiagnostic> ParseDiagnostics(string compilerOutput)
+        {
+            var list = new List<CompileDiagnostic>();
+            if (string.IsNullOrEmpty(compilerOutput)) return list;
+            foreach (Match m in _rxDiag.Matches(compilerOutput))
+            {
+                list.Add(new CompileDiagnostic
+                {
+                    Line = int.Parse(m.Groups["line"].Value),
+                    Column = int.Parse(m.Groups["col"].Value),
+                    Severity = m.Groups["sev"].Value,
+                    Code = m.Groups["code"].Value,
+                    Message = m.Groups["msg"].Value.Trim(),
+                });
+            }
+            return list;
+        }
+
+        /// <summary>
         /// Result returned by <see cref="CompileOnly"/>.
         /// Serialises to a small JSON object for the headless CLI / MCP tool.
         /// </summary>
@@ -3540,6 +3745,8 @@ namespace SESpriteLCDLayoutTool.Services
             /// error text, e.g. "(12,5): error CS0246: …".
             /// </summary>
             public string Errors { get; set; }
+            /// <summary>Structured form of <see cref="Errors"/>.  Empty on success.</summary>
+            public List<CompileDiagnostic> Diagnostics { get; set; }
             /// <summary>Detected script kind (ProgrammableBlock, LcdHelper, …).</summary>
             public string ScriptType { get; set; }
 
@@ -3547,18 +3754,19 @@ namespace SESpriteLCDLayoutTool.Services
             public string ToJson()
             {
                 string scriptTypeJson = ScriptType == null ? "null" : "\"" + ScriptType.Replace("\"", "\\\"") + "\"";
+                string diagsJson = "[]";
+                if (Diagnostics != null && Diagnostics.Count > 0)
+                {
+                    var parts = new List<string>(Diagnostics.Count);
+                    foreach (var d in Diagnostics) parts.Add(d.ToJson());
+                    diagsJson = "[" + string.Join(",", parts) + "]";
+                }
                 if (Success)
-                    return "{\"success\":true,\"errors\":null,\"scriptType\":" + scriptTypeJson + "}";
+                    return "{\"success\":true,\"errors\":null,\"diagnostics\":" + diagsJson + ",\"scriptType\":" + scriptTypeJson + "}";
 
                 // Escape the error string for embedding in JSON
-                string escaped = (Errors ?? "")
-                    .Replace("\\", "\\\\")
-                    .Replace("\"", "\\\"")
-                    .Replace("\r\n", "\\n")
-                    .Replace("\n", "\\n")
-                    .Replace("\r", "\\n")
-                    .Replace("\t", "\\t");
-                return "{\"success\":false,\"errors\":\"" + escaped + "\",\"scriptType\":" + scriptTypeJson + "}";
+                string escaped = CompileDiagnostic.Escape(Errors ?? "");
+                return "{\"success\":false,\"errors\":\"" + escaped + "\",\"diagnostics\":" + diagsJson + ",\"scriptType\":" + scriptTypeJson + "}";
             }
         }
 
@@ -3591,7 +3799,7 @@ namespace SESpriteLCDLayoutTool.Services
                 string source = BuildSource(userCode, callExpr, 0, scriptType, out hadClassWrapper, null);
                 _userCodeTopLinesRemoved = ComputeStrippedLineOffset(userCode, source);
                 Compile(source);   // throws InvalidOperationException on compile error
-                return new CompileResult { Success = true, ScriptType = scriptType.ToString() };
+                return new CompileResult { Success = true, ScriptType = scriptType.ToString(), Diagnostics = new List<CompileDiagnostic>() };
             }
             catch (InvalidOperationException ex)
             {
@@ -3602,12 +3810,138 @@ namespace SESpriteLCDLayoutTool.Services
                 if (diagIdx >= 0) msg = msg.Substring(0, diagIdx);
                 if (msg.StartsWith("Compilation errors:\n"))
                     msg = msg.Substring("Compilation errors:\n".Length);
-                return new CompileResult { Success = false, Errors = msg.TrimEnd(), ScriptType = scriptType.ToString() };
+                msg = msg.TrimEnd();
+                return new CompileResult { Success = false, Errors = msg, ScriptType = scriptType.ToString(), Diagnostics = ParseDiagnostics(msg) };
             }
             catch (Exception ex)
             {
-                return new CompileResult { Success = false, Errors = ex.Message, ScriptType = scriptType.ToString() };
+                return new CompileResult { Success = false, Errors = ex.Message, ScriptType = scriptType.ToString(), Diagnostics = new List<CompileDiagnostic>() };
             }
+        }
+
+        // ── Headless run + introspection API ──────────────────────────────────
+
+        /// <summary>
+        /// Result returned by <see cref="RunHeadless"/>.
+        /// Includes the compile result plus a runtime signal (sprite count,
+        /// echo log, per-method timings) so an LLM training loop can grade
+        /// scripts on more than just "did it compile?".
+        /// </summary>
+        public sealed class RunResult
+        {
+            public bool Success { get; set; }
+            public string Error { get; set; }
+            public string ScriptType { get; set; }
+            public int SpriteCount { get; set; }
+            public List<string> EchoLog { get; set; }
+            public Dictionary<string, double> MethodTimings { get; set; }
+            public List<CompileDiagnostic> Diagnostics { get; set; }
+
+            public string ToJson()
+            {
+                var sb = new StringBuilder(256);
+                sb.Append('{');
+                sb.Append("\"success\":").Append(Success ? "true" : "false");
+                sb.Append(",\"error\":").Append(Error == null ? "null" : "\"" + CompileDiagnostic.Escape(Error) + "\"");
+                sb.Append(",\"scriptType\":").Append(ScriptType == null ? "null" : "\"" + CompileDiagnostic.Escape(ScriptType) + "\"");
+                sb.Append(",\"spriteCount\":").Append(SpriteCount);
+                sb.Append(",\"echoLog\":[");
+                if (EchoLog != null)
+                {
+                    for (int i = 0; i < EchoLog.Count; i++)
+                    {
+                        if (i > 0) sb.Append(',');
+                        sb.Append('"').Append(CompileDiagnostic.Escape(EchoLog[i] ?? "")).Append('"');
+                    }
+                }
+                sb.Append("],\"methodTimings\":{");
+                if (MethodTimings != null)
+                {
+                    bool first = true;
+                    foreach (var kv in MethodTimings)
+                    {
+                        if (!first) sb.Append(',');
+                        first = false;
+                        sb.Append('"').Append(CompileDiagnostic.Escape(kv.Key ?? "")).Append("\":")
+                          .Append(kv.Value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                }
+                sb.Append("},\"diagnostics\":[");
+                if (Diagnostics != null)
+                {
+                    for (int i = 0; i < Diagnostics.Count; i++)
+                    {
+                        if (i > 0) sb.Append(',');
+                        sb.Append(Diagnostics[i].ToJson());
+                    }
+                }
+                sb.Append("]}");
+                return sb.ToString();
+            }
+        }
+
+        /// <summary>
+        /// Compile + execute a script headlessly. Picks an appropriate entry
+        /// expression based on the detected script type. Captures sprite count,
+        /// echo output, and per-method timings — useful as a runtime reward
+        /// signal in an LLM training loop.
+        /// </summary>
+        public static RunResult RunHeadless(string userCode)
+        {
+            if (string.IsNullOrWhiteSpace(userCode))
+                return new RunResult { Success = false, Error = "No code provided.", EchoLog = new List<string>(), MethodTimings = new Dictionary<string, double>(), Diagnostics = new List<CompileDiagnostic>() };
+
+            userCode = StripPreprocessorDirectives(userCode);
+            var scriptType = DetectScriptType(userCode);
+            string callExpr = (scriptType == Services.ScriptType.ProgrammableBlock)
+                ? "Main(\"\", UpdateType.None)"
+                : "sprites = RenderPanel(sprites, 512f, 512f, 1f)";
+
+            ExecutionResult er;
+            try { er = Execute(userCode, callExpr); }
+            catch (Exception ex)
+            {
+                return new RunResult
+                {
+                    Success = false,
+                    Error = ex.Message,
+                    ScriptType = scriptType.ToString(),
+                    EchoLog = new List<string>(),
+                    MethodTimings = new Dictionary<string, double>(),
+                    Diagnostics = new List<CompileDiagnostic>()
+                };
+            }
+
+            string err = er.Error;
+            // If Execute failed at compile-time, surface structured diagnostics too.
+            List<CompileDiagnostic> diags = new List<CompileDiagnostic>();
+            if (!er.Success && !string.IsNullOrEmpty(err))
+            {
+                string msg = err;
+                int diagIdx = msg.IndexOf("\n\n[Diagnostic:", StringComparison.Ordinal);
+                if (diagIdx >= 0) msg = msg.Substring(0, diagIdx);
+                if (msg.StartsWith("Compilation errors:\n"))
+                    msg = msg.Substring("Compilation errors:\n".Length);
+                diags = ParseDiagnostics(msg);
+            }
+
+            return new RunResult
+            {
+                Success = er.Success,
+                Error = er.Success ? null : err,
+                ScriptType = (er.ScriptType == default(ScriptType) ? scriptType : er.ScriptType).ToString(),
+                SpriteCount = er.Sprites != null ? er.Sprites.Count : 0,
+                EchoLog = er.OutputLines ?? new List<string>(),
+                MethodTimings = er.MethodTimings ?? new Dictionary<string, double>(),
+                Diagnostics = diags
+            };
+        }
+
+        /// <summary>Returns the embedded SE API stub source so an LLM has
+        /// ground truth for what types/members the harness exposes.</summary>
+        public static string GetStubsSource()
+        {
+            return StubsSource;
         }
     }
 }

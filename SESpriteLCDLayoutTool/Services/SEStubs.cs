@@ -199,10 +199,10 @@ namespace VRage.Game.GUI.TextPanel
         public MySprite(SpriteType type, string data,
                        VRageMath.Vector2? position = null, VRageMath.Vector2? size = null, VRageMath.Color? color = null,
                        string fontId = null, TextAlignment alignment = TextAlignment.LEFT,
-                       float rotationOrScale = 0f)
+                       float rotation = 0f)
         {
             Type=type; Data=data; Position=position; Size=size; Color=color;
-            FontId=fontId; RotationOrScale=rotationOrScale; Alignment=alignment;
+            FontId=fontId; RotationOrScale=rotation; Alignment=alignment;
         }
 
         public static MySprite CreateText(string text, string font, VRageMath.Color color,
@@ -254,9 +254,15 @@ namespace VRageMath
         public Vector2(float v) { X = v; Y = v; }
         public static Vector2 operator+(Vector2 a, Vector2 b) { return new Vector2(a.X+b.X, a.Y+b.Y); }
         public static Vector2 operator-(Vector2 a, Vector2 b) { return new Vector2(a.X-b.X, a.Y-b.Y); }
+        public static Vector2 operator+(Vector2 a, float f)   { return new Vector2(a.X+f,   a.Y+f);   }
+        public static Vector2 operator-(Vector2 a, float f)   { return new Vector2(a.X-f,   a.Y-f);   }
+        public static Vector2 operator+(float f,   Vector2 a) { return new Vector2(a.X+f,   a.Y+f);   }
+        public static Vector2 operator-(float f,   Vector2 a) { return new Vector2(f-a.X,   f-a.Y);   }
         public static Vector2 operator*(Vector2 a, float f)   { return new Vector2(a.X*f,   a.Y*f);   }
         public static Vector2 operator*(float f,   Vector2 a) { return new Vector2(a.X*f,   a.Y*f);   }
+        public static Vector2 operator*(Vector2 a, Vector2 b) { return new Vector2(a.X*b.X, a.Y*b.Y); }
         public static Vector2 operator/(Vector2 a, float f)   { return new Vector2(a.X/f,   a.Y/f);   }
+        public static Vector2 operator/(Vector2 a, Vector2 b) { return new Vector2(a.X/b.X, a.Y/b.Y); }
         public static Vector2 operator-(Vector2 a)            { return new Vector2(-a.X,    -a.Y);     }
         public static bool operator==(Vector2 a, Vector2 b)   { return a.X==b.X && a.Y==b.Y; }
         public static bool operator!=(Vector2 a, Vector2 b)   { return !(a==b); }
@@ -329,6 +335,131 @@ namespace VRageMath
         public static float ToDegrees(float radians) { return radians * 180f / Pi; }
     }
 
+    /// <summary>Minimal Vector3 stub — float counterpart to Vector3D, used by radar/3D scripts.</summary>
+    public struct Vector3
+    {
+        public float X, Y, Z;
+        public Vector3(float x, float y, float z) { X = x; Y = y; Z = z; }
+        public Vector3(float v) { X = v; Y = v; Z = v; }
+        public static Vector3 operator+(Vector3 a, Vector3 b) { return new Vector3(a.X+b.X, a.Y+b.Y, a.Z+b.Z); }
+        public static Vector3 operator-(Vector3 a, Vector3 b) { return new Vector3(a.X-b.X, a.Y-b.Y, a.Z-b.Z); }
+        public static Vector3 operator*(Vector3 a, float f)   { return new Vector3(a.X*f,   a.Y*f,   a.Z*f);   }
+        public static Vector3 operator*(float f, Vector3 a)   { return new Vector3(a.X*f,   a.Y*f,   a.Z*f);   }
+        public static Vector3 operator/(Vector3 a, float f)   { return new Vector3(a.X/f,   a.Y/f,   a.Z/f);   }
+        public static Vector3 operator-(Vector3 a)            { return new Vector3(-a.X,    -a.Y,    -a.Z);     }
+        public static bool operator==(Vector3 a, Vector3 b)   { return a.X==b.X && a.Y==b.Y && a.Z==b.Z; }
+        public static bool operator!=(Vector3 a, Vector3 b)   { return !(a==b); }
+        public override bool Equals(object obj) { return obj is Vector3 && this==(Vector3)obj; }
+        public override int GetHashCode() { return X.GetHashCode() ^ Y.GetHashCode() ^ Z.GetHashCode(); }
+        public float Length() { return (float)System.Math.Sqrt(X*X+Y*Y+Z*Z); }
+        public float LengthSquared() { return X*X+Y*Y+Z*Z; }
+        public static Vector3 Zero { get { return new Vector3(0,0,0); } }
+        public static Vector3 One  { get { return new Vector3(1,1,1); } }
+        public static Vector3 Up      { get { return new Vector3(0,1,0); } }
+        public static Vector3 Down    { get { return new Vector3(0,-1,0); } }
+        public static Vector3 Forward { get { return new Vector3(0,0,-1); } }
+        public static Vector3 Backward{ get { return new Vector3(0,0,1); } }
+        public static Vector3 Left    { get { return new Vector3(-1,0,0); } }
+        public static Vector3 Right   { get { return new Vector3(1,0,0); } }
+        public static Vector3 Normalize(Vector3 v) { float l = v.Length(); return l > 0 ? v / l : Zero; }
+        public static float Dot(Vector3 a, Vector3 b) { return a.X*b.X + a.Y*b.Y + a.Z*b.Z; }
+        public static Vector3 Cross(Vector3 a, Vector3 b)
+        {
+            return new Vector3(a.Y*b.Z - a.Z*b.Y, a.Z*b.X - a.X*b.Z, a.X*b.Y - a.Y*b.X);
+        }
+        public static Vector3 TransformNormal(Vector3 v, Matrix m)
+        {
+            return new Vector3(
+                v.X*m.M11 + v.Y*m.M21 + v.Z*m.M31,
+                v.X*m.M12 + v.Y*m.M22 + v.Z*m.M32,
+                v.X*m.M13 + v.Y*m.M23 + v.Z*m.M33);
+        }
+        public static implicit operator Vector3(Vector3D v) { return new Vector3((float)v.X, (float)v.Y, (float)v.Z); }
+        public static implicit operator Vector3D(Vector3 v) { return new Vector3D(v.X, v.Y, v.Z); }
+        public override string ToString() { return X+"",""+Y+"",""+Z; }
+    }
+
+    /// <summary>Minimal 4x4 float matrix stub — used by scripts for orientation transforms.</summary>
+    public struct Matrix
+    {
+        public float M11, M12, M13, M14;
+        public float M21, M22, M23, M24;
+        public float M31, M32, M33, M34;
+        public float M41, M42, M43, M44;
+        public static Matrix Identity
+        {
+            get
+            {
+                Matrix m = new Matrix();
+                m.M11 = 1; m.M22 = 1; m.M33 = 1; m.M44 = 1;
+                return m;
+            }
+        }
+        public static Matrix Transpose(Matrix m)
+        {
+            Matrix r = new Matrix();
+            r.M11 = m.M11; r.M12 = m.M21; r.M13 = m.M31; r.M14 = m.M41;
+            r.M21 = m.M12; r.M22 = m.M22; r.M23 = m.M32; r.M24 = m.M42;
+            r.M31 = m.M13; r.M32 = m.M23; r.M33 = m.M33; r.M34 = m.M43;
+            r.M41 = m.M14; r.M42 = m.M24; r.M43 = m.M34; r.M44 = m.M44;
+            return r;
+        }
+        public Vector3 Forward { get { return new Vector3(-M31, -M32, -M33); } }
+        public Vector3 Up      { get { return new Vector3(M21, M22, M23); } }
+        public Vector3 Right   { get { return new Vector3(M11, M12, M13); } }
+        public Vector3 Translation { get { return new Vector3(M41, M42, M43); } set { M41 = value.X; M42 = value.Y; M43 = value.Z; } }
+        public static implicit operator Matrix(MatrixD m)
+        {
+            Matrix r = new Matrix();
+            r.M11=(float)m.M11; r.M12=(float)m.M12; r.M13=(float)m.M13; r.M14=(float)m.M14;
+            r.M21=(float)m.M21; r.M22=(float)m.M22; r.M23=(float)m.M23; r.M24=(float)m.M24;
+            r.M31=(float)m.M31; r.M32=(float)m.M32; r.M33=(float)m.M33; r.M34=(float)m.M34;
+            r.M41=(float)m.M41; r.M42=(float)m.M42; r.M43=(float)m.M43; r.M44=(float)m.M44;
+            return r;
+        }
+    }
+
+    /// <summary>Minimal 4x4 double matrix stub — SE WorldMatrix is a MatrixD.</summary>
+    public struct MatrixD
+    {
+        public double M11, M12, M13, M14;
+        public double M21, M22, M23, M24;
+        public double M31, M32, M33, M34;
+        public double M41, M42, M43, M44;
+        public static MatrixD Identity
+        {
+            get
+            {
+                MatrixD m = new MatrixD();
+                m.M11 = 1; m.M22 = 1; m.M33 = 1; m.M44 = 1;
+                return m;
+            }
+        }
+        public static MatrixD Transpose(MatrixD m)
+        {
+            MatrixD r = new MatrixD();
+            r.M11 = m.M11; r.M12 = m.M21; r.M13 = m.M31; r.M14 = m.M41;
+            r.M21 = m.M12; r.M22 = m.M22; r.M23 = m.M32; r.M24 = m.M42;
+            r.M31 = m.M13; r.M32 = m.M23; r.M33 = m.M33; r.M34 = m.M43;
+            r.M41 = m.M14; r.M42 = m.M24; r.M43 = m.M34; r.M44 = m.M44;
+            return r;
+        }
+        public Vector3D Forward { get { return new Vector3D(-M31, -M32, -M33); } }
+        public Vector3D Up      { get { return new Vector3D(M21, M22, M23); } }
+        public Vector3D Right   { get { return new Vector3D(M11, M12, M13); } }
+        public Vector3D Translation { get { return new Vector3D(M41, M42, M43); } set { M41 = value.X; M42 = value.Y; M43 = value.Z; } }
+    }
+
+    /// <summary>Minimal axis-aligned bounding box stub.</summary>
+    public struct BoundingBoxD
+    {
+        public Vector3D Min;
+        public Vector3D Max;
+        public BoundingBoxD(Vector3D min, Vector3D max) { Min = min; Max = max; }
+        public Vector3D Center { get { return (Min + Max) * 0.5; } }
+        public Vector3D Size   { get { return Max - Min; } }
+    }
+
     /// <summary>VRageMath RectangleF stub — used by SE scripts for viewport calculations.</summary>
     public struct RectangleF
     {
@@ -377,6 +508,33 @@ namespace VRage
         public int ToIntSafe() { return (int)(_raw / 1000000); }
         public static MyFixedPoint MaxValue { get { MyFixedPoint fp = new MyFixedPoint(); fp._raw = long.MaxValue; return fp; } }
         public static MyFixedPoint MinValue { get { MyFixedPoint fp = new MyFixedPoint(); fp._raw = long.MinValue; return fp; } }
+    }
+
+    // ── MyTuple — value-type tuples used heavily by IGC payloads ──────────
+    public struct MyTuple<T1, T2>
+    {
+        public T1 Item1; public T2 Item2;
+        public MyTuple(T1 item1, T2 item2) { Item1 = item1; Item2 = item2; }
+    }
+    public struct MyTuple<T1, T2, T3>
+    {
+        public T1 Item1; public T2 Item2; public T3 Item3;
+        public MyTuple(T1 item1, T2 item2, T3 item3) { Item1 = item1; Item2 = item2; Item3 = item3; }
+    }
+    public struct MyTuple<T1, T2, T3, T4>
+    {
+        public T1 Item1; public T2 Item2; public T3 Item3; public T4 Item4;
+        public MyTuple(T1 item1, T2 item2, T3 item3, T4 item4) { Item1 = item1; Item2 = item2; Item3 = item3; Item4 = item4; }
+    }
+    public struct MyTuple<T1, T2, T3, T4, T5>
+    {
+        public T1 Item1; public T2 Item2; public T3 Item3; public T4 Item4; public T5 Item5;
+        public MyTuple(T1 item1, T2 item2, T3 item3, T4 item4, T5 item5) { Item1 = item1; Item2 = item2; Item3 = item3; Item4 = item4; Item5 = item5; }
+    }
+    public struct MyTuple<T1, T2, T3, T4, T5, T6>
+    {
+        public T1 Item1; public T2 Item2; public T3 Item3; public T4 Item4; public T5 Item5; public T6 Item6;
+        public MyTuple(T1 item1, T2 item2, T3 item3, T4 item4, T5 item5, T6 item6) { Item1 = item1; Item2 = item2; Item3 = item3; Item4 = item4; Item5 = item5; Item6 = item6; }
     }
 }
 
@@ -432,6 +590,32 @@ namespace VRage.Game.ModAPI.Ingame
         public bool CanItemsBeAdded(MyFixedPoint amount, MyItemType type) { return true; }
         public bool ContainItems(MyFixedPoint amount, MyItemType type) { return false; }
         public MyFixedPoint GetItemAmount(MyItemType type) { return 0; }
+    }
+
+    // ── Detection / relationship enums used by sensors, turret controllers, IGC payloads ──
+    public enum MyDetectedEntityType
+    {
+        None = 0,
+        Unknown = 1,
+        SmallGrid = 2,
+        LargeGrid = 3,
+        CharacterHuman = 4,
+        CharacterOther = 5,
+        FloatingObject = 6,
+        Asteroid = 7,
+        Planet = 8,
+        Meteor = 9,
+        Missile = 10,
+    }
+
+    public enum MyRelationsBetweenPlayerAndBlock
+    {
+        NoOwnership = 0,
+        Owner = 1,
+        FactionShare = 2,
+        Neutral = 3,
+        Enemies = 4,
+        Friends = 5,
     }
 }
 
@@ -495,6 +679,7 @@ namespace Sandbox.ModAPI.Ingame
         public IMyInventory GetInventory() { return _inv; }
         public IMyInventory GetInventory(int index) { return _inv; }
         public Vector3D GetPosition() { return Vector3D.Zero; }
+        public MatrixD WorldMatrix { get { return MatrixD.Identity; } }
 
         public StubTextSurface() : this(512f, 512f) { }
         public StubTextSurface(float w, float h)
@@ -535,6 +720,8 @@ namespace Sandbox.ModAPI.Ingame
         public long EntityId { get; set; }
         public VRage.Game.ModAPI.IMyCubeGrid CubeGrid { get; set; }
         public VRageMath.Vector3D GetPosition() { return VRageMath.Vector3D.Zero; }
+        public VRageMath.MatrixD WorldMatrix { get { return VRageMath.MatrixD.Identity; } }
+        public string DisplayName { get { return CustomName; } }
         public int SurfaceCount { get { return _surfaces.Length; } }
         public IMyTextSurface GetSurface(int index) { return _surfaces[index]; }
         public ITerminalProperty GetProperty(string name) { return new StubTerminalProperty(name); }
@@ -561,6 +748,21 @@ namespace Sandbox.ModAPI.Ingame
     public class StubProgrammableBlock : StubTerminalBlock, IMyProgrammableBlock
     {
         public StubProgrammableBlock() : base(2) { CustomName = ""Programmable Block""; }
+    }
+
+    public class StubCockpit : StubTerminalBlock, IMyCockpit
+    {
+        public bool IsMainCockpit { get; set; }
+        public bool CanControlShip { get; set; }
+        public bool ShowHorizonIndicator { get; set; }
+        public bool HandBrake { get; set; }
+        public bool DampenersOverride { get; set; }
+        public bool IsUnderControl { get { return false; } }
+        public Vector3D MoveIndicator { get { return Vector3D.Zero; } }
+        public Vector2 RotationIndicator { get { return Vector2.Zero; } }
+        public float RollIndicator { get { return 0f; } }
+        public Vector3D GetNaturalGravity() { return Vector3D.Zero; }
+        public StubCockpit() : base(4) { CustomName = ""Cockpit""; IsMainCockpit = true; }
     }
 
     public class StubGridTerminalSystem : IMyGridTerminalSystem
@@ -687,14 +889,14 @@ namespace Sandbox.ModAPI.Ingame
         public void Apply(IMyTerminalBlock block) { }
     }
 
-    public interface IMyTerminalBlock
+    public interface IMyTerminalBlock : VRage.ModAPI.IMyEntity
     {
         string CustomName { get; set; }
         string CustomData { get; set; }
         string DetailedInfo { get; }
         bool IsWorking { get; }
         bool IsFunctional { get; }
-        long EntityId { get; }
+        new long EntityId { get; }
         VRage.Game.ModAPI.IMyCubeGrid CubeGrid { get; }
         ITerminalProperty GetProperty(string name);
         ITerminalAction GetAction(string name);
@@ -702,7 +904,7 @@ namespace Sandbox.ModAPI.Ingame
         int InventoryCount { get; }
         IMyInventory GetInventory();
         IMyInventory GetInventory(int index);
-        VRageMath.Vector3D GetPosition();
+        new VRageMath.Vector3D GetPosition();
     }
 
     public interface IMyFunctionalBlock : IMyTerminalBlock
@@ -757,6 +959,7 @@ namespace Sandbox.ModAPI.Ingame
         public IMyRuntime Runtime { get; set; }
         public IMyProgrammableBlock Me { get; set; }
         public IMyGridTerminalSystem GridTerminalSystem { get; set; }
+        public IMyIntergridCommunicationSystem IGC { get; set; }
         public string Storage { get; set; }
         public void Echo(string text) { }  // Base class stub — overridden in LcdRunner
         protected virtual void Save() { }
@@ -898,6 +1101,82 @@ namespace Sandbox.ModAPI.Ingame
     public interface IMyWindTurbine : IMyPowerProducer { }
 
     public interface IMySolarPanel : IMyPowerProducer { }
+
+    // ── Cockpit / ship-controller surfaces ────────────────────────────────
+    public interface IMyCockpit : IMyShipController, IMyTextSurfaceProvider, IMyFunctionalBlock
+    {
+        bool IsMainCockpit { get; set; }
+    }
+
+    // ── IGC (intergrid communication) — receive-side only stubs ───────────
+    public class MyIGCMessage
+    {
+        public string Tag;
+        public long Source;
+        public object Data;
+        /// <summary>
+        /// Real SE returns (T)Data. With no live traffic, Data is null — for
+        /// ImmutableList&lt;U&gt; we fall back to ImmutableList&lt;U&gt;.Empty so
+        /// chained .ForEach calls in user code don't NRE during preview.
+        /// </summary>
+        public T As<T>()
+        {
+            if (Data is T) return (T)Data;
+            var t = typeof(T);
+            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(System.Collections.Immutable.ImmutableList<>))
+            {
+                var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static;
+                // ImmutableList<T>.Empty is a static field (not a property) on .NET Framework.
+                var emptyField = t.GetField(""Empty"", flags);
+                if (emptyField != null) return (T)emptyField.GetValue(null);
+                var emptyProp = t.GetProperty(""Empty"", flags);
+                if (emptyProp != null) return (T)emptyProp.GetValue(null);
+            }
+            return default(T);
+        }
+    }
+
+    public interface IMyBroadcastListener
+    {
+        bool HasPendingMessage { get; }
+        string Tag { get; }
+        MyIGCMessage AcceptMessage();
+        void DisableMessageCallback();
+        void SetMessageCallback(string argument);
+    }
+
+    /// <summary>
+    /// Stub IGC broadcast listener. AcceptMessage() returns a message whose
+    /// Data is an empty ImmutableList of the type requested via .As&lt;T&gt;()
+    /// in user code, so .ForEach / iteration over it is a no-op (no live
+    /// game data exists in the editor).
+    /// </summary>
+    public class StubBroadcastListener : IMyBroadcastListener
+    {
+        public bool HasPendingMessage { get { return false; } }
+        public string Tag { get; private set; }
+        public StubBroadcastListener(string tag) { Tag = tag; }
+        public MyIGCMessage AcceptMessage()
+        {
+            return new MyIGCMessage { Tag = Tag, Source = 0, Data = null };
+        }
+        public void DisableMessageCallback() { }
+        public void SetMessageCallback(string argument) { }
+    }
+
+    public interface IMyIntergridCommunicationSystem
+    {
+        IMyBroadcastListener RegisterBroadcastListener(string tag);
+        void DisableBroadcastListener(IMyBroadcastListener listener);
+        long Me { get; }
+    }
+
+    public class StubIGC : IMyIntergridCommunicationSystem
+    {
+        public long Me { get { return 0; } }
+        public IMyBroadcastListener RegisterBroadcastListener(string tag) { return new StubBroadcastListener(tag); }
+        public void DisableBroadcastListener(IMyBroadcastListener listener) { }
+    }
 }
 
 // ── Sandbox.ModAPI — mod/plugin-side block interfaces ─────────────────
@@ -913,9 +1192,8 @@ namespace Sandbox.ModAPI
     {
     }
 
-    public interface IMyTextPanel : Sandbox.ModAPI.Ingame.IMyTextPanel, IMyFunctionalBlock
-    {
-    }
+    // NOTE: Sandbox.ModAPI.IMyTextPanel intentionally omitted to avoid name collision
+    // with Sandbox.ModAPI.Ingame.IMyTextPanel when both usings are in scope.
 
     // ── MyAPIGateway — core mod API entry point ───────────────────────────
 
@@ -1008,6 +1286,8 @@ namespace VRage.ModAPI
     {
         long EntityId { get; }
         string DisplayName { get; }
+        VRageMath.Vector3D GetPosition();
+        VRageMath.MatrixD WorldMatrix { get; }
     }
 }
 
@@ -1037,6 +1317,8 @@ namespace VRage.Game.ModAPI
         public long EntityId { get; set; }
         public string DisplayName { get { return CustomName; } }
         public string CustomName { get; set; }
+        public VRageMath.Vector3D GetPosition() { return VRageMath.Vector3D.Zero; }
+        public VRageMath.MatrixD WorldMatrix { get { return VRageMath.MatrixD.Identity; } }
         public void GetBlocks(List<IMySlimBlock> blocks) { blocks.Clear(); }
         public StubModCubeGrid() { CustomName = ""Grid""; }
     }
@@ -1079,6 +1361,14 @@ namespace VRage.Utils
 
 // ── Sandbox.Game.GameSystems (stub namespace) ─────────────────────────
 namespace Sandbox.Game.GameSystems { }
+
+// ── Empty namespace stubs for community SE scripts ────────────────────
+// These exist solely so that 'using' directives in user code resolve.
+namespace Sandbox.ModAPI.Interfaces { }
+namespace Sandbox.Game.EntityComponents { }
+namespace VRage.Collections { }
+namespace VRage.Game.ObjectBuilders.Definitions { }
+namespace SpaceEngineers.Game.ModAPI.Ingame { }
 
 // ── InventoryManagerLight — Torch plugin types used by synced LCD code ─
 namespace InventoryManagerLight
