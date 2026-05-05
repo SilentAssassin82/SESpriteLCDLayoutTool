@@ -13,6 +13,13 @@ namespace SESpriteLCDLayoutTool.Models
         public List<SpriteEntry> Sprites { get; set; } = new List<SpriteEntry>();
 
         /// <summary>
+        /// Optional 2D bone rigs attached to this layout. Each rig binds a subset of sprites
+        /// to a bone hierarchy so they can be posed/animated together. Persisted with the layout
+        /// so rigs survive save/load.
+        /// </summary>
+        public List<Rig.Rig> Rigs { get; set; } = new List<Rig.Rig>();
+
+        /// <summary>
         /// When a layout is imported from pasted code, the full original source is stored here.
         /// Code generation can then splice updated sprite definitions back into the original,
         /// so the user can paste directly back into their project.

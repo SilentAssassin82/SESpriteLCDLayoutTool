@@ -195,6 +195,37 @@ namespace SESpriteLCDLayoutTool
         // ── Undo / Redo / Duplicate / Center helpers ──────────────────────────────
         private void PushUndo() => _undo.PushUndo(_layout);
 
+        /// <summary>
+        /// Opens the floating rig editor (option C), or focuses the existing instance.
+        /// Mutations made in that window route through <see cref="PushUndo"/> so rig edits
+        /// participate in the same undo stack as sprite edits.
+        /// </summary>
+        private void ShowRigEditorWindow()
+        {
+            if (_layout == null) { SetStatus("No layout loaded."); return; }
+            if (_rigEditor != null && !_rigEditor.IsDisposed)
+            {
+                _rigEditor.RefreshFromLayout();
+                _rigEditor.Show();
+                _rigEditor.BringToFront();
+                _rigEditor.Focus();
+                return;
+            }
+
+            _rigEditor = new SESpriteLCDLayoutTool.Forms.RigEditorWindow(_layout, _canvas)
+            {
+                Owner = this,
+            };
+            _rigEditor.UndoCallback = PushUndo;
+            _rigEditor.ChangedCallback = () =>
+            {
+                _canvas?.Invalidate();
+            };
+            _rigEditor.FormClosed += (s, e) => _rigEditor = null;
+            _rigEditor.Show(this);
+            SetStatus("Rig editor opened.");
+        }
+
         private void OnDragCompleted(object sender, EventArgs e)
         {
             // Undo snapshot was pushed in BeginDrag via OnMouseDown;
@@ -202,6 +233,33 @@ namespace SESpriteLCDLayoutTool
             ClearCodeDirty();
             RefreshCode(writeBack: true);
             RefreshDebugStats();
+            // If a bone was edited, refresh the rig editor inspectors.
+            if (_rigEditor != null && !_rigEditor.IsDisposed) _rigEditor.RefreshFromLayout();
+        }
+
+        private void OnCanvasBoneSelected(object sender, SESpriteLCDLayoutTool.Models.Rig.Bone bone)
+        {
+            // Mirror canvas selection to the floating editor (if open) — lightweight.
+            if (_rigEditor != null && !_rigEditor.IsDisposed)
+                _rigEditor.SyncSelectedBoneFromCanvas(bone);
+            SetStatus(bone == null ? "" : $"Bone: {bone.Name ?? bone.Id}");
+        }
+
+        private void OnCanvasBoneEdited(object sender, SESpriteLCDLayoutTool.Models.Rig.Bone bone)
+        {
+            // Live-update the inspector fields only (no tree/bindings rebuild) so the
+            // canvas stays responsive during bone drags.
+            if (_rigEditor != null && !_rigEditor.IsDisposed)
+                _rigEditor.RefreshSelectedBoneInspector();
+        }
+
+        private void OnCanvasBoneDragCompleted(object sender, SESpriteLCDLayoutTool.Models.Rig.Bone bone)
+        {
+            // Auto-key: when the rig editor is open and previewing a clip, capture the
+            // bone's new pose at the current time so it doesn't snap back to a previous
+            // key on the next paint.
+            if (_rigEditor == null || _rigEditor.IsDisposed) return;
+            _rigEditor.AutoKeyBoneAtCurrentTime(bone);
         }
 
         private void PerformUndo()
@@ -213,6 +271,7 @@ namespace SESpriteLCDLayoutTool
             RestoreSelectionById(selId);
             RefreshLayerList();
             RefreshCode();
+            if (_rigEditor != null && !_rigEditor.IsDisposed) _rigEditor.RefreshFromLayout();
             SetStatus("Undo");
         }
 
@@ -225,6 +284,7 @@ namespace SESpriteLCDLayoutTool
             RestoreSelectionById(selId);
             RefreshLayerList();
             RefreshCode();
+            if (_rigEditor != null && !_rigEditor.IsDisposed) _rigEditor.RefreshFromLayout();
             SetStatus("Redo");
         }
 

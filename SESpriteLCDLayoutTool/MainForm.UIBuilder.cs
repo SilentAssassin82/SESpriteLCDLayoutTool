@@ -101,6 +101,9 @@ namespace SESpriteLCDLayoutTool
                 _canvas.SpriteModified   += OnSpriteModified;
                 _canvas.DragStarting     += (ss, ee) => PushUndo();
                 _canvas.DragCompleted    += OnDragCompleted;
+                _canvas.BoneSelected     += OnCanvasBoneSelected;
+                _canvas.BoneEdited       += OnCanvasBoneEdited;
+                _canvas.BoneDragCompleted += OnCanvasBoneDragCompleted;
                 _canvas.ContextMenuStrip  = BuildCanvasContextMenu();
 
                 // Rulers
@@ -335,6 +338,25 @@ namespace SESpriteLCDLayoutTool
 
             var animation = new ToolStripMenuItem("Animation");
             animation.DropDownItems.Add("Multi-Sprite Timeline…", null, (s, e) => OpenMultiSpriteTimeline());
+            animation.DropDownItems.Add(new ToolStripSeparator());
+
+            var rigModeItem = new ToolStripMenuItem("Rig Editing Mode") { CheckOnClick = true };
+            rigModeItem.CheckedChanged += (s, e) =>
+            {
+                if (_canvas == null) return;
+                _canvas.EditMode = rigModeItem.Checked
+                    ? SESpriteLCDLayoutTool.Controls.CanvasEditMode.Rig
+                    : SESpriteLCDLayoutTool.Controls.CanvasEditMode.Sprites;
+                SetStatus(rigModeItem.Checked
+                    ? "Rig mode — sprite gestures disabled. Bones overlay shown."
+                    : "Sprite mode — normal sprite editing.");
+            };
+            animation.DropDownItems.Add(rigModeItem);
+
+            var rigEditorItem = new ToolStripMenuItem("Rig Editor Window…");
+            rigEditorItem.Click += (s, e) => ShowRigEditorWindow();
+            animation.DropDownItems.Add(rigEditorItem);
+
             ms.Items.Add(animation);
 
             var surface = new ToolStripMenuItem("Surface Size");

@@ -5,6 +5,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Windows.Forms;
 using SESpriteLCDLayoutTool.Models;
+using SESpriteLCDLayoutTool.Models.Rig;
 using SESpriteLCDLayoutTool.Services;
 
 namespace SESpriteLCDLayoutTool.Controls
@@ -15,6 +16,19 @@ namespace SESpriteLCDLayoutTool.Controls
         Left, Right, Top, Bottom,
         CenterH, CenterV,
         SpaceH, SpaceV,
+    }
+
+    /// <summary>
+    /// Top-level canvas interaction mode. In <see cref="Sprites"/> mode the canvas behaves
+    /// exactly as before (sprite select/drag/resize). In <see cref="Rig"/> mode all sprite
+    /// gestures are suppressed so bone editing can't accidentally move sprites; pan/zoom
+    /// still work. Bone gestures themselves arrive in a later phase — for now Rig mode is
+    /// purely a safe-viewing mode that draws the bone overlay.
+    /// </summary>
+    public enum CanvasEditMode
+    {
+        Sprites,
+        Rig,
     }
 
     /// <summary>Debug overlay modes for the LCD canvas.</summary>
@@ -89,6 +103,62 @@ namespace SESpriteLCDLayoutTool.Controls
         // Drag-performance: cached bitmap of everything except the dragged sprite
         private Bitmap _dragCache;
 
+        // ── Rig-mode interactive state ──────────────────────────────────────────
+        private enum BoneDragMode { None, Joint, Tip, Rotate, RigTranslate, BindingOffset }
+        private BoneDragMode _boneDrag;
+        private Rig _activeRig;          // rig containing the bone being dragged or hovered
+        private Bone _activeBone;        // bone currently grabbed (joint or tip)
+        private float _boneDragStartLocalX, _boneDragStartLocalY;
+        private float _boneDragStartRotation;
+        private float _boneDragStartLength;
+        // For joint drag: parent's world transform is needed to convert mouse→local.
+        private RigTransform _boneDragParentWorld;
+        // For rotate drag (FK): joint world position + reference mouse angle at drag start.
+        private float _boneRotateJointX, _boneRotateJointY;
+        private float _boneRotateRefAngle;
+        // For whole-rig translate (Shift+drag in Rig mode).
+        private float _rigDragStartOriginX, _rigDragStartOriginY;
+        private float _rigDragStartSurfaceX, _rigDragStartSurfaceY;
+        // For Alt+drag binding-offset adjustment.
+        private SpriteBinding _activeBinding;
+        private float _bindingDragStartOffX, _bindingDragStartOffY;
+        private float _bindingDragStartSurfaceX, _bindingDragStartSurfaceY;
+        private RigTransform _bindingDragBoneWorld;
+        // For IK tip-drag: also auto-key the parent bone whose rotation we changed.
+        private Bone _ikSecondaryBone;
+        // Cached world transforms for the most recently painted frame; used for hit-testing.
+        private Dictionary<string, (Rig rig, Bone bone, RigTransform world)> _lastBoneWorlds
+            = new Dictionary<string, (Rig, Bone, RigTransform)>();
+        // Per-sprite render override produced from rig bindings (not persisted).
+        private Dictionary<int, RigEvaluator.EvaluatedSprite> _spriteRigOverride
+            = new Dictionary<int, RigEvaluator.EvaluatedSprite>();
+
+        // ── Rig animation preview ──────────────────────────────────────────────
+        // When an animation is being scrubbed/played in the rig editor, the canvas
+        // applies sampled clip overrides on top of the rest pose. This is purely a
+        // render-time effect; it never mutates the rig.
+        /// <summary>
+        /// Current animation preview time in seconds. Set by the rig editor's
+        /// timeline/playback; the canvas folds clip samples into the rig pose.
+        /// </summary>
+        public float AnimationPreviewTime { get; set; }
+
+        /// <summary>If true, animation overrides are applied even outside Rig edit mode.</summary>
+        public bool AnimationPreviewEnabled { get; set; }
+
+        /// <summary>
+        /// If true and a clip is being previewed, the rig is also drawn (faintly) at the
+        /// previous and next keyframe times so the user can pose between them.
+        /// </summary>
+        public bool OnionSkinEnabled { get; set; }
+
+        /// <summary>
+        /// How many keyframes either side of the playhead to render as onion-skin ghosts.
+        /// Clamped to [1, 5]. Each successive ghost fades by roughly 1/(n+1) so older
+        /// frames don't dominate the canvas.
+        /// </summary>
+        public int OnionSkinKeyCount { get; set; } = 1;
+
         // ── Events ───────────────────────────────────────────────────────────────
         public event EventHandler SelectionChanged;
         public event EventHandler SpriteModified;
@@ -96,6 +166,15 @@ namespace SESpriteLCDLayoutTool.Controls
         public event EventHandler DragStarting;
         /// <summary>Fired once when a drag operation ends.</summary>
         public event EventHandler DragCompleted;
+        /// <summary>Fired when the user picks a different bone via canvas gestures (Rig mode).</summary>
+        public event EventHandler<Bone> BoneSelected;
+        /// <summary>Fired after an interactive bone edit (move joint / rotate / drag tip) so hosts can refresh inspectors.</summary>
+        public event EventHandler<Bone> BoneEdited;
+        /// <summary>
+        /// Fired when a bone gesture ends (mouse up). Hosts can use this to auto-key the
+        /// bone's pose at the current preview time during animation authoring.
+        /// </summary>
+        public event EventHandler<Bone> BoneDragCompleted;
         /// <summary>
         /// Fired on every mouse move over the canvas surface.
         /// Args are the mouse position in surface coordinates (may be outside 0…surfaceSize when panned).
@@ -205,6 +284,40 @@ namespace SESpriteLCDLayoutTool.Controls
 
         /// <summary>True while the user is actively dragging a sprite (move or resize).</summary>
         public bool IsDragging => _dragMode != DragMode.None;
+
+        /// <summary>
+        /// Current top-level interaction mode. Defaults to <see cref="CanvasEditMode.Sprites"/>.
+        /// In <see cref="CanvasEditMode.Rig"/> mode all sprite mouse gestures are suppressed
+        /// (no select, drag, resize, box-select) so the user can author bones without
+        /// accidentally nudging sprites. Pan (middle-click) and zoom still work.
+        /// </summary>
+        public CanvasEditMode EditMode
+        {
+            get => _editMode;
+            set
+            {
+                if (_editMode == value) return;
+                _editMode = value;
+                // Cancel any in-flight sprite gesture when leaving Sprites mode.
+                _dragMode = DragMode.None;
+                _isBoxSelecting = false;
+                _boxSelectRect = RectangleF.Empty;
+                InvalidateDragCache();
+                Invalidate();
+            }
+        }
+        private CanvasEditMode _editMode = CanvasEditMode.Sprites;
+
+        /// <summary>
+        /// Bone currently highlighted in the rig overlay (drawn brighter). Setting this
+        /// only repaints; it does not change rig data. Cleared when leaving Rig mode.
+        /// </summary>
+        public Bone HighlightedBone
+        {
+            get => _highlightedBone;
+            set { _highlightedBone = value; Invalidate(); }
+        }
+        private Bone _highlightedBone;
 
         /// <summary>
         /// When true, sprite centres are clamped to [0, SurfaceWidth] × [0, SurfaceHeight]
@@ -330,17 +443,257 @@ namespace SESpriteLCDLayoutTool.Controls
             }
         }
 
+        /// <summary>
+        /// Draws every rig in <see cref="_layout"/> as a bone hierarchy overlay.
+        /// Each bone is rendered as a coloured line from its world origin out to its tip
+        /// (along the bone's local +X axis), with a small filled dot at the joint.
+        /// In Sprites mode the overlay is heavily dimmed so it doesn't compete with sprites;
+        /// in Rig mode it draws at full opacity. Read-only — no hit-testing here.
+        /// </summary>
+        private void DrawRigOverlay(Graphics g, float scale, PointF origin, bool fullOpacity)
+        {
+            if (_layout == null || _layout.Rigs == null) return;
+
+            int alpha = fullOpacity ? 255 : 200;
+            int dotAlpha = fullOpacity ? 255 : 220;
+
+            // Reset hit-test cache; only populated while actually drawing the overlay.
+            if (fullOpacity) _lastBoneWorlds.Clear();
+
+            foreach (var rig in _layout.Rigs)
+            {
+                if (rig == null || !rig.Enabled) continue;
+                var clipOverrides = SampleActiveClipOverrides(rig);
+                var bones = RigEvaluator.EvaluateBones(rig, clipOverrides);
+
+                // Rig origin marker (small ring).
+                float ox = origin.X + rig.OriginX * scale;
+                float oy = origin.Y + rig.OriginY * scale;
+                using (var ringPen = new Pen(Color.FromArgb(alpha, 200, 200, 80), 1.25f))
+                    g.DrawEllipse(ringPen, ox - 4f, oy - 4f, 8f, 8f);
+
+                if (rig.Bones == null) continue;
+
+                foreach (var bone in rig.Bones)
+                {
+                    if (bone == null || bone.Hidden) continue;
+                    if (!bones.TryGetValue(bone.Id, out var world)) continue;
+
+                    if (fullOpacity && !string.IsNullOrEmpty(bone.Id))
+                        _lastBoneWorlds[bone.Id] = (rig, bone, world);
+
+                    // Bone tip = origin + (Length, 0) rotated by world rotation.
+                    float cos = (float)Math.Cos(world.Rotation);
+                    float sin = (float)Math.Sin(world.Rotation);
+                    float tipLocalX = bone.Length * world.ScaleX;
+                    float tipX = world.X + tipLocalX * cos;
+                    float tipY = world.Y + tipLocalX * sin;
+
+                    float bx1 = origin.X + world.X * scale;
+                    float by1 = origin.Y + world.Y * scale;
+                    float bx2 = origin.X + tipX * scale;
+                    float by2 = origin.Y + tipY * scale;
+
+                    bool highlight = bone == _highlightedBone && fullOpacity;
+                    var col = bone.OverlayColor;
+                    var penColor = Color.FromArgb(alpha, col.R, col.G, col.B);
+                    float thickness = highlight ? 3f : 1.75f;
+                    using (var bonePen = new Pen(penColor, thickness))
+                        g.DrawLine(bonePen, bx1, by1, bx2, by2);
+
+                    // Joint dot.
+                    using (var jointBrush = new SolidBrush(Color.FromArgb(dotAlpha, 255, 255, 255)))
+                        g.FillEllipse(jointBrush, bx1 - 2.5f, by1 - 2.5f, 5f, 5f);
+
+                    if (highlight)
+                    {
+                        // Selection ring at the joint.
+                        using (var selPen = new Pen(Color.FromArgb(255, 255, 220, 120), 1.5f))
+                            g.DrawEllipse(selPen, bx1 - 5f, by1 - 5f, 10f, 10f);
+                        // Tip handle (rotate / extend).
+                        using (var tipBrush = new SolidBrush(Color.FromArgb(255, 255, 220, 120)))
+                            g.FillEllipse(tipBrush, bx2 - 3.5f, by2 - 3.5f, 7f, 7f);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Draws ghost copies of the rig at the previous and next keyframe times of the
+        /// active clip. Read-only — never mutates the rig or the clip.
+        /// </summary>
+        private void DrawOnionSkin(Graphics g, float scale, PointF origin)
+        {
+            if (_layout?.Rigs == null) return;
+
+            foreach (var rig in _layout.Rigs)
+            {
+                if (rig == null || !rig.Enabled) continue;
+                if (rig.Clips == null || rig.Clips.Count == 0) continue;
+                if (string.IsNullOrEmpty(rig.ActiveClipId)) continue;
+                var clip = rig.Clips.Find(c => c != null && c.Id == rig.ActiveClipId);
+                if (clip == null || clip.Tracks == null) continue;
+
+                // Collect distinct keyframe times across all tracks, sorted.
+                var times = new List<float>();
+                foreach (var trk in clip.Tracks)
+                {
+                    if (trk?.Keys == null) continue;
+                    foreach (var k in trk.Keys)
+                        if (k != null && !times.Contains(k.Time)) times.Add(k.Time);
+                }
+                if (times.Count < 1) continue;
+                times.Sort();
+
+                float now = AnimationPreviewTime;
+                const float eps = 0.0005f;
+
+                // Playback time keeps incrementing past Duration on looping clips, but
+                // keyframe times live in [0, Duration]. Wrap `now` into that range so the
+                // prev/next search picks neighbours relative to the *current loop* instead
+                // of treating every wrapped frame as "past the last key".
+                if (clip.Loop && clip.Duration > 0f)
+                {
+                    now = now % clip.Duration;
+                    if (now < 0f) now += clip.Duration;
+                }
+
+                // Build ordered lists of "previous" times (descending from playhead) and
+                // "next" times (ascending). With looping we wrap so the user always sees
+                // the configured number of ghosts on each side.
+                int n = Math.Max(1, Math.Min(5, OnionSkinKeyCount));
+                var prevs = new List<float>(n);
+                var nexts = new List<float>(n);
+
+                int idxPrev = -1, idxNext = -1;
+                for (int i = 0; i < times.Count; i++)
+                {
+                    if (times[i] < now - eps) idxPrev = i;
+                    if (times[i] > now + eps) { idxNext = i; break; }
+                }
+
+                // If the playhead is past the last key (or before the first), there's no
+                // direct prev/next within the array — wrap when the clip loops so ghosts
+                // keep appearing at clip boundaries instead of vanishing.
+                if (idxPrev < 0 && clip.Loop) idxPrev = times.Count - 1;
+                if (idxNext < 0 && clip.Loop) idxNext = 0;
+
+                int p = idxPrev;
+                while (prevs.Count < n && p >= 0)
+                {
+                    prevs.Add(times[p]);
+                    p--;
+                    if (p < 0 && clip.Loop && times.Count > 0) p = times.Count - 1;
+                    if (prevs.Count >= times.Count) break; // avoid infinite loop on tiny clips
+                }
+
+                int q = idxNext;
+                while (nexts.Count < n && q >= 0 && q < times.Count)
+                {
+                    nexts.Add(times[q]);
+                    q++;
+                    if (q >= times.Count && clip.Loop) q = 0;
+                    if (nexts.Count >= times.Count) break;
+                }
+
+                // Draw farthest-first so closer ghosts paint on top.
+                for (int i = prevs.Count - 1; i >= 0; i--)
+                {
+                    int alpha = (int)(160f * (1f - (float)i / (n + 1)));
+                    if (alpha < 30) alpha = 30;
+                    DrawRigGhost(g, rig, RigClipSampler.Sample(clip, prevs[i]), scale, origin,
+                                 Color.FromArgb(alpha, 120, 180, 255));
+                }
+                for (int i = nexts.Count - 1; i >= 0; i--)
+                {
+                    int alpha = (int)(160f * (1f - (float)i / (n + 1)));
+                    if (alpha < 30) alpha = 30;
+                    DrawRigGhost(g, rig, RigClipSampler.Sample(clip, nexts[i]), scale, origin,
+                                 Color.FromArgb(alpha, 255, 160, 120));
+                }
+            }
+        }
+
+        /// <summary>Draws a single ghost pose of <paramref name="rig"/> using the supplied bone overrides.</summary>
+        private void DrawRigGhost(Graphics g, Rig rig, Dictionary<string, RigKeyframe> overrides,
+                                  float scale, PointF origin, Color tint)
+        {
+            var bones = RigEvaluator.EvaluateBones(rig, overrides);
+
+            using (var bonePen = new Pen(tint, 1.25f))
+            using (var jointBrush = new SolidBrush(Color.FromArgb(tint.A, 255, 255, 255)))
+            {
+                foreach (var bone in rig.Bones)
+                {
+                    if (bone == null || bone.Hidden) continue;
+                    if (!bones.TryGetValue(bone.Id, out var world)) continue;
+
+                    float cos = (float)Math.Cos(world.Rotation);
+                    float sin = (float)Math.Sin(world.Rotation);
+                    float tipLocalX = bone.Length * world.ScaleX;
+                    float tipX = world.X + tipLocalX * cos;
+                    float tipY = world.Y + tipLocalX * sin;
+
+                    float bx1 = origin.X + world.X * scale;
+                    float by1 = origin.Y + world.Y * scale;
+                    float bx2 = origin.X + tipX * scale;
+                    float by2 = origin.Y + tipY * scale;
+
+                    g.DrawLine(bonePen, bx1, by1, bx2, by2);
+                    g.FillEllipse(jointBrush, bx1 - 2f, by1 - 2f, 4f, 4f);
+                }
+            }
+
+            // Bound-sprite ghosts — outline only, so they don't compete with the live frame.
+            if (_layout?.Sprites == null || rig.Bindings == null) return;
+            var poses = RigEvaluator.EvaluateBindings(rig, _layout, overrides);
+            using (var spritePen = new Pen(tint, 1f))
+            {
+                foreach (var p in poses)
+                {
+                    if (p.SpriteIndex < 0 || p.SpriteIndex >= _layout.Sprites.Count) continue;
+                    var sp = _layout.Sprites[p.SpriteIndex];
+                    if (sp == null || sp.IsHidden) continue;
+
+                    float w = Math.Abs(sp.Width  * p.ScaleX) * scale;
+                    float h = Math.Abs(sp.Height * p.ScaleY) * scale;
+                    float cx = origin.X + p.X * scale;
+                    float cy = origin.Y + p.Y * scale;
+                    var rect = new RectangleF(cx - w / 2f, cy - h / 2f, w, h);
+
+                    var saved = g.Transform;
+                    g.TranslateTransform(cx, cy);
+                    g.RotateTransform(p.Rotation * 57.29578f); // rad→deg
+                    g.TranslateTransform(-cx, -cy);
+                    g.DrawRectangle(spritePen, rect.X, rect.Y, rect.Width, rect.Height);
+                    g.Transform = saved;
+                }
+            }
+        }
+
         private RectangleF GetSpriteScreenRect(SpriteEntry sprite, float scale, PointF origin)
         {
+            // Apply per-frame rig override (non-destructive). When a binding poses this
+            // sprite, X/Y are replaced by the rig-driven world position and width/height
+            // are multiplied by the binding's scale. Rotation is read separately by
+            // DrawTextureSprite via GetEffectiveRotation.
+            float spX = sprite.X, spY = sprite.Y, spW = sprite.Width, spH = sprite.Height;
+            if (TryGetSpriteOverride(sprite, out var ov))
+            {
+                spX = ov.X; spY = ov.Y;
+                spW = sprite.Width * ov.ScaleX;
+                spH = sprite.Height * ov.ScaleY;
+            }
+
             // Use absolute values for rect calculation - negative sizes mean "flip" in SE
-            float w = Math.Abs(sprite.Width)  * scale;
-            float h = Math.Abs(sprite.Height) * scale;
+            float w = Math.Abs(spW) * scale;
+            float h = Math.Abs(spH) * scale;
 
             if (sprite.Type == SpriteEntryType.Text)
             {
                 // SE text positioning: Y = top edge, X depends on Alignment
-                float x = origin.X + sprite.X * scale;
-                float y = origin.Y + sprite.Y * scale;
+                float x = origin.X + spX * scale;
+                float y = origin.Y + spY * scale;
 
                 switch (sprite.Alignment)
                 {
@@ -354,8 +707,8 @@ namespace SESpriteLCDLayoutTool.Controls
             }
 
             // TEXTURE: Position = center of sprite
-            float cx = origin.X + sprite.X * scale;
-            float cy = origin.Y + sprite.Y * scale;
+            float cx = origin.X + spX * scale;
+            float cy = origin.Y + spY * scale;
             float hw = w / 2f;
             float hh = h / 2f;
             return new RectangleF(cx - hw, cy - hh, hw * 2f, hh * 2f);
@@ -459,12 +812,23 @@ namespace SESpriteLCDLayoutTool.Controls
                 }
             }
 
+            // Build sprite-rig override map for this frame (non-destructive).
+            BuildSpriteRigOverrides();
+
             // Sprites — bottom layer first
             foreach (var sprite in _layout.Sprites)
             {
                 if (sprite.IsHidden) continue;
                 if (sprite == excludeSprite) continue;
                 DrawSprite(g, sprite, _selectedSprites.Contains(sprite), scale, origin);
+            }
+
+            // Rig overlay: faint in Sprites mode (so users can see rigs exist), full in Rig mode.
+            if (_layout.Rigs != null && _layout.Rigs.Count > 0)
+            {
+                if (_editMode == CanvasEditMode.Rig && OnionSkinEnabled && AnimationPreviewEnabled)
+                    DrawOnionSkin(g, scale, origin);
+                DrawRigOverlay(g, scale, origin, _editMode == CanvasEditMode.Rig);
             }
 
             if (drawOverlays)
@@ -486,6 +850,21 @@ namespace SESpriteLCDLayoutTool.Controls
                 using (var lb = new SolidBrush(Color.FromArgb(80, 160, 160)))
                     g.DrawString($"{_layout.SurfaceWidth} × {_layout.SurfaceHeight}{zoomLabel}", lf, lb,
                         origin.X + 3, origin.Y + dh + 3);
+
+            // Rig-mode badge (top-left of surface) — clear visual cue that sprite gestures are disabled.
+            if (_editMode == CanvasEditMode.Rig)
+            {
+                using (var bf = new Font("Segoe UI", 8.25f, FontStyle.Bold))
+                using (var bg = new SolidBrush(Color.FromArgb(220, 60, 30, 80)))
+                using (var fg = new SolidBrush(Color.FromArgb(255, 255, 220, 120)))
+                {
+                    const string label = " RIG MODE ";
+                    var sz = g.MeasureString(label, bf);
+                    var rect = new RectangleF(origin.X + 4, origin.Y + 4, sz.Width, sz.Height);
+                    g.FillRectangle(bg, rect);
+                    g.DrawString(label, bf, fg, rect.X, rect.Y);
+                }
+            }
 
             // Rubber-band box-select overlay
             if (_isBoxSelecting && (_boxSelectRect.Width > 1 || _boxSelectRect.Height > 1))
@@ -855,7 +1234,7 @@ namespace SESpriteLCDLayoutTool.Controls
             if (scaleX != 1f || scaleY != 1f)
                 g.ScaleTransform(scaleX, scaleY);
 
-            g.RotateTransform(sprite.Rotation * 180f / (float)Math.PI);
+            g.RotateTransform(GetEffectiveRotation(sprite) * 180f / (float)Math.PI);
             var r = new RectangleF(-rect.Width / 2f, -rect.Height / 2f, rect.Width, rect.Height);
 
             // Try real texture first (from SE Content directory)
@@ -1025,6 +1404,53 @@ namespace SESpriteLCDLayoutTool.Controls
 
             if (e.Button != MouseButtons.Left) return;
 
+            // Rig mode: hit-test bones and start a bone gesture if applicable.
+            // Sprite gestures (selection, drag, box-select) remain suppressed.
+            if (_editMode == CanvasEditMode.Rig)
+            {
+                ComputeTransform(out float rscale, out PointF rorigin);
+                var rpt = new PointF(e.X, e.Y);
+                bool shiftHeldRig = (Control.ModifierKeys & Keys.Shift) != 0;
+                bool altHeldRig   = (Control.ModifierKeys & Keys.Alt)   != 0;
+
+                // Bone joint/tip handles take precedence (small targets).
+                if (TryHitTestBone(rpt, rscale, rorigin, out var hRig, out var hBone, out var hMode))
+                {
+                    _dragStart = rpt;
+                    BeginBoneDrag(hRig, hBone, hMode);
+                    return;
+                }
+
+                // Otherwise: clicking on a sprite bound to a bone.
+                //   Alt+drag   → adjust that one binding's offset (fine-tune)
+                //   Shift+drag → translate the whole rig
+                //   plain drag → FK rotate the bone
+                if (TryHitTestBoundSpriteBinding(rpt, rscale, rorigin, out var sRig, out var sBone, out var sBinding))
+                {
+                    _dragStart = rpt;
+                    if (altHeldRig)
+                        BeginBindingOffsetDrag(sRig, sBone, sBinding, rpt, rscale, rorigin);
+                    else if (shiftHeldRig)
+                        BeginRigTranslate(sRig, rpt, rscale, rorigin);
+                    else
+                        BeginBoneRotate(sRig, sBone, rpt, rscale, rorigin);
+                    return;
+                }
+
+                // Empty click with Shift: still allow translating the active/first rig.
+                if (shiftHeldRig && _layout != null && _layout.Rigs != null && _layout.Rigs.Count > 0)
+                {
+                    var firstRig = _layout.Rigs[0];
+                    _dragStart = rpt;
+                    BeginRigTranslate(firstRig, rpt, rscale, rorigin);
+                    return;
+                }
+
+                HighlightedBone = null;
+                BoneSelected?.Invoke(this, null);
+                return;
+            }
+
             bool shiftHeld = (Control.ModifierKeys & Keys.Shift) != 0;
             ComputeTransform(out float scale, out PointF origin);
             var pt = new PointF(e.X, e.Y);
@@ -1164,6 +1590,21 @@ namespace SESpriteLCDLayoutTool.Controls
             float surfY = (pt.Y - origin.Y) / scale;
             SurfaceMouseMoved?.Invoke(surfX, surfY);
 
+            // Bone gesture in Rig mode takes precedence over everything else.
+            if (_boneDrag != BoneDragMode.None)
+            {
+                UpdateBoneDrag(pt, scale, origin);
+                return;
+            }
+
+            // Hover cursor in Rig mode: switch to Hand over a bone joint/tip OR a bound sprite.
+            if (_editMode == CanvasEditMode.Rig)
+            {
+                bool overBone = TryHitTestBone(pt, scale, origin, out _, out _, out _);
+                bool overBound = !overBone && TryHitTestBoundSprite(pt, scale, origin, out _, out _);
+                Cursor = (overBone || overBound) ? Cursors.Hand : Cursors.Default;
+            }
+
             // Box-select rubber-band update
             if (_isBoxSelecting)
             {
@@ -1178,6 +1619,8 @@ namespace SESpriteLCDLayoutTool.Controls
 
             if (_dragMode == DragMode.None || _selectedSprite == null)
             {
+                // In Rig mode we don't update sprite-resize cursors; keep the default arrow.
+                if (_editMode == CanvasEditMode.Rig) { Cursor = Cursors.Default; return; }
                 UpdateCursor(pt, scale, origin);
                 return;
             }
@@ -1270,6 +1713,13 @@ namespace SESpriteLCDLayoutTool.Controls
                 _isPanning = false;
                 Capture = false;
                 Cursor = Cursors.Default;
+                return;
+            }
+
+            // End an active bone gesture (Rig mode).
+            if (_boneDrag != BoneDragMode.None)
+            {
+                EndBoneDrag();
                 return;
             }
 
@@ -1732,6 +2182,490 @@ namespace SESpriteLCDLayoutTool.Controls
                     g.DrawString(label, warnFont, warnBrush, tx, ty);
                 }
             }
+        }
+
+        // ── Rig render override + bone gestures ─────────────────────────────────
+
+        /// <summary>
+        /// Recomputes the per-sprite override map from all enabled rigs in the layout.
+        /// Called once per paint; safe even when no rigs exist.
+        /// Overrides are only applied while in Rig edit mode so that normal sprite editing
+        /// (move/resize/rotate) outside Rig mode is never blocked by a binding.
+        /// </summary>
+        private void BuildSpriteRigOverrides()
+        {
+            _spriteRigOverride.Clear();
+            if (_layout?.Rigs == null || _layout.Rigs.Count == 0) return;
+
+            foreach (var rig in _layout.Rigs)
+            {
+                if (rig == null || !rig.Enabled) continue;
+                var clipOverrides = SampleActiveClipOverrides(rig);
+                var poses = RigEvaluator.EvaluateBindings(rig, _layout, clipOverrides);
+                foreach (var p in poses)
+                {
+                    // Last-rig-wins is fine; users author one rig per binding in practice.
+                    _spriteRigOverride[p.SpriteIndex] = p;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Returns per-bone local-transform overrides sampled from the rig's active clip
+        /// at <see cref="AnimationPreviewTime"/>, or null if there is no usable clip or
+        /// animation preview is disabled.
+        /// </summary>
+        private Dictionary<string, RigKeyframe> SampleActiveClipOverrides(Rig rig)
+        {
+            if (!AnimationPreviewEnabled) return null;
+            if (rig == null || rig.Clips == null || rig.Clips.Count == 0) return null;
+            if (string.IsNullOrEmpty(rig.ActiveClipId)) return null;
+            var clip = rig.Clips.Find(c => c != null && c.Id == rig.ActiveClipId);
+            if (clip == null) return null;
+            var sampled = RigClipSampler.Sample(clip, AnimationPreviewTime);
+            // While the user is interactively editing a bone, exclude it from the
+            // sampled overrides so the live LocalX/Y/Rotation/Length the drag is
+            // writing actually shows on screen. Otherwise the clip sample masks it
+            // and the rig appears "locked" after the first keys are set.
+            if (sampled != null && _activeBone != null && _activeRig == rig &&
+                _boneDrag != BoneDragMode.None && _boneDrag != BoneDragMode.RigTranslate)
+            {
+                sampled.Remove(_activeBone.Id);
+            }
+            return sampled;
+        }
+
+        /// <summary>
+        /// If the active clip currently samples a pose for <paramref name="bone"/>, copy
+        /// that pose onto the bone's local fields. Lets a drag continue from the
+        /// on-screen pose instead of jumping to the unsampled rest values.
+        /// </summary>
+        private void PrimeBoneFromSampledPose(Rig rig, Bone bone)
+        {
+            if (rig == null || bone == null) return;
+            if (!AnimationPreviewEnabled) return;
+            if (rig.Clips == null || rig.Clips.Count == 0) return;
+            if (string.IsNullOrEmpty(rig.ActiveClipId)) return;
+            var clip = rig.Clips.Find(c => c != null && c.Id == rig.ActiveClipId);
+            if (clip == null) return;
+            var sampled = RigClipSampler.Sample(clip, AnimationPreviewTime);
+            if (sampled == null) return;
+            if (!sampled.TryGetValue(bone.Id, out var k) || k == null) return;
+            bone.LocalX = k.LocalX;
+            bone.LocalY = k.LocalY;
+            bone.LocalRotation = k.LocalRotation;
+            bone.LocalScaleX = k.LocalScaleX;
+            bone.LocalScaleY = k.LocalScaleY;
+            bone.Length = k.Length;
+        }
+
+        private bool TryGetSpriteOverride(SpriteEntry sprite, out RigEvaluator.EvaluatedSprite ov)
+        {
+            ov = default;
+            if (_layout == null || _spriteRigOverride.Count == 0) return false;
+            int idx = _layout.Sprites.IndexOf(sprite);
+            if (idx < 0) return false;
+            return _spriteRigOverride.TryGetValue(idx, out ov);
+        }
+
+        private float GetEffectiveRotation(SpriteEntry sprite)
+        {
+            if (TryGetSpriteOverride(sprite, out var ov)) return ov.Rotation;
+            return sprite.Rotation;
+        }
+
+        // ── Bone hit-testing & drag (Rig mode) ──────────────────────────────────
+
+        private const float BoneJointHitRadius = 8f;   // screen px
+        private const float BoneTipHitRadius   = 8f;
+
+        private bool TryHitTestBone(PointF screenPt, float scale, PointF origin,
+                                     out Rig hitRig, out Bone hitBone, out BoneDragMode hitMode)
+        {
+            hitRig = null; hitBone = null; hitMode = BoneDragMode.None;
+            if (_lastBoneWorlds.Count == 0) return false;
+
+            float bestDist = float.MaxValue;
+            foreach (var kv in _lastBoneWorlds)
+            {
+                var (rig, bone, world) = kv.Value;
+                if (bone.Locked || bone.Hidden) continue;
+
+                float jx = origin.X + world.X * scale;
+                float jy = origin.Y + world.Y * scale;
+
+                // Tip in world space.
+                float cos = (float)Math.Cos(world.Rotation);
+                float sin = (float)Math.Sin(world.Rotation);
+                float tipLocalX = bone.Length * world.ScaleX;
+                float tx = origin.X + (world.X + tipLocalX * cos) * scale;
+                float ty = origin.Y + (world.Y + tipLocalX * sin) * scale;
+
+                float dJoint = Distance(screenPt, jx, jy);
+                float dTip   = Distance(screenPt, tx, ty);
+
+                if (dJoint <= BoneJointHitRadius && dJoint < bestDist)
+                {
+                    bestDist = dJoint; hitRig = rig; hitBone = bone; hitMode = BoneDragMode.Joint;
+                }
+                if (dTip <= BoneTipHitRadius && dTip < bestDist)
+                {
+                    bestDist = dTip; hitRig = rig; hitBone = bone; hitMode = BoneDragMode.Tip;
+                }
+            }
+            return hitMode != BoneDragMode.None;
+        }
+
+        private static float Distance(PointF p, float x, float y)
+        {
+            float dx = p.X - x, dy = p.Y - y;
+            return (float)Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        /// <summary>Begin a bone gesture in Rig mode.</summary>
+        private void BeginBoneDrag(Rig rig, Bone bone, BoneDragMode mode)
+        {
+            DragStarting?.Invoke(this, EventArgs.Empty);
+            _activeRig = rig;
+            _activeBone = bone;
+            _boneDrag = mode;
+            // If an animation preview is keying this bone right now, fold the sampled
+            // pose onto the bone's local fields before the drag starts so the gesture
+            // continues from where the bone is visually drawn (no snap-back).
+            PrimeBoneFromSampledPose(rig, bone);
+            _boneDragStartLocalX = bone.LocalX;
+            _boneDragStartLocalY = bone.LocalY;
+            _boneDragStartRotation = bone.LocalRotation;
+            _boneDragStartLength = bone.Length;
+            _boneDragParentWorld = ComputeBoneParentWorld(rig, bone);
+            HighlightedBone = bone;
+            BoneSelected?.Invoke(this, bone);
+            Capture = true;
+        }
+
+        /// <summary>
+        /// Begin an FK rotate of <paramref name="bone"/> around its joint, anchored on the
+        /// initial mouse position. Children of the bone follow naturally.
+        /// </summary>
+        private void BeginBoneRotate(Rig rig, Bone bone, PointF screenPt, float scale, PointF origin)
+        {
+            DragStarting?.Invoke(this, EventArgs.Empty);
+            _activeRig = rig;
+            _activeBone = bone;
+            _boneDrag = BoneDragMode.Rotate;
+            // Fold the active animation sample into LocalRotation (etc.) before grabbing,
+            // otherwise the clip sampler keeps overriding our writes during the drag and
+            // the bone looks pinned to the canvas.
+            PrimeBoneFromSampledPose(rig, bone);
+            _boneDragStartRotation = bone.LocalRotation;
+
+            var worlds = RigEvaluator.EvaluateBones(rig);
+            if (worlds.TryGetValue(bone.Id, out var bw))
+            {
+                _boneRotateJointX = bw.X;
+                _boneRotateJointY = bw.Y;
+            }
+            else
+            {
+                _boneRotateJointX = rig.OriginX;
+                _boneRotateJointY = rig.OriginY;
+            }
+
+            float sxSurface = (screenPt.X - origin.X) / scale;
+            float sySurface = (screenPt.Y - origin.Y) / scale;
+            _boneRotateRefAngle = (float)Math.Atan2(
+                sySurface - _boneRotateJointY,
+                sxSurface - _boneRotateJointX);
+
+            HighlightedBone = bone;
+            BoneSelected?.Invoke(this, bone);
+            Capture = true;
+        }
+
+        /// <summary>Begin translating the entire rig (Shift+drag in Rig mode).</summary>
+        private void BeginRigTranslate(Rig rig, PointF screenPt, float scale, PointF origin)
+        {
+            DragStarting?.Invoke(this, EventArgs.Empty);
+            _activeRig = rig;
+            _activeBone = null;
+            _boneDrag = BoneDragMode.RigTranslate;
+            _rigDragStartOriginX = rig.OriginX;
+            _rigDragStartOriginY = rig.OriginY;
+            _rigDragStartSurfaceX = (screenPt.X - origin.X) / scale;
+            _rigDragStartSurfaceY = (screenPt.Y - origin.Y) / scale;
+            HighlightedBone = null;
+            BoneSelected?.Invoke(this, null);
+            Capture = true;
+        }
+
+        /// <summary>
+        /// Begin Alt+drag of a binding's offset — moves only this bound sprite relative
+        /// to its bone, leaving the bone (and any other sprites bound to it) untouched.
+        /// </summary>
+        private void BeginBindingOffsetDrag(Rig rig, Bone bone, SpriteBinding binding,
+                                            PointF screenPt, float scale, PointF origin)
+        {
+            DragStarting?.Invoke(this, EventArgs.Empty);
+            _activeRig = rig;
+            _activeBone = bone;
+            _activeBinding = binding;
+            _boneDrag = BoneDragMode.BindingOffset;
+            _bindingDragStartOffX = binding.OffsetX;
+            _bindingDragStartOffY = binding.OffsetY;
+            _bindingDragStartSurfaceX = (screenPt.X - origin.X) / scale;
+            _bindingDragStartSurfaceY = (screenPt.Y - origin.Y) / scale;
+            // Resolve current bone world transform once; we invert it on each move to
+            // convert mouse delta into bone-local space.
+            var worlds = RigEvaluator.EvaluateBones(rig, SampleActiveClipOverrides(rig));
+            if (!worlds.TryGetValue(bone.Id, out _bindingDragBoneWorld))
+                _bindingDragBoneWorld = new RigTransform(rig.OriginX, rig.OriginY, 0f, 1f, 1f);
+            HighlightedBone = bone;
+            BoneSelected?.Invoke(this, bone);
+            Capture = true;
+        }
+
+        /// <summary>
+        /// Hit-test sprites that are bound to a bone in any rig. Returns the topmost bound
+        /// sprite under the cursor, the bone it is bound to, and the binding itself.
+        /// </summary>
+        private bool TryHitTestBoundSpriteBinding(PointF screenPt, float scale, PointF origin,
+                                                  out Rig hitRig, out Bone hitBone, out SpriteBinding hitBinding)
+        {
+            hitRig = null; hitBone = null; hitBinding = null;
+            if (_layout == null || _layout.Rigs == null || _layout.Rigs.Count == 0) return false;
+
+            // Top-most first
+            for (int i = _layout.Sprites.Count - 1; i >= 0; i--)
+            {
+                var sp = _layout.Sprites[i];
+                if (sp.IsHidden || sp.IsLocked) continue;
+                var rect = GetSpriteScreenRect(sp, scale, origin);
+                if (!rect.Contains(screenPt)) continue;
+
+                // Find a binding for this sprite index in any enabled rig.
+                foreach (var rig in _layout.Rigs)
+                {
+                    if (rig == null || !rig.Enabled || rig.Bindings == null) continue;
+                    foreach (var b in rig.Bindings)
+                    {
+                        if (b == null || b.Muted) continue;
+                        if (b.SpriteIndex != i) continue;
+                        var bone = rig.Bones?.Find(x => x != null && x.Id == b.BoneId);
+                        if (bone == null || bone.Locked || bone.Hidden) continue;
+                        hitRig = rig;
+                        hitBone = bone;
+                        hitBinding = b;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /// <summary>Cursor-hover convenience that ignores the binding.</summary>
+        private bool TryHitTestBoundSprite(PointF screenPt, float scale, PointF origin,
+                                           out Rig hitRig, out Bone hitBone)
+        {
+            return TryHitTestBoundSpriteBinding(screenPt, scale, origin, out hitRig, out hitBone, out _);
+        }
+
+        /// <summary>
+        /// Compute the parent's world transform (or rig origin if the bone is a root).
+        /// Used for converting screen→bone-local during a joint drag.
+        /// </summary>
+        private RigTransform ComputeBoneParentWorld(Rig rig, Bone bone)
+        {
+            var worlds = RigEvaluator.EvaluateBones(rig);
+            if (!string.IsNullOrEmpty(bone.ParentId) && worlds.TryGetValue(bone.ParentId, out var pw))
+                return pw;
+            return new RigTransform(rig.OriginX, rig.OriginY, 0f, 1f, 1f);
+        }
+
+        /// <summary>
+        /// Two-bone analytic IK. Given a parent bone whose joint sits at <paramref name="parentWorld"/>
+        /// and a child bone (the dragged tip), rotates both so the child's tip reaches
+        /// (<paramref name="targetX"/>, <paramref name="targetY"/>) in world/surface space.
+        /// Bone lengths are preserved. The "elbow" prefers to bend in the same direction
+        /// it currently bends so the limb doesn't suddenly flip across the chain.
+        /// </summary>
+        private void SolveTwoBoneIK(Bone parent, Bone child, RigTransform parentWorld,
+                                    float targetX, float targetY,
+                                    Dictionary<string, RigTransform> worlds)
+        {
+            // Find parent's joint world position. parentWorld already represents the parent
+            // bone's frame at its own joint — its X/Y is the joint position.
+            float jx = parentWorld.X;
+            float jy = parentWorld.Y;
+
+            // Effective lengths in surface space (account for accumulated parent scales).
+            float gpScale = 1f;
+            if (!string.IsNullOrEmpty(parent.ParentId) && worlds.TryGetValue(parent.ParentId, out var gpw))
+                gpScale = gpw.ScaleX == 0f ? 1f : gpw.ScaleX;
+            float parentScaleX = parentWorld.ScaleX == 0f ? 1f : parentWorld.ScaleX;
+
+            float l1 = Math.Max(0.0001f, parent.Length * gpScale);
+            float l2 = Math.Max(0.0001f, child.Length * parentScaleX);
+
+            float dx = targetX - jx;
+            float dy = targetY - jy;
+            float dist = (float)Math.Sqrt(dx * dx + dy * dy);
+
+            // Clamp target into reachable annulus [|l1-l2|, l1+l2] so acos stays valid.
+            float minR = Math.Abs(l1 - l2);
+            float maxR = l1 + l2;
+            float clamped = Math.Max(minR + 0.0001f, Math.Min(maxR - 0.0001f, dist));
+
+            // Law of cosines for the interior angle at the parent's joint and the child's joint.
+            float cosA = (l1 * l1 + clamped * clamped - l2 * l2) / (2f * l1 * clamped);
+            if (cosA < -1f) cosA = -1f; else if (cosA > 1f) cosA = 1f;
+            float a = (float)Math.Acos(cosA);
+
+            float cosB = (l1 * l1 + l2 * l2 - clamped * clamped) / (2f * l1 * l2);
+            if (cosB < -1f) cosB = -1f; else if (cosB > 1f) cosB = 1f;
+            float b = (float)Math.Acos(cosB);
+
+            float baseAngle = (float)Math.Atan2(dy, dx);
+
+            // Elbow side: keep current sign of child's local rotation so we don't flip.
+            float bendSign = child.LocalRotation >= 0f ? 1f : -1f;
+            // π - b is the interior bend; signed by bendSign.
+            float childLocalRot = bendSign * ((float)Math.PI - b);
+            float parentWorldRot = baseAngle - bendSign * a;
+
+            // Convert parent's desired world rotation back to its local rotation.
+            float gpRot = 0f;
+            if (!string.IsNullOrEmpty(parent.ParentId) && worlds.TryGetValue(parent.ParentId, out var gpw2))
+                gpRot = gpw2.Rotation;
+            else
+                gpRot = (_activeRig != null) ? 0f : 0f; // rig origin contributes no rotation
+
+            parent.LocalRotation = parentWorldRot - gpRot;
+            child.LocalRotation = childLocalRot;
+        }
+
+        private void UpdateBoneDrag(PointF screenPt, float scale, PointF origin)
+        {
+            if (_activeBone == null || _activeRig == null) return;
+
+            // Mouse in surface coordinates.
+            float sxSurface = (screenPt.X - origin.X) / scale;
+            float sySurface = (screenPt.Y - origin.Y) / scale;
+
+            if (_boneDrag == BoneDragMode.Joint)
+            {
+                // Convert mouse surface point into the parent's local space, then assign to the bone's local pos.
+                ToParentLocal(_boneDragParentWorld, sxSurface, sySurface, out float lx, out float ly);
+                _activeBone.LocalX = lx;
+                _activeBone.LocalY = ly;
+            }
+            else if (_boneDrag == BoneDragMode.Tip)
+            {
+                // Compute current world joint position to derive the new bone vector.
+                var worlds = RigEvaluator.EvaluateBones(_activeRig);
+                if (!worlds.TryGetValue(_activeBone.Id, out var bw)) return;
+                float dx = sxSurface - bw.X;
+                float dy = sySurface - bw.Y;
+
+                // 2-bone IK when Ctrl is held and the dragged bone has a parent.
+                // Rotates parent + this bone so the tip reaches the cursor while
+                // both bones keep their existing lengths (like an arm/leg).
+                bool ikRequested = (Control.ModifierKeys & Keys.Control) != 0;
+                Bone parentBone = null;
+                if (ikRequested && !string.IsNullOrEmpty(_activeBone.ParentId))
+                    parentBone = _activeRig.Bones?.Find(x => x != null && x.Id == _activeBone.ParentId);
+
+                if (parentBone != null && !parentBone.Locked
+                    && worlds.TryGetValue(parentBone.Id, out var pw))
+                {
+                    SolveTwoBoneIK(parentBone, _activeBone, pw, sxSurface, sySurface, worlds);
+                    _ikSecondaryBone = parentBone;
+                }
+                else
+                {
+                    float length = (float)Math.Sqrt(dx * dx + dy * dy);
+                    float worldAngle = (float)Math.Atan2(dy, dx);
+
+                    // local rotation = worldAngle - parent.Rotation
+                    _activeBone.LocalRotation = worldAngle - _boneDragParentWorld.Rotation;
+                    // Length is unscaled local length; divide by accumulated parent scale on X.
+                    float parentSx = _boneDragParentWorld.ScaleX == 0 ? 1f : _boneDragParentWorld.ScaleX;
+                    _activeBone.Length = Math.Max(1f, length / parentSx);
+                }
+            }
+            else if (_boneDrag == BoneDragMode.Rotate)
+            {
+                // FK rotate: pivot around the bone's joint world position. Children move with us.
+                float dx = sxSurface - _boneRotateJointX;
+                float dy = sySurface - _boneRotateJointY;
+                float curAngle = (float)Math.Atan2(dy, dx);
+                float delta = curAngle - _boneRotateRefAngle;
+                _activeBone.LocalRotation = _boneDragStartRotation + delta;
+            }
+            else if (_boneDrag == BoneDragMode.RigTranslate)
+            {
+                if (_activeRig != null)
+                {
+                    _activeRig.OriginX = _rigDragStartOriginX + (sxSurface - _rigDragStartSurfaceX);
+                    _activeRig.OriginY = _rigDragStartOriginY + (sySurface - _rigDragStartSurfaceY);
+                }
+            }
+            else if (_boneDrag == BoneDragMode.BindingOffset)
+            {
+                if (_activeBinding != null)
+                {
+                    // Convert the world-space mouse delta into bone-local space, then
+                    // accumulate onto the binding's stored offset.
+                    float dxW = sxSurface - _bindingDragStartSurfaceX;
+                    float dyW = sySurface - _bindingDragStartSurfaceY;
+                    float cos = (float)Math.Cos(-_bindingDragBoneWorld.Rotation);
+                    float sin = (float)Math.Sin(-_bindingDragBoneWorld.Rotation);
+                    float dxL = (dxW * cos - dyW * sin);
+                    float dyL = (dxW * sin + dyW * cos);
+                    float sx = _bindingDragBoneWorld.ScaleX == 0 ? 1f : _bindingDragBoneWorld.ScaleX;
+                    float sy = _bindingDragBoneWorld.ScaleY == 0 ? 1f : _bindingDragBoneWorld.ScaleY;
+                    _activeBinding.OffsetX = _bindingDragStartOffX + dxL / sx;
+                    _activeBinding.OffsetY = _bindingDragStartOffY + dyL / sy;
+                }
+            }
+
+            BoneEdited?.Invoke(this, _activeBone);
+            Invalidate();
+        }
+
+        /// <summary>Inverse of RigTransform.TransformPoint: convert a world point into the parent's local space.</summary>
+        private static void ToParentLocal(RigTransform parent, float wx, float wy, out float lx, out float ly)
+        {
+            float dx = wx - parent.X;
+            float dy = wy - parent.Y;
+            float cos = (float)Math.Cos(-parent.Rotation);
+            float sin = (float)Math.Sin(-parent.Rotation);
+            float rx = dx * cos - dy * sin;
+            float ry = dx * sin + dy * cos;
+            float sx = parent.ScaleX == 0 ? 1f : parent.ScaleX;
+            float sy = parent.ScaleY == 0 ? 1f : parent.ScaleY;
+            lx = rx / sx;
+            ly = ry / sy;
+        }
+
+        private void EndBoneDrag()
+        {
+            if (_boneDrag == BoneDragMode.None) return;
+            var endedBone = _activeBone;
+            var endedSecondary = _ikSecondaryBone;
+            bool wasBoneEdit = _boneDrag != BoneDragMode.RigTranslate
+                            && _boneDrag != BoneDragMode.BindingOffset;
+            _boneDrag = BoneDragMode.None;
+            _activeRig = null;
+            _activeBone = null;
+            _activeBinding = null;
+            _ikSecondaryBone = null;
+            Capture = false;
+            if (wasBoneEdit && endedBone != null)
+                BoneDragCompleted?.Invoke(this, endedBone);
+            if (wasBoneEdit && endedSecondary != null && endedSecondary != endedBone)
+                BoneDragCompleted?.Invoke(this, endedSecondary);
+            DragCompleted?.Invoke(this, EventArgs.Empty);
+            Invalidate();
         }
     }
 }

@@ -162,6 +162,9 @@ namespace SESpriteLCDLayoutTool
         private ToolStripMenuItem _mnuFileWatchToggle;  // "Watch LCD Output File…"
         private ToolStripMenuItem _mnuScriptWatchToggle; // "Sync Script File (VS Code)…"
 
+        // Floating rig editor window (option C). Held so re-opening focuses the existing instance.
+        private SESpriteLCDLayoutTool.Forms.RigEditorWindow _rigEditor;
+
         // Bidirectional write-back: when the user modifies sprites on the canvas
         // the patched code is written back to the watched file after a short
         // debounce delay so external editors see the change in near-real-time.
