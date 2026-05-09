@@ -207,6 +207,7 @@ namespace SESpriteLCDLayoutTool
             }
 
             _animPlayer.Play();
+            if (_canvas != null) _canvas.SuppressRigOverrides = true;
             ClearEditorDiagnosticsAfterSuccessfulRun();
             UpdateAnimButtonStates();
             SetStatus(_animFocusCall != null
@@ -221,6 +222,7 @@ namespace SESpriteLCDLayoutTool
             {
                 ResetScrubbing();
                 _animPlayer.Play();
+                if (_canvas != null) _canvas.SuppressRigOverrides = true;
                 UpdateAnimButtonStates();
                 SetStatus("Animation resumed.");
                 return;
@@ -295,6 +297,7 @@ namespace SESpriteLCDLayoutTool
             }
 
             _animPlayer.Play();
+            if (_canvas != null) _canvas.SuppressRigOverrides = true;
             ClearEditorDiagnosticsAfterSuccessfulRun();
             UpdateAnimButtonStates();
             SetStatus("Animation playing…");
@@ -306,10 +309,12 @@ namespace SESpriteLCDLayoutTool
             if (_animPlayer.IsPaused)
             {
                 _animPlayer.Play();
+                if (_canvas != null) _canvas.SuppressRigOverrides = true;
             }
             else
             {
                 _animPlayer.Pause();
+                if (_canvas != null) _canvas.SuppressRigOverrides = false;
                 RestoreCodeDiagnosticsAfterPlayback();
             }
             UpdateAnimButtonStates();
@@ -318,6 +323,7 @@ namespace SESpriteLCDLayoutTool
         private void OnAnimStopClick(object sender, EventArgs e)
         {
             _animPlayer?.Stop();
+            if (_canvas != null) _canvas.SuppressRigOverrides = false;
             _animFocusCall = null;
             _canvas.HighlightedSprites = null;
             UpdateAnimButtonStates();
@@ -411,6 +417,18 @@ namespace SESpriteLCDLayoutTool
         private void OnAnimFrameCore(List<SpriteEntry> sprites, int tick)
         {
             _layout.Sprites.Clear();
+
+            // Drive the rig overlay's sampled pose from the same wall-clock the
+            // runtime's _rigTime uses, so the bone overlay line tracks the
+            // sprites the runtime is emitting. SuppressRigOverrides keeps this
+            // out of _spriteRigOverride (sprites are owned by the runtime), but
+            // DrawRigOverlay still reads AnimationPreviewTime directly.
+            if (_canvas != null)
+            {
+                double s = DateTime.UtcNow.TimeOfDay.TotalSeconds % 3600.0;
+                _canvas.AnimationPreviewTime = (float)s;
+                _canvas.AnimationPreviewEnabled = true;
+            }
 
             // Isolation mode: when a specific method is isolated (via Execute & Isolate),
             // filter animation frames to show ONLY sprites that belong to that method.
@@ -1347,6 +1365,43 @@ namespace SESpriteLCDLayoutTool
             }
             WriteBackToWatchedFile(_codeBox.Text);
             SetStatus(status);
+        }
+
+        /// <summary>
+        /// Generates a fresh rig snippet from the current layout and injects it into the
+        /// code panel using the same diff/undo/write-back pipeline as animation injection.
+        /// Idempotent: re-runs replace the previously-injected rig region.
+        /// Returns a status string for the rig editor to display.
+        /// </summary>
+        private string InjectRigCodeIntoPanel()
+        {
+            if (_layout == null) return "No layout loaded.";
+            if (_codeBox == null) return "No code panel.";
+
+            string existing = _codeBox.Text ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(existing))
+                return "Code panel is empty — generate or load code first.";
+            if (!IsCompleteProgramForInjection(existing))
+                return "Code panel does not contain a complete program to inject into.";
+
+            PushUndo();
+            // Route rig injection through the unified animation injector so we
+            // have a single final injection pipeline. Pass current sprites so
+            // any pending animation regions are reapplied alongside the rig.
+            var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
+            var injResult = RoslynAnimationInjector.InjectAnimations(existing, allSprites, _layout);
+            if (!injResult.Success)
+            {
+                return "Inject failed: " + (injResult.Error ?? "unknown error");
+            }
+            if (string.Equals(injResult.Code, existing, StringComparison.Ordinal))
+            {
+                return "No rig changes to inject.";
+            }
+
+            string verb = "Rig code injected.";
+            ApplyAnimationCodeUpdate(existing, injResult.Code, verb);
+            return verb;
         }
 
         /// <summary>

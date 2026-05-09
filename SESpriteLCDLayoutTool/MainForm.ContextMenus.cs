@@ -221,6 +221,7 @@ namespace SESpriteLCDLayoutTool
             {
                 _canvas?.Invalidate();
             };
+            _rigEditor.InjectCallback = InjectRigCodeIntoPanel;
             _rigEditor.FormClosed += (s, e) => _rigEditor = null;
             _rigEditor.Show(this);
             SetStatus("Rig editor opened.");

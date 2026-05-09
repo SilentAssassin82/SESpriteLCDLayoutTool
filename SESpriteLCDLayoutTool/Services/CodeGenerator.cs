@@ -158,6 +158,30 @@ namespace SESpriteLCDLayoutTool.Services
 
             sb.AppendLine("    }");
             sb.AppendLine("}");
+
+            // For the in-game (PB) style, the script needs a Main entry point or the
+            // game refuses to compile it ("Main method not found"). Emit a minimal
+            // wrapper that resolves the PB's own surface and calls DrawLayout. Other
+            // styles (Mod/Plugin/Pulsar) provide their own entry shape, so we skip
+            // the wrapper there.
+            if (style == CodeStyle.InGame)
+            {
+                sb.AppendLine();
+                sb.AppendLine("// ── PB entry point ──────────────────────────────────────────");
+                sb.AppendLine("// Renders to the Programmable Block's own surface 0. To draw on a");
+                sb.AppendLine("// different LCD instead, replace `Me.GetSurface(0)` with a lookup,");
+                sb.AppendLine("// e.g.:");
+                sb.AppendLine("//   var lcd = GridTerminalSystem.GetBlockWithName(\"YourLCD\") as IMyTextSurface;");
+                sb.AppendLine("public void Main(string argument, UpdateType updateSource)");
+                sb.AppendLine("{");
+                sb.AppendLine("    // Re-arm Update1 every tick so animations keep ticking even if the");
+                sb.AppendLine("    // user pressed Run manually (which does not by itself schedule updates).");
+                sb.AppendLine("    Runtime.UpdateFrequency = UpdateFrequency.Update1;");
+                sb.AppendLine($"    var {surfaceParam} = Me.GetSurface(0);");
+                sb.AppendLine($"    if ({surfaceParam} == null) return;");
+                sb.AppendLine($"    {methodName}({surfaceParam});");
+                sb.AppendLine("}");
+            }
             return sb.ToString();
         }
 

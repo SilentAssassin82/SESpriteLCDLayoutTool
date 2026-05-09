@@ -147,6 +147,14 @@ namespace SESpriteLCDLayoutTool.Controls
         public bool AnimationPreviewEnabled { get; set; }
 
         /// <summary>
+        /// When true, the canvas skips applying rig-clip overrides to sprite transforms
+        /// during paint. Set by the animation player while a runtime is producing
+        /// rig sprites itself — otherwise the rig editor's <see cref="AnimationPreviewTime"/>
+        /// pose would clobber the runtime-emitted positions and freeze the animation.
+        /// </summary>
+        public bool SuppressRigOverrides { get; set; }
+
+        /// <summary>
         /// If true and a clip is being previewed, the rig is also drawn (faintly) at the
         /// previous and next keyframe times so the user can pose between them.
         /// </summary>
@@ -2196,6 +2204,10 @@ namespace SESpriteLCDLayoutTool.Controls
         {
             _spriteRigOverride.Clear();
             if (_layout?.Rigs == null || _layout.Rigs.Count == 0) return;
+            // While the runtime is producing rig sprites itself (animation player
+            // ticking), the rig editor's preview-time override would just overwrite
+            // the runtime-emitted poses with a stale clip sample. Skip it entirely.
+            if (SuppressRigOverrides) return;
 
             foreach (var rig in _layout.Rigs)
             {

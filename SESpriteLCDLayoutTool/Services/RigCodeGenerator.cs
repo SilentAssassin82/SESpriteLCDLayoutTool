@@ -45,6 +45,10 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine("//   using Sandbox.ModAPI;             // IMyTextSurface  (or Sandbox.ModAPI.Ingame for PB)");
             sb.AppendLine("//");
             sb.AppendLine($"// Call {methodName}({surfaceParam}, t) every tick where t advances in seconds.");
+            sb.AppendLine("// — OR — call AddRigSprites(frame, _rigTime); from inside an existing");
+            sb.AppendLine("// using(var frame = surface.DrawFrame()) block to compose with static sprites.");
+            sb.AppendLine("// _rigTime is wall-clock-derived, so playback is identical whether the host");
+            sb.AppendLine("// calls render once per tick or only intermittently (e.g. editor preview).");
             sb.AppendLine();
 
             if (rig == null || rig.Bones == null || rig.Bones.Count == 0)
@@ -57,9 +61,31 @@ namespace SESpriteLCDLayoutTool.Services
             EmitDataTypes(sb);
             EmitDataLiterals(sb, layout, rig);
             EmitSamplerAndEvaluator(sb);
+            EmitTimeField(sb);
+            EmitAddRigSpritesMethod(sb, layout, rig);
             EmitDrawMethod(sb, layout, rig, methodName, surfaceParam);
 
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Returns the GUIDs (<see cref="SpriteEntry.Id"/>) of every sprite that the
+        /// active rig binds to a bone. Used by <see cref="RigCodeInjector"/> to mute
+        /// the corresponding static <c>frame.Add(...)</c> blocks so they don't double-render.
+        /// </summary>
+        public static System.Collections.Generic.HashSet<string> GetBoundSpriteIds(LcdLayout layout)
+        {
+            var result = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+            if (layout == null) return result;
+            var rig = PickRig(layout);
+            if (rig == null || rig.Bindings == null || layout.Sprites == null) return result;
+            foreach (var bd in rig.Bindings)
+            {
+                if (bd == null || bd.Muted || bd.SpriteIndex < 0 || bd.SpriteIndex >= layout.Sprites.Count) continue;
+                var sp = layout.Sprites[bd.SpriteIndex];
+                if (sp != null && !string.IsNullOrEmpty(sp.Id)) result.Add(sp.Id);
+            }
+            return result;
         }
 
         private static Rig PickRig(LcdLayout layout)
@@ -148,8 +174,12 @@ namespace SESpriteLCDLayoutTool.Services
             }
             float duration = clip != null ? Math.Max(0.0001f, clip.Duration) : 1f;
             bool loop = clip != null ? clip.Loop : true;
-            sb.AppendLine($"private const float RigClipDuration = {F(duration)};");
-            sb.AppendLine($"private const bool  RigClipLoop = {(loop ? "true" : "false")};");
+            // Use static readonly (not const) so the C# compiler can't fold these
+            // values into surrounding branches. With const, the loop/clamp arms in
+            // RigEvaluate become unreachable from one side and the in-game PB
+            // editor (and Roslyn) emit "Unreachable code detected" warnings.
+            sb.AppendLine($"private static readonly float RigClipDuration = {F(duration)};");
+            sb.AppendLine($"private static readonly bool  RigClipLoop = {(loop ? "true" : "false")};");
             sb.AppendLine();
 
             // One key array per bone (parallel to RigBones), empty arrays for bones with no track.
@@ -243,6 +273,115 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine();
         }
 
+        private static void EmitTimeField(StringBuilder sb)
+        {
+            sb.AppendLine("// ── Wall-clock time source for the rig clip ─────────────────");
+            sb.AppendLine("// _rigTime is derived from UTC time, modulo a 3600-second window, so a");
+            sb.AppendLine("// fresh recompile of the user code still produces a live frame at the");
+            sb.AppendLine("// current wall-clock position in the loop. The modulo is critical:");
+            sb.AppendLine("// a raw (UtcNow - epoch).TotalSeconds is hundreds of millions of seconds,");
+            sb.AppendLine("// which exceeds float's ~7-digit precision and quantizes to ~16-second");
+            sb.AppendLine("// steps — pinning the rig at a single pose. We do the modulo in double");
+            sb.AppendLine("// precision and only cast at the end to keep sub-second resolution.");
+            sb.AppendLine("// 3600 is divisible by every reasonable clip duration, so loops still align.");
+            sb.AppendLine("// RigTimeStep is kept for backwards compatibility with older wire blocks.");
+            sb.AppendLine("private static float _rigTime { get {");
+            sb.AppendLine("    double s = System.DateTime.UtcNow.TimeOfDay.TotalSeconds % 3600.0;");
+            sb.AppendLine("    return (float)s;");
+            sb.AppendLine("} }");
+            sb.AppendLine("private const float RigTimeStep = 0f;");
+            sb.AppendLine();
+        }
+
+        /// <summary>
+        /// Emits an in-frame helper that adds every bound sprite into an
+        /// already-open <c>MySpriteDrawFrame</c>, sampling poses from the rig clip.
+        /// Hosts call this from inside their existing <c>using (var frame = surface.DrawFrame())</c>
+        /// block, so it composes with their own static sprites instead of nesting frames.
+        /// </summary>
+        private static void EmitAddRigSpritesMethod(StringBuilder sb, LcdLayout layout, Rig rig)
+        {
+            sb.AppendLine("// ── Add bound rig sprites into an existing frame ─────────────");
+            sb.AppendLine("// Call from inside your DrawFrame using-block:");
+            sb.AppendLine("//   AddRigSprites(frame, _rigTime); _rigTime += RigTimeStep;");
+            sb.AppendLine("private void AddRigSprites(MySpriteDrawFrame frame, float time)");
+            sb.AppendLine("{");
+            sb.AppendLine("    // [RIG-DIAG] Surfaces the value of `time` to the Console tab so we can");
+            sb.AppendLine("    // confirm wall-clock advancement per frame. Remove once verified.");
+            sb.AppendLine("    try { Echo(\"[rig] t=\" + time.ToString(\"0.000\", System.Globalization.CultureInfo.InvariantCulture)); } catch { }");
+            sb.AppendLine("    var bones = new RigXform[RigBones.Length];");
+            sb.AppendLine("    RigEvaluate(time, bones);");
+            sb.AppendLine("    try { var _b0 = bones.Length > 0 ? bones[0] : default(RigXform); Echo(\"[rig] bone0 R=\" + _b0.R.ToString(\"0.000\", System.Globalization.CultureInfo.InvariantCulture)); } catch { }");
+            sb.AppendLine();
+
+            // Map sprite index -> first matching binding (mirrors EmitDrawMethod).
+            var sprites = layout.Sprites ?? new List<SpriteEntry>();
+            var bindingFor = new Dictionary<int, SpriteBinding>();
+            if (rig.Bindings != null)
+            {
+                foreach (var bd in rig.Bindings)
+                    if (bd != null && !bd.Muted && bd.SpriteIndex >= 0 && bd.SpriteIndex < sprites.Count
+                        && !bindingFor.ContainsKey(bd.SpriteIndex)) bindingFor[bd.SpriteIndex] = bd;
+            }
+            var boneIndex = new Dictionary<string, int>(rig.Bones.Count);
+            for (int i = 0; i < rig.Bones.Count; i++)
+                if (rig.Bones[i] != null && !string.IsNullOrEmpty(rig.Bones[i].Id))
+                    boneIndex[rig.Bones[i].Id] = i;
+
+            for (int i = 0; i < sprites.Count; i++)
+            {
+                var sp = sprites[i];
+                if (sp == null || sp.IsHidden) continue;
+                SpriteBinding bd; bindingFor.TryGetValue(i, out bd);
+                int bi = -1;
+                if (bd != null && !string.IsNullOrEmpty(bd.BoneId)) boneIndex.TryGetValue(bd.BoneId, out bi);
+                if (bd == null || bi < 0) continue; // unbound sprites stay in user's static draw
+
+                sb.AppendLine($"    // [{i}] {Esc(sp.DisplayName)}");
+                sb.AppendLine($"    {{ var b = bones[{bi}];");
+                sb.AppendLine($"      float c = (float)System.Math.Cos(b.R), s = (float)System.Math.Sin(b.R);");
+                sb.AppendLine($"      float px = b.X + ({F(bd.OffsetX)} * b.Sx) * c - ({F(bd.OffsetY)} * b.Sy) * s;");
+                sb.AppendLine($"      float py = b.Y + ({F(bd.OffsetX)} * b.Sx) * s + ({F(bd.OffsetY)} * b.Sy) * c;");
+                sb.AppendLine($"      float pr = b.R + {F(bd.RotationOffset)};");
+                sb.AppendLine($"      float psx = b.Sx * {F(bd.ScaleX)};");
+                sb.AppendLine($"      float psy = b.Sy * {F(bd.ScaleY)};");
+                EmitSpriteAddIndented(sb, sp, "        ", posExpr: "new Vector2(px, py)",
+                    rotOrScaleExpr: PoseRotOrScale(sp), sizeExpr: PoseSize(sp));
+                sb.AppendLine("    }");
+            }
+            sb.AppendLine("}");
+            sb.AppendLine();
+        }
+
+        /// <summary>Variant of EmitSpriteAdd parameterised by indent prefix so it can
+        /// emit at method scope (4 spaces) rather than the standalone DrawRig's 12.</summary>
+        private static void EmitSpriteAddIndented(StringBuilder sb, SpriteEntry sp, string ind,
+            string posExpr, string rotOrScaleExpr, string sizeExpr)
+        {
+            sb.AppendLine(ind + "frame.Add(new MySprite {");
+            if (sp.Type == SpriteEntryType.Text)
+            {
+                sb.AppendLine(ind + "    Type = SpriteType.TEXT,");
+                sb.AppendLine(ind + $"    Data = \"{Esc(sp.Text)}\",");
+                sb.AppendLine(ind + $"    Position = {posExpr},");
+                sb.AppendLine(ind + $"    Color = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+                sb.AppendLine(ind + $"    FontId = \"{Esc(sp.FontId)}\",");
+                sb.AppendLine(ind + $"    Alignment = TextAlignment.{sp.Alignment.ToString().ToUpperInvariant()},");
+                sb.AppendLine(ind + $"    RotationOrScale = {rotOrScaleExpr},");
+            }
+            else
+            {
+                sb.AppendLine(ind + "    Type = SpriteType.TEXTURE,");
+                sb.AppendLine(ind + $"    Data = \"{Esc(sp.SpriteName)}\",");
+                sb.AppendLine(ind + $"    Position = {posExpr},");
+                sb.AppendLine(ind + $"    Size = {sizeExpr},");
+                sb.AppendLine(ind + $"    Color = new Color({sp.ColorR}, {sp.ColorG}, {sp.ColorB}, {sp.ColorA}),");
+                sb.AppendLine(ind + "    Alignment = TextAlignment.CENTER,");
+                sb.AppendLine(ind + $"    RotationOrScale = {rotOrScaleExpr},");
+            }
+            sb.AppendLine(ind + "});");
+        }
+
         private static void EmitDrawMethod(StringBuilder sb, LcdLayout layout, Rig rig, string methodName, string surfaceParam)
         {
             // Build set of bound sprite indices so we know which sprites get rig poses
@@ -253,63 +392,37 @@ namespace SESpriteLCDLayoutTool.Services
                     if (bd != null && !bd.Muted && bd.SpriteIndex >= 0) bound.Add(bd.SpriteIndex);
 
             sb.AppendLine("// ── Draw entry point ─────────────────────────────────────────");
+            sb.AppendLine("// Standalone helper for hosts that don't have an existing DrawFrame block.");
+            sb.AppendLine("// Bound sprites are emitted via AddRigSprites; only unbound sprites are inlined here,");
+            sb.AppendLine("// so editing the rig only updates one place.");
             sb.AppendLine($"public void {methodName}(IMyTextSurface {surfaceParam}, float time)");
             sb.AppendLine("{");
             sb.AppendLine($"    {surfaceParam}.ContentType = ContentType.SCRIPT;");
             sb.AppendLine($"    {surfaceParam}.Script = \"\";");
             sb.AppendLine();
-            sb.AppendLine("    var bones = new RigXform[RigBones.Length];");
-            sb.AppendLine("    RigEvaluate(time, bones);");
-            sb.AppendLine();
             sb.AppendLine($"    using (var frame = {surfaceParam}.DrawFrame())");
             sb.AppendLine("    {");
+            sb.AppendLine("        AddRigSprites(frame, time);");
 
-            // Emit one MySprite per visible sprite. Bound sprites read from the bones
-            // table at runtime; unbound sprites use literal positions.
+            // Inline only unbound sprites here — bound ones live in AddRigSprites.
             var sprites = layout.Sprites ?? new List<SpriteEntry>();
-            // Map sprite index -> first matching binding (since we filtered muted/oob already).
             var bindingFor = new Dictionary<int, SpriteBinding>();
             if (rig.Bindings != null)
                 foreach (var bd in rig.Bindings)
                     if (bd != null && !bd.Muted && bd.SpriteIndex >= 0 && bd.SpriteIndex < sprites.Count
                         && !bindingFor.ContainsKey(bd.SpriteIndex)) bindingFor[bd.SpriteIndex] = bd;
 
-            // Precompute bone index lookup for emitted bindings.
-            var boneIndex = new Dictionary<string, int>(rig.Bones.Count);
-            for (int i = 0; i < rig.Bones.Count; i++)
-                if (rig.Bones[i] != null && !string.IsNullOrEmpty(rig.Bones[i].Id))
-                    boneIndex[rig.Bones[i].Id] = i;
-
             for (int i = 0; i < sprites.Count; i++)
             {
                 var sp = sprites[i];
                 if (sp == null || sp.IsHidden) continue;
+                if (bindingFor.ContainsKey(i)) continue; // bound: handled by AddRigSprites
 
-                sb.AppendLine($"        // [{i}] {Esc(sp.DisplayName)}");
-
-                SpriteBinding bd; bindingFor.TryGetValue(i, out bd);
-                int bi = -1;
-                if (bd != null && !string.IsNullOrEmpty(bd.BoneId)) boneIndex.TryGetValue(bd.BoneId, out bi);
-
-                if (bd != null && bi >= 0)
-                {
-                    sb.AppendLine($"        {{ var b = bones[{bi}];");
-                    sb.AppendLine($"          float c = (float)System.Math.Cos(b.R), s = (float)System.Math.Sin(b.R);");
-                    sb.AppendLine($"          float px = b.X + ({F(bd.OffsetX)} * b.Sx) * c - ({F(bd.OffsetY)} * b.Sy) * s;");
-                    sb.AppendLine($"          float py = b.Y + ({F(bd.OffsetX)} * b.Sx) * s + ({F(bd.OffsetY)} * b.Sy) * c;");
-                    sb.AppendLine($"          float pr = b.R + {F(bd.RotationOffset)};");
-                    sb.AppendLine($"          float psx = b.Sx * {F(bd.ScaleX)};");
-                    sb.AppendLine($"          float psy = b.Sy * {F(bd.ScaleY)};");
-                    EmitSpriteAdd(sb, sp, posExpr: "new Vector2(px, py)", rotOrScaleExpr: PoseRotOrScale(sp), sizeExpr: PoseSize(sp));
-                    sb.AppendLine("        }");
-                }
-                else
-                {
-                    EmitSpriteAdd(sb, sp,
-                        posExpr: $"new Vector2({F(sp.X)}, {F(sp.Y)})",
-                        rotOrScaleExpr: F(sp.Type == SpriteEntryType.Text ? sp.Scale : sp.Rotation),
-                        sizeExpr: $"new Vector2({F(sp.Width)}, {F(sp.Height)})");
-                }
+                sb.AppendLine($"        // [{i}] {Esc(sp.DisplayName)} (unbound)");
+                EmitSpriteAdd(sb, sp,
+                    posExpr: $"new Vector2({F(sp.X)}, {F(sp.Y)})",
+                    rotOrScaleExpr: F(sp.Type == SpriteEntryType.Text ? sp.Scale : sp.Rotation),
+                    sizeExpr: $"new Vector2({F(sp.Width)}, {F(sp.Height)})");
             }
 
             sb.AppendLine("    }");

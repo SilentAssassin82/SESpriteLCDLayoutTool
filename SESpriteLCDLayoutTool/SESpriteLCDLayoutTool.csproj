@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -197,7 +197,9 @@
     <Compile Include="Services\AnimationMergeEngine.cs" />
     <Compile Include="Services\RigClipSampler.cs" />
     <Compile Include="Services\RigCodeGenerator.cs" />
+    <Compile Include="Services\RigCodeInjector.cs" />
     <Compile Include="Services\RigEvaluator.cs" />
+    <Compile Include="Services\RigMcpService.cs" />
     <Compile Include="Services\AnimationPlayer.cs" />
     <Compile Include="Services\AnimationSnippetGenerator.cs" />
     <Compile Include="Services\CodeAutoComplete.cs" />

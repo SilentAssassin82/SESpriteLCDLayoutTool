@@ -62,6 +62,18 @@ namespace SESpriteLCDLayoutTool.Services
         public static InjectionResult InjectAnimations(
             string sourceCode,
             IEnumerable<SpriteEntry> allSprites)
+            => InjectAnimations(sourceCode, allSprites, layoutForRig: null);
+
+        /// <summary>
+        /// Unified-pipeline overload. After animation injection, also applies the rig
+        /// region for <paramref name="layoutForRig"/> (when non-null) via the shared
+        /// <see cref="RigCodeInjector.ApplyRig"/> helper. Pass null to skip the rig
+        /// pass — equivalent to the legacy two-arg overload.
+        /// </summary>
+        public static InjectionResult InjectAnimations(
+            string sourceCode,
+            IEnumerable<SpriteEntry> allSprites,
+            LcdLayout layoutForRig)
         {
             var result = new InjectionResult { Success = false };
 
@@ -111,8 +123,12 @@ namespace SESpriteLCDLayoutTool.Services
 
             if (animated.Count == 0)
             {
+                // Even without animated sprites, the rig pass may have work to do
+                // (apply or strip the rig region). Run it on the raw source so a
+                // rig-only edit still flows through the unified pipeline.
+                string rigOnly = ApplyRigPass(sourceCode, layoutForRig, result);
                 result.Success = true;
-                result.Code = sourceCode;
+                result.Code = rigOnly;
                 return result;
             }
 
@@ -318,6 +334,10 @@ namespace SESpriteLCDLayoutTool.Services
                 {
                     working = InsertTickIncrement(working);
                 }
+
+                // Step 8: Apply (or strip) the rig region as the final pass so it
+                // sits alongside animation injection in a single unified pipeline.
+                working = ApplyRigPass(working, layoutForRig, result);
 
                 result.Success = true;
                 result.Code = working;
@@ -1316,6 +1336,35 @@ namespace SESpriteLCDLayoutTool.Services
             sb.AppendLine($"{indent}}});");
 
             return sb.ToString();
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        //  Rig pass (delegates to the shared RigCodeInjector pipeline so the
+        //  unified injector and the rig editor share one rig-application path)
+        // ═════════════════════════════════════════════════════════════════════
+
+        private static string ApplyRigPass(string code, LcdLayout layout, InjectionResult result)
+        {
+            if (string.IsNullOrEmpty(code)) return code ?? string.Empty;
+            try
+            {
+                bool hadPrior, applied;
+                string err;
+                string updated = RigCodeInjector.ApplyRig(
+                    code, layout,
+                    methodName: "DrawRig",
+                    surfaceParam: "surface",
+                    out hadPrior, out applied, out err);
+                if (err != null && result != null && string.IsNullOrEmpty(result.Error))
+                    result.Error = err;
+                return updated ?? code;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[RoslynAnimationInjector] Rig pass error: {ex.Message}");
+                return code;
+            }
         }
     }
 }

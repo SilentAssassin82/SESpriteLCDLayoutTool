@@ -27,6 +27,14 @@ namespace SESpriteLCDLayoutTool.Forms
         /// <summary>Called after a rig mutation so the host can repaint / refresh dependent UI.</summary>
         public Action ChangedCallback { get; set; }
 
+        /// <summary>
+        /// Called when the user requests rig code injection. The host is expected to take
+        /// the generated rig snippet and merge it into the main code panel using its normal
+        /// code-update pipeline (diff + undo + write-back). Returns a short status string
+        /// to display in the editor (e.g. "Rig code injected." or "No code to inject into.").
+        /// </summary>
+        public Func<string> InjectCallback { get; set; }
+
         // ── UI ────────────────────────────────────────────────────────────────
         private ComboBox _cmbRig;
         private Button _btnAddRig, _btnRenameRig, _btnDeleteRig;
@@ -250,9 +258,11 @@ namespace SESpriteLCDLayoutTool.Forms
             t.SetColumnSpan(_lblKeyInfo, 4);
 
             // Row 3: code generation + onion skin + key easing
-            var btnCopyCode = MakeBtn("Generate Rig Code…", CopyRigCodeToClipboard);
+            var btnCopyCode = MakeBtn("Generate…", CopyRigCodeToClipboard);
             t.Controls.Add(btnCopyCode, 0, 3);
-            t.SetColumnSpan(btnCopyCode, 2);
+
+            var btnInjectCode = MakeBtn("Inject", InjectRigCodeRequest);
+            t.Controls.Add(btnInjectCode, 1, 3);
 
             _chkOnionSkin = new CheckBox
             {
@@ -1382,6 +1392,30 @@ namespace SESpriteLCDLayoutTool.Forms
             {
                 SetStatus("Generate failed: " + ex.Message);
                 MessageBox.Show(this, "Generate failed:\r\n" + ex, "Rig Code", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Asks the host to merge a freshly-generated rig snippet into the main code panel.
+        /// The host owns code-panel state, source tracking, undo, and write-back, so we
+        /// just delegate via <see cref="InjectCallback"/> and surface the returned status.
+        /// </summary>
+        private void InjectRigCodeRequest()
+        {
+            if (InjectCallback == null)
+            {
+                SetStatus("Injection not wired by host.");
+                return;
+            }
+            try
+            {
+                string status = InjectCallback();
+                if (!string.IsNullOrEmpty(status)) SetStatus(status);
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Inject failed: " + ex.Message);
+                MessageBox.Show(this, "Inject failed:\r\n" + ex, "Rig Code", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
