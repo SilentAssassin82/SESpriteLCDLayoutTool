@@ -38,10 +38,21 @@ namespace SESpriteLCDLayoutTool
             //   --rig-inject-inplace  <layout.seld> [outputLayout.seld] [methodName] [surfaceParam]
             //                                                                  Inject into layout.OriginalSourceCode and persist back.
             //   --layout-export-source <layout.seld> <output.cs>               Write layout.OriginalSourceCode to a .cs file.
+            //
+            // Animation MCP modes:
+            //   --anim-inject         <layout.seld> <source.cs> <output.cs>    Run unified anim+rig injection on a source file.
+            //   --anim-inject-inplace <layout.seld> [outputLayout.seld]        Inject into layout.OriginalSourceCode and persist.
+            //
+            // Orchestrator (one-shot pipelines):
+            //   --pipeline-inject     <layout.seld> <output.cs>                Inject only; write source.
+            //   --pipeline-compile    <layout.seld> <output.cs>                Inject + compile; emits {inject,compile}.
+            //   --pipeline-run        <layout.seld> <output.cs>                Inject + compile + run; emits {inject,compile,run}.
             if (args.Length >= 1 && (args[0] == "--compile" || args[0] == "--run" || args[0] == "--dump-stubs" || args[0] == "--version"
                 || args[0] == "--layout-info" || args[0] == "--rig-validate" || args[0] == "--rig-clips"
                 || args[0] == "--rig-preview" || args[0] == "--rig-snippet" || args[0] == "--rig-inject"
-                || args[0] == "--rig-inject-inplace" || args[0] == "--layout-export-source"))
+                || args[0] == "--rig-inject-inplace" || args[0] == "--layout-export-source"
+                || args[0] == "--anim-inject" || args[0] == "--anim-inject-inplace"
+                || args[0] == "--pipeline-inject" || args[0] == "--pipeline-compile" || args[0] == "--pipeline-run"))
             {
                 try { Console.OutputEncoding = Encoding.UTF8; } catch (IOException) { }
 
@@ -113,6 +124,26 @@ namespace SESpriteLCDLayoutTool
                 {
                     if (args.Length < 3) { Console.WriteLine("{\"success\":false,\"error\":\"Usage: --layout-export-source <layout.seld> <output.cs>\"}"); return; }
                     Console.WriteLine(Services.RigMcpService.ExportSource(args[1], args[2]).ToJson());
+                    return;
+                }
+                if (args[0] == "--anim-inject")
+                {
+                    if (args.Length < 4) { Console.WriteLine("{\"success\":false,\"error\":\"Usage: --anim-inject <layout.seld> <source.cs> <output.cs>\"}"); return; }
+                    Console.WriteLine(Services.AnimMcpService.InjectAnimations(args[1], args[2], args[3]).ToJson());
+                    return;
+                }
+                if (args[0] == "--anim-inject-inplace")
+                {
+                    string outLayout = args.Length > 2 ? args[2] : null;
+                    Console.WriteLine(Services.AnimMcpService.InjectAnimationsInPlace(args[1], outLayout).ToJson());
+                    return;
+                }
+                if (args[0] == "--pipeline-inject" || args[0] == "--pipeline-compile" || args[0] == "--pipeline-run")
+                {
+                    if (args.Length < 3) { Console.WriteLine("{\"success\":false,\"error\":\"Usage: " + args[0] + " <layout.seld> <output.cs>\"}"); return; }
+                    bool compile = args[0] == "--pipeline-compile" || args[0] == "--pipeline-run";
+                    bool run     = args[0] == "--pipeline-run";
+                    Console.WriteLine(Services.AnimMcpService.Pipeline(args[1], args[2], compile, run).ToJson());
                     return;
                 }
 
