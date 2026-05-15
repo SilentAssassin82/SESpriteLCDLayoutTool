@@ -133,19 +133,20 @@ namespace SESpriteLCDLayoutTool.Services
             bool wired;
             code = InsertWireBlock(code, out wired);
 
-            // When wired into an existing DrawFrame, the standalone DrawRig method
-            // becomes a *second* render entry point: the editor's executor matches
-            // any `void Foo(IMyTextSurface ...)` signature via _rxSurfaceMethod and
-            // invokes it as a top-level call, so DrawLayout(surface) AND
-            // DrawRig(surface, t) both fire each frame — DrawLayout emits the rig
-            // pose (via the wire block) plus the static body, then DrawRig emits a
-            // second copy of the rig pose. Strip DrawRig so only the wire path
-            // contributes the rig sprites.
+            // Always strip the standalone DrawRig method from the snippet. The
+            // editor's executor matches any `void Foo(IMyTextSurface ...)` signature
+            // via _rxSurfaceMethod and invokes it as a top-level render entry point,
+            // so leaving DrawRig in place would render the bound sprites a SECOND
+            // time per frame — the user's own draw method emits them via the wire
+            // block (animated, following bones) and DrawRig emits another copy
+            // (sampled at its own time, near rest pose) producing visible ghost
+            // duplicates. The wire block is the canonical path; if no DrawFrame
+            // could be wired, the user calls AddRigSprites themselves from inside
+            // their own using-block, so DrawRig is never the right answer.
             //
             // Reminder: re-inject (▶ Generate Code / animation merge) after toggling
             // this — stripping is a no-op on already-emitted source.
-            if (wired)
-                snippet = StripStandaloneDrawRig(snippet, methodName);
+            snippet = StripStandaloneDrawRig(snippet, methodName);
 
             int insertPos;
             string indent;
