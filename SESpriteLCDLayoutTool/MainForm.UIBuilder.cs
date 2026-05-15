@@ -1000,16 +1000,16 @@ namespace SESpriteLCDLayoutTool
             // the prior layout entries. Without this, the next Roslyn injection pass sees
             // only the newly-animated sprite and silently strips every previously-injected
             // animation track (e.g. SemiCircle's kfRot/RotationOrScale) from the code panel.
+            //
+            // ALSO preserve Id/UserLabel for every prior sprite (regardless of animation),
+            // so rig bindings keyed by SpriteIndex still resolve to the same ⟦id:GUID⟧
+            // tags in the source after Execute Code. Otherwise a later Play pass would
+            // re-mute different IDs, leaving the original static Adds un-muted and
+            // rendering a duplicate set alongside the rig-posed sprites.
             var preservedAnimByKey = new Dictionary<string, Queue<SpriteEntry>>(StringComparer.OrdinalIgnoreCase);
             foreach (var prev in _layout.Sprites)
             {
                 if (prev == null) continue;
-                if (prev.KeyframeAnimation == null
-                    && (prev.AnimationEffects == null || prev.AnimationEffects.Count == 0)
-                    && string.IsNullOrEmpty(prev.AnimationGroupId)
-                    && prev.AnimationIndex == 0)
-                    continue;
-
                 string key = prev.Type == SpriteEntryType.Text
                     ? "TEXT|" + (prev.Text ?? "")
                     : "TEXTURE|" + (prev.SpriteName ?? "");
