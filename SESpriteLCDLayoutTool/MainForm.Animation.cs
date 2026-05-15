@@ -52,7 +52,7 @@ namespace SESpriteLCDLayoutTool
                 CaptureAnimPositionSnapshot();
                 _rtbConsole?.Clear();
 
-                string pbError = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
+                string pbError = _animPlayer.Prepare(PrepareAnimationSource(code), null, _layout?.CapturedRows);
                 if (pbError != null)
                 {
                     ShowAnimationErrorWithDiagnostics(pbError);
@@ -195,7 +195,7 @@ namespace SESpriteLCDLayoutTool
             CaptureAnimPositionSnapshot();
             _rtbConsole?.Clear();
 
-            string error = _animPlayer.Prepare(code, execCall, execRows);
+            string error = _animPlayer.Prepare(PrepareAnimationSource(code), execCall, execRows);
             if (error != null)
             {
                 ShowAnimationErrorWithDiagnostics(error);
@@ -287,7 +287,7 @@ namespace SESpriteLCDLayoutTool
 
             // Pass null so CompileForAnimation auto-detects ALL rendering
             // methods and calls them every frame — showing the full scene.
-            string error = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
+            string error = _animPlayer.Prepare(PrepareAnimationSource(code), null, _layout?.CapturedRows);
             if (error != null)
             {
                 ShowAnimationErrorWithDiagnostics(error);
@@ -383,7 +383,7 @@ namespace SESpriteLCDLayoutTool
 
                 // Pass null so CompileForAnimation auto-detects ALL rendering
                 // methods and calls them every frame — showing the full scene.
-                string error = _animPlayer.Prepare(code, null, _layout?.CapturedRows);
+                string error = _animPlayer.Prepare(PrepareAnimationSource(code), null, _layout?.CapturedRows);
                 if (error != null)
                 {
                     ShowAnimationErrorWithDiagnostics(error);
@@ -393,6 +393,11 @@ namespace SESpriteLCDLayoutTool
                 }
             }
 
+            // Suppress canvas preview-time rig overrides so the player's runtime-emitted
+            // sprites are authoritative for this frame (matches Play behaviour). Without
+            // this the rig overlay would re-pose the sprites from clip samples and mask
+            // any bug in the runtime path.
+            if (_canvas != null) _canvas.SuppressRigOverrides = true;
             _animPlayer.StepForward();
             ClearEditorDiagnosticsAfterSuccessfulRun();
             UpdateAnimButtonStates();
@@ -1426,6 +1431,34 @@ namespace SESpriteLCDLayoutTool
             if (code.IndexOf(".DrawFrame(", StringComparison.Ordinal) >= 0)
                 return true;
             return false;
+        }
+
+        /// <summary>
+        /// Routes user-edited source through the unified Roslyn animation/rig injector
+        /// before handing it to the animation player. Without this, the player compiles
+        /// the raw code panel, which contains no rig wiring or per-sprite animation
+        /// regions — only the bone overlay (which the canvas samples directly from the
+        /// rig clips) appears to animate while the emitted sprites stay frozen.
+        /// <para>The injection is idempotent: previously-injected regions are stripped
+        /// and re-emitted, so it is safe to call on every Play/Step/Resume.</para>
+        /// </summary>
+        private string PrepareAnimationSource(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return code;
+            if (!IsCompleteProgramForInjection(code)) return code;
+
+            var allSprites = _layout?.Sprites?.ToList() ?? new List<SpriteEntry>();
+            try
+            {
+                var injResult = RoslynAnimationInjector.InjectAnimations(code, allSprites, _layout);
+                if (injResult != null && injResult.Success && !string.IsNullOrEmpty(injResult.Code))
+                    return injResult.Code;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[PrepareAnimationSource] Injection failed, using raw source: {ex.Message}");
+            }
+            return code;
         }
 
         private void MergeAnimationsIntoPanel(IEnumerable<SpriteEntry> sprites)
