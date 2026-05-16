@@ -123,6 +123,22 @@ Get-ChildItem $binDir -Recurse -File | ForEach-Object {
 Copy-Item $setupPs1 (Join-Path $stageDir "setup.ps1") -Force
 $copied++
 
+# Copy THIRD-PARTY-NOTICES.txt (license disclosures for bundled OSS DLLs)
+$notices = Join-Path $root "THIRD-PARTY-NOTICES.txt"
+if (Test-Path $notices) {
+    Copy-Item $notices (Join-Path $stageDir "THIRD-PARTY-NOTICES.txt") -Force
+    $copied++
+}
+
+# Copy LICENSE / README if present at repo root
+foreach ($extra in @("LICENSE", "LICENSE.txt", "LICENSE.md", "README.md")) {
+    $p = Join-Path $root $extra
+    if (Test-Path $p) {
+        Copy-Item $p (Join-Path $stageDir $extra) -Force
+        $copied++
+    }
+}
+
 Write-Host "       Copied  : $copied file(s)" -ForegroundColor Green
 Write-Host "       Skipped : $skipped (SE/Torch/pdb/xml)" -ForegroundColor DarkGray
 

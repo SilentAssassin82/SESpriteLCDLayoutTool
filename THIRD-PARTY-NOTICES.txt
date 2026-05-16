@@ -1,0 +1,121 @@
+================================================================================
+                 SE Sprite LCD Layout Tool - Third-Party Notices
+================================================================================
+
+This product includes third-party open-source software. The following components
+are redistributed in binary form inside the release archive. Each is used under
+the terms of its respective license. Full license texts are available from the
+upstream project sites linked below.
+
+Space Engineers (Keen Software House) and Torch binaries are NOT redistributed
+in this release. The included setup.ps1 copies them from the user's own local
+Space Engineers and Torch installations.
+
+--------------------------------------------------------------------------------
+ MIT License
+--------------------------------------------------------------------------------
+
+  Microsoft.CodeAnalysis (Roslyn) and Microsoft.CodeAnalysis.CSharp
+    Copyright (c) .NET Foundation and Contributors
+    https://github.com/dotnet/roslyn
+
+  System.Buffers, System.Memory, System.Numerics.Vectors,
+  System.Runtime.CompilerServices.Unsafe, System.Threading.Tasks.Extensions,
+  System.Collections.Immutable, System.Reflection.Metadata,
+  System.Resources.Extensions, System.Text.Encoding.CodePages,
+  Microsoft.Win32.Registry
+    Copyright (c) .NET Foundation and Contributors
+    https://github.com/dotnet/runtime
+
+  Newtonsoft.Json
+    Copyright (c) 2007 James Newton-King
+    https://github.com/JamesNK/Newtonsoft.Json
+
+  Scintilla.NET
+    Copyright (c) VPKSoft / ScintillaNET contributors
+    https://github.com/VPKSoft/Scintilla.NET
+
+  FuzzySharp
+    Copyright (c) JakeBayer
+    https://github.com/JakeBayer/FuzzySharp
+
+  Mono.Cecil
+    Copyright (c) Jb Evain and contributors
+    https://github.com/jbevain/cecil
+
+  Harmony (0Harmony.dll)
+    Copyright (c) Andreas Pardeike
+    https://github.com/pardeike/Harmony
+
+  EmptyKeys.UserInterface
+    Copyright (c) EmptyKeys
+    https://github.com/EmptyKeys/UI_Engines
+
+  Steamworks.NET
+    Copyright (c) 2013-present Riley Labrecque
+    https://steamworks.github.io/
+
+  Pulsar (Pulsar.Compiler, Pulsar.Shared)
+    Copyright (c) Pulsar contributors
+    https://github.com/sepluginloader/PulsarPluginLoader
+    (Used as the official Space Engineers plugin loader runtime.)
+
+--------------------------------------------------------------------------------
+ Apache License 2.0
+--------------------------------------------------------------------------------
+
+  SixLabors.ImageSharp (v2.1.x)
+    Copyright (c) Six Labors
+    https://github.com/SixLabors/ImageSharp
+    NOTE: This product uses ImageSharp 2.1.x under the Apache 2.0 license.
+          ImageSharp 3.x and later are NOT used; those versions ship under a
+          different (split commercial) license.
+
+  protobuf-net and protobuf-net.Core
+    Copyright (c) Marc Gravell
+    https://github.com/protobuf-net/protobuf-net
+
+  NuGet client libraries (NuGet.Common, NuGet.Configuration, NuGet.Frameworks,
+  NuGet.Packaging, NuGet.Protocol, NuGet.Resolver, NuGet.Versioning)
+    Copyright (c) .NET Foundation and Contributors
+    https://github.com/NuGet/NuGet.Client
+
+  CppNet
+    Apache License 2.0
+    https://github.com/Microsoft/cppnet
+
+--------------------------------------------------------------------------------
+ Scintilla / Lexilla
+--------------------------------------------------------------------------------
+
+  Scintilla.dll, Lexilla.dll
+    Copyright (c) 1998-present Neil Hodgson <neilh@scintilla.org>
+    Historic Permission Notice and Disclaimer (BSD-style).
+    https://www.scintilla.org/License.txt
+
+--------------------------------------------------------------------------------
+ LGPL 2.1
+--------------------------------------------------------------------------------
+
+  SteamKit2
+    Copyright (c) 2008-present SteamRE / Ryan Stecker (Voided) et al.
+    https://github.com/SteamRE/SteamKit
+    Redistributed in unmodified binary form. Users may replace this DLL with a
+    compatible version of their own build per the terms of the LGPL.
+
+================================================================================
+ Not redistributed (must be supplied by the user via setup.ps1)
+================================================================================
+
+The following binaries are part of Space Engineers (Keen Software House) or
+Torch and are NOT included in this release. setup.ps1 copies them from your
+local Space Engineers ModSDK / game install and your Torch install:
+
+  Sandbox.*.dll, SpaceEngineers.*.dll, VRage.*.dll,
+  HavokWrapper.dll, RecastDetourWrapper.dll, SharpDX.*.dll,
+  Torch.dll, Torch.API.dll, NLog.dll
+
+Space Engineers (c) Keen Software House. All rights reserved.
+Torch (c) Torch API contributors - https://torchapi.com/
+
+================================================================================
