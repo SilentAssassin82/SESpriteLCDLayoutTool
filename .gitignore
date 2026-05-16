@@ -74,3 +74,4 @@ Directory.Build.props.user
 # Ad-hoc helper scripts (not part of the build)
 _addgif.ps1
 _*.ps1
+release/
