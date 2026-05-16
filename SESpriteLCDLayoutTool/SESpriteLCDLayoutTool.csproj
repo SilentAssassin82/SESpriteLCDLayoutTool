@@ -291,7 +291,9 @@
     <PropertyGroup>
       <ScintillaPackageDir>$(NuGetPackageRoot)scintilla.net\5.3.2.9\build</ScintillaPackageDir>
     </PropertyGroup>
-    <Copy SourceFiles="$(ScintillaPackageDir)\x64\Scintilla.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(ScintillaPackageDir)\x64\Lexilla.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+     <Copy SourceFiles="$(ScintillaPackageDir)\x64\Scintilla.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+     <Copy SourceFiles="$(ScintillaPackageDir)\x64\Lexilla.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+     <Copy SourceFiles="$(ScintillaPackageDir)\x64\Scintilla.dll" DestinationFolder="$(OutputPath)x64" SkipUnchangedFiles="true" />
+     <Copy SourceFiles="$(ScintillaPackageDir)\x64\Lexilla.dll" DestinationFolder="$(OutputPath)x64" SkipUnchangedFiles="true" />
   </Target>
 </Project>
