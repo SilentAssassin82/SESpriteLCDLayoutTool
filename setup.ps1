@@ -189,6 +189,54 @@ if ($missing.Count -gt 0) {
     Write-Host "   The tool will still run but some features may be unavailable."
 }
 
+# ── Scintilla native DLL + VC++ runtime check ─────────────────────────────
+# The code editor uses Scintilla.NET, which loads a native Scintilla.dll /
+# Lexilla.dll at startup. Those natives in turn require the Microsoft Visual
+# C++ 2015-2022 x64 Redistributable. If either is missing the app crashes
+# with a TypeInitializationException in ScintillaNET.Scintilla..cctor()
+# before the main window can appear.
+Write-Host ""
+Write-Host " [+] Verifying code-editor (Scintilla) prerequisites..."
+
+$scintillaNatives = @("Scintilla.dll", "Lexilla.dll")
+$missingNatives   = @()
+foreach ($dll in $scintillaNatives) {
+    if (-not (Test-Path (Join-Path $scriptDir $dll))) { $missingNatives += $dll }
+}
+
+if ($missingNatives.Count -gt 0) {
+    Write-Host ""
+    Write-Host "   -X Missing native code-editor DLL(s) next to the exe:" -ForegroundColor Red
+    $missingNatives | ForEach-Object { Write-Host "     - $_" -ForegroundColor Red }
+    Write-Host "   These ship inside the release zip. Re-extract the zip and make sure" -ForegroundColor Yellow
+    Write-Host "   you right-click the zip -> Properties -> Unblock BEFORE extracting," -ForegroundColor Yellow
+    Write-Host "   otherwise Windows / antivirus may strip the native DLLs." -ForegroundColor Yellow
+} else {
+    Write-Host "   Scintilla.dll + Lexilla.dll present." -ForegroundColor Green
+}
+
+# Detect VC++ 2015-2022 x64 redistributable (vcruntime140.dll in System32).
+$vcRuntime = Join-Path $env:WINDIR "System32\vcruntime140.dll"
+$vcInstalled = Test-Path $vcRuntime
+if (-not $vcInstalled) {
+    # Fallback: check the official registry key written by the redist installer.
+    try {
+        $reg = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" -ErrorAction Stop
+        if ($reg.Installed -eq 1) { $vcInstalled = $true }
+    } catch { }
+}
+
+if (-not $vcInstalled) {
+    Write-Host ""
+    Write-Host "   -X Microsoft Visual C++ 2015-2022 x64 Redistributable NOT detected." -ForegroundColor Red
+    Write-Host "   The code editor's native DLL will fail to load without it and the" -ForegroundColor Yellow
+    Write-Host "   app will crash at startup with a Scintilla TypeInitializationException." -ForegroundColor Yellow
+    Write-Host "   Download and install:" -ForegroundColor Yellow
+    Write-Host "     https://aka.ms/vs/17/release/vc_redist.x64.exe" -ForegroundColor Cyan
+} else {
+    Write-Host "   Visual C++ 2015-2022 x64 runtime detected." -ForegroundColor Green
+}
+
 # Done
 Write-Host ""
 Write-Host " ------------------------------------------------"
