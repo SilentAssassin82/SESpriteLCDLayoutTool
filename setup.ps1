@@ -215,6 +215,31 @@ if ($missingNatives.Count -gt 0) {
     Write-Host "   Scintilla.dll + Lexilla.dll present." -ForegroundColor Green
 }
 
+# Scintilla.NET 5.x's static initializer (LocateNativeDllDirectory) searches
+# for the natives under an "x64\" (or "x86\") SUBFOLDER next to the managed
+# assembly - not just flat in the app folder. If that subfolder is missing
+# the ctor throws InvalidOperationException -> TypeInitializationException
+# and the app dies before MainForm is shown. Mirror the flat copies into
+# .\x64\ so both layouts are satisfied.
+$x64Dir = Join-Path $scriptDir "x64"
+if (-not (Test-Path $x64Dir)) {
+    New-Item -ItemType Directory -Path $x64Dir | Out-Null
+}
+$x64Mirrored = 0
+foreach ($dll in $scintillaNatives) {
+    $src  = Join-Path $scriptDir $dll
+    $dest = Join-Path $x64Dir   $dll
+    if ((Test-Path $src) -and (-not (Test-Path $dest))) {
+        Copy-Item $src $dest
+        $x64Mirrored++
+    }
+}
+if ($x64Mirrored -gt 0) {
+    Write-Host "   Mirrored $x64Mirrored Scintilla native(s) into .\x64\ (required by Scintilla.NET loader)." -ForegroundColor Green
+} elseif (Test-Path (Join-Path $x64Dir "Scintilla.dll")) {
+    Write-Host "   .\x64\Scintilla.dll present." -ForegroundColor Green
+}
+
 # Detect VC++ 2015-2022 x64 redistributable (vcruntime140.dll in System32).
 $vcRuntime = Join-Path $env:WINDIR "System32\vcruntime140.dll"
 $vcInstalled = Test-Path $vcRuntime
